@@ -24,6 +24,12 @@ public sealed record ClipboardSnapshot(IReadOnlyList<ClipboardItem> Items, IRead
 /// <summary>One file or folder of a file offer; <see cref="Path"/> is relative, with backslashes, top level first.</summary>
 public sealed record FileOfferEntry(string Path, long Size, bool IsDirectory, long LastWriteUtcTicks);
 
+/// <summary>Files being dragged across devices; <see cref="SourceId"/> is the device that serves their contents.</summary>
+public sealed record DragPayload(string SourceId, FileOfferManifest Manifest);
+
+/// <summary>What a drag hovering over our drop surface carried: real local paths, or a drag we started ourselves.</summary>
+public sealed record DragCatch(IReadOnlyList<string>? LocalPaths, DragPayload? Forwarded);
+
 /// <summary>Files copied on another device. Contents stay there until a paste asks for them.</summary>
 public sealed record FileOfferManifest(long OfferId, string SourceName, List<FileOfferEntry> Entries)
 {

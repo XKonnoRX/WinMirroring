@@ -104,7 +104,7 @@ public sealed class FilesTests : IDisposable
             new FileOfferEntry("dir", 0, true, DateTime.UtcNow.Ticks),
             new FileOfferEntry("dir\\note.txt", content.Length, false, DateTime.UtcNow.Ticks),
         ]);
-        ComTypes.IDataObject dataObject = new VirtualFileDataObject(manifest, new MemorySource(content), offerDropFiles: false, NullLogger.Instance);
+        ComTypes.IDataObject dataObject = new VirtualFileDataObject(manifest, new MemorySource(content), offerDropFiles: false, "pc-id", NullLogger.Instance);
 
         var descriptorFormat = Format(ClipboardFormats.FileGroupDescriptorW, ComTypes.TYMED.TYMED_HGLOBAL);
         Assert.Equal(0, dataObject.QueryGetData(ref descriptorFormat));

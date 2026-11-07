@@ -67,6 +67,53 @@ public sealed class InputInjector
         });
     }
 
+    public bool IsButtonDown(MouseButton button)
+    {
+        lock (_gate)
+        {
+            return _downButtons.Contains(button);
+        }
+    }
+
+    /// <summary>A button event that is not remembered for <see cref="ReleaseAll"/> (the caller owns its release).</summary>
+    public void ButtonUntracked(MouseButton button, bool down)
+    {
+        var flags = (button, down) switch
+        {
+            (MouseButton.Left, true) => MOUSEEVENTF_LEFTDOWN,
+            (MouseButton.Left, false) => MOUSEEVENTF_LEFTUP,
+            (MouseButton.Right, true) => MOUSEEVENTF_RIGHTDOWN,
+            (MouseButton.Right, false) => MOUSEEVENTF_RIGHTUP,
+            _ => 0u,
+        };
+
+        if (flags != 0)
+        {
+            Send(new INPUT
+            {
+                type = INPUT_MOUSE,
+                u = { mi = new MOUSEINPUT { dwFlags = flags, dwExtraInfo = InjectionMarker } },
+            });
+        }
+    }
+
+    /// <summary>
+    /// Moves the cursor one pixel and back. A drag-and-drop loop re-checks the window under the cursor only on
+    /// mouse movement, so this makes it notice a window that just appeared there.
+    /// </summary>
+    public void Nudge()
+    {
+        if (!VirtualScreen.TryGetCursor(out var cursor))
+        {
+            return;
+        }
+
+        var screen = VirtualScreen.Current;
+        var x = cursor.X + 1 < screen.Right ? cursor.X + 1 : cursor.X - 1;
+        MoveAbsolute(x, cursor.Y);
+        MoveAbsolute(cursor.X, cursor.Y);
+    }
+
     public void Wheel(int delta, bool horizontal)
     {
         Send(new INPUT

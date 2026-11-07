@@ -16,6 +16,41 @@ public static class ClipboardCodec
     /// <summary>[3] i64 blob id, i64 length: a data message too large to send inline, to be pulled over the File channel.</summary>
     public const byte DataRefMessage = 3;
 
+    /// <summary>[4] JSON <see cref="DragPayload"/>: start a drag of these files here, under the cursor, now.</summary>
+    public const byte DragStartMessage = 4;
+
+    /// <summary>[5] JSON <see cref="DragPayload"/>: a drag leaves the sender; start it wherever the cursor lands.</summary>
+    public const byte DragOutMessage = 5;
+
+    public static byte[] EncodeDrag(byte type, DragPayload payload)
+    {
+        var json = JsonSerializer.SerializeToUtf8Bytes(payload, Json);
+        var message = new byte[json.Length + 1];
+        message[0] = type;
+        json.CopyTo(message, 1);
+        return message;
+    }
+
+    public static DragPayload? TryDecodeDrag(ReadOnlySpan<byte> message)
+    {
+        if (message.Length < 2 || message[0] is not (DragStartMessage or DragOutMessage))
+        {
+            return null;
+        }
+
+        try
+        {
+            var payload = JsonSerializer.Deserialize<DragPayload>(message[1..], Json);
+            return payload is { SourceId.Length: > 0, Manifest.Entries: not null } && payload.Manifest.Entries.All(IsSafeEntry)
+                ? payload
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     public static byte[] EncodeDataRef(long blobId, long length)
     {
         var message = new byte[17];

@@ -35,8 +35,9 @@ internal sealed class VirtualFileDataObject : ComTypes.IDataObject
     private readonly object _downloadGate = new();
     private IReadOnlyList<string>? _downloaded;
 
-    public VirtualFileDataObject(FileOfferManifest manifest, IRemoteFileSource source, bool offerDropFiles, ILogger logger)
+    public VirtualFileDataObject(FileOfferManifest manifest, IRemoteFileSource source, bool offerDropFiles, string sourceId, ILogger logger)
     {
+        SourceId = sourceId;
         _manifest = manifest;
         _source = source;
         _offerDropFiles = offerDropFiles;
@@ -58,6 +59,9 @@ internal sealed class VirtualFileDataObject : ComTypes.IDataObject
     }
 
     public FileOfferManifest Manifest => _manifest;
+
+    /// <summary>Device that serves the file contents.</summary>
+    public string SourceId { get; }
 
     /// <summary>Raised when a paste starts pulling the files into the cache (CF_HDROP path).</summary>
     public event Action<FileOfferManifest>? DownloadStarted;

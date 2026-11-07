@@ -18,6 +18,7 @@ public sealed partial class InputSharingService
         public volatile bool Active;
         public int Generation;
         public int AliveInFlight;
+        public int HandOffPending;
     }
 
     private ValueTask OnInputFrameAsync(PeerSession session, ReadOnlyMemory<byte> payload, CancellationToken ct)
@@ -95,6 +96,16 @@ public sealed partial class InputSharingService
 
         state.Active = false;
         Interlocked.Increment(ref state.Generation);
+        try
+        {
+            // Lets a drag started on the controller's behalf cancel itself before its button is released.
+            ControlEnding?.Invoke(session.PeerId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "ControlEnding handler failed");
+        }
+
         if (_player.End(session))
         {
             _injector.ReleaseAll();
@@ -159,10 +170,40 @@ public sealed partial class InputSharingService
 
     private void OnPlayerEdgeReached(object owner, Edge edge, float relative)
     {
-        if (owner is PeerSession session)
+        if (owner is PeerSession session && _controllers.TryGetValue(session.PeerId, out var state))
         {
-            // Called under the player lock; the send runs elsewhere.
-            _ = Task.Run(() => SendEdgeReachedAsync(session, edge, relative));
+            // Called under the player lock; the hand-off runs elsewhere.
+            _ = Task.Run(() => HandOffAsync(session, state, edge, relative));
+        }
+    }
+
+    private async Task HandOffAsync(PeerSession session, ControlledState state, Edge edge, float relative)
+    {
+        if (Interlocked.Exchange(ref state.HandOffPending, 1) != 0)
+        {
+            return; // the cursor keeps pushing while a hand-off is being prepared
+        }
+
+        try
+        {
+            if (BeforeEdgeHandOff is { } prepare && _injector.IsButtonDown(MouseButton.Left))
+            {
+                var at = EdgeMath.PointOn(VirtualScreen.Current, edge, relative, inset: 0);
+                try
+                {
+                    await prepare(session, at).WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Preparing the hand-off to {Peer} failed", session.PeerName);
+                }
+            }
+
+            await SendEdgeReachedAsync(session, edge, relative).ConfigureAwait(false);
+        }
+        finally
+        {
+            Volatile.Write(ref state.HandOffPending, 0);
         }
     }
 

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
+using WinMirroring.Clipboard.DragDrop;
 using WinMirroring.Clipboard.Files;
 using WinMirroring.Clipboard.Protocol;
 using WinMirroring.Core;
@@ -45,6 +46,15 @@ public sealed class ClipboardSyncService : IAsyncDisposable
 
     public event Action<string>? Activity;
 
+    /// <summary>Another device asks this one to start a drag of its files under the cursor (we are controlled).</summary>
+    public event Action<PeerSession, DragPayload>? DragStartReceived;
+
+    /// <summary>A device this one controls says a drag is leaving it (we are the controller).</summary>
+    public event Action<PeerSession, DragPayload>? DragOutReceived;
+
+    /// <summary>OLE drag and drop on the clipboard thread; available after <see cref="Start"/>.</summary>
+    public DragDropEngine? Drag { get; private set; }
+
     private long MaxInlineBytes => Math.Clamp(_node.Settings.Clipboard.MaxInlineMegabytes, 1, 1024) * 1024L * 1024;
 
     public void Start()
@@ -55,6 +65,12 @@ public sealed class ClipboardSyncService : IAsyncDisposable
         thread.LocalChanged += snapshot => _outbox.Writer.TryWrite(snapshot);
         thread.Start();
         _thread = thread;
+
+        var drag = new DragDropEngine(thread, _logger);
+        if (drag.InitializeAsync().Wait(TimeSpan.FromSeconds(5)))
+        {
+            Drag = drag;
+        }
 
         _node.Sessions.SessionReady += OnSessionReady;
         _node.Sessions.SessionClosed += OnSessionClosed;
@@ -172,11 +188,70 @@ public sealed class ClipboardSyncService : IAsyncDisposable
         Report($"Отправлено: {what} → {sent} устр.");
     }
 
+    // ---- drag and drop -----------------------------------------------------------------------------------
+
+    /// <summary>Turns local paths (caught from a drag) into a payload this device serves.</summary>
+    public DragPayload? CreateLocalDragPayload(IReadOnlyList<string> paths)
+    {
+        var manifest = _offers.Create(paths, _node.Settings.DeviceName);
+        return manifest is null ? null : new DragPayload(_node.Identity.Id, manifest);
+    }
+
+    /// <summary>Reads files of a payload from the device that serves them, if we are connected to it.</summary>
+    public IRemoteFileSource? SourceFor(string deviceId) =>
+        _fetchers.FirstOrDefault(p => p.Key.PeerId == deviceId && p.Key.State == SessionState.Ready).Value;
+
+    /// <summary>Small sets also get CF_HDROP, so programs that need real paths accept the drop.</summary>
+    public bool AllowsDirectPaste(FileOfferManifest manifest)
+    {
+        var limit = Math.Max(0, _node.Settings.Clipboard.MaxDirectPasteMegabytes) * 1024L * 1024;
+        return manifest.TotalSize <= limit && manifest.Entries.Count <= MaxDirectPasteEntries;
+    }
+
+    public async Task SendDragAsync(PeerSession session, DragPayload payload, bool start)
+    {
+        var message = ClipboardCodec.EncodeDrag(start ? ClipboardCodec.DragStartMessage : ClipboardCodec.DragOutMessage, payload);
+        try
+        {
+            await session.SendAsync(ChannelId.Clipboard, message, _cts.Token).ConfigureAwait(false);
+            _logger.LogInformation("Drag of {Count} item(s) {Direction} {Peer}", payload.Manifest.TopLevel.Count(), start ? "started on" : "handed to", session.PeerName);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or OperationCanceledException)
+        {
+            _logger.LogDebug("Drag message to {Peer} not sent: {Message}", session.PeerName, ex.Message);
+        }
+    }
+
     // ---- incoming ----------------------------------------------------------------------------------------
 
     private ValueTask OnClipboardFrameAsync(PeerSession session, ReadOnlyMemory<byte> payload, CancellationToken ct)
     {
-        if (!_node.Settings.Clipboard.Enabled || payload.IsEmpty)
+        if (payload.IsEmpty)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        if (payload.Span[0] is ClipboardCodec.DragStartMessage or ClipboardCodec.DragOutMessage)
+        {
+            // Handled inline, not on the thread pool: the EdgeReached that follows a drag-out on the Input channel
+            // must find the drag already registered.
+            if (_node.Settings.Clipboard.DragDropEnabled && ClipboardCodec.TryDecodeDrag(payload.Span) is { } drag)
+            {
+                var handler = payload.Span[0] == ClipboardCodec.DragStartMessage ? DragStartReceived : DragOutReceived;
+                try
+                {
+                    handler?.Invoke(session, drag);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Drag message handler failed");
+                }
+            }
+
+            return ValueTask.CompletedTask;
+        }
+
+        if (!_node.Settings.Clipboard.Enabled)
         {
             return ValueTask.CompletedTask;
         }
@@ -224,9 +299,7 @@ public sealed class ClipboardSyncService : IAsyncDisposable
                         return;
                     }
 
-                    var directLimit = Math.Max(0, _node.Settings.Clipboard.MaxDirectPasteMegabytes) * 1024L * 1024;
-                    var offerDrop = manifest.TotalSize <= directLimit && manifest.Entries.Count <= MaxDirectPasteEntries;
-                    var dataObject = new VirtualFileDataObject(manifest, source, offerDrop, _logger);
+                    var dataObject = new VirtualFileDataObject(manifest, source, AllowsDirectPaste(manifest), session.PeerId, _logger);
                     dataObject.DownloadStarted += m => Report($"Вставка: загрузка {DescribeFiles(m)} с {m.SourceName}…");
                     await thread.SetDataObjectAsync(dataObject).ConfigureAwait(false);
                     Report($"Получено с {session.PeerName}: {DescribeFiles(manifest)}");
@@ -338,6 +411,12 @@ public sealed class ClipboardSyncService : IAsyncDisposable
         foreach (var fetcher in _fetchers.Values)
         {
             fetcher.Close();
+        }
+
+        if (Drag is { } drag)
+        {
+            drag.CancelActiveDrag();
+            drag.ShutdownAsync().Wait(TimeSpan.FromSeconds(2));
         }
 
         _thread?.Dispose();

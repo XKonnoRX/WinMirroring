@@ -130,6 +130,9 @@
               <CheckBox Content="Передавать скопированные файлы и папки" IsChecked="{Binding ClipboardShareFiles}" IsEnabled="{Binding ClipboardEnabled}" />
               <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,8"
                          Text="Файлы не пересылаются при копировании: на другом устройстве они появляются в буфере и скачиваются только при вставке. Explorer показывает свой прогресс копирования." />
+              <CheckBox Content="Перетаскивать файлы мышью через край экрана на другое устройство" IsChecked="{Binding ClipboardDragDrop}" />
+              <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,8"
+                         Text="Начните тянуть файлы в Explorer и уведите курсор на соседнее устройство, не отпуская кнопку. Файлы скачаются туда, куда вы их бросите. Работает в обе стороны." />
               <StackPanel Orientation="Horizontal" Margin="0,2">
                 <TextBlock VerticalAlignment="Center" Text="Текст и картинки до, МБ:" Width="250" />
                 <TextBox Width="60" Text="{Binding ClipboardMaxInline, UpdateSourceTrigger=LostFocus}" />

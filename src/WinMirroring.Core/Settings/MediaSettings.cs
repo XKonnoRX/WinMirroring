@@ -12,6 +12,9 @@ public sealed class ClipboardSettings
 
     /// <summary>File sets up to this size are also offered as ordinary files (CF_HDROP), downloaded when pasted.</summary>
     public int MaxDirectPasteMegabytes { get; set; } = 64;
+
+    /// <summary>Drag files across a screen edge to another device.</summary>
+    public bool DragDropEnabled { get; set; } = true;
 }
 
 public sealed class AudioSettings

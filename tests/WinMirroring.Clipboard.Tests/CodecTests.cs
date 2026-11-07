@@ -82,6 +82,23 @@ public class CodecTests
     }
 
     [Fact]
+    public void DragMessagesRoundTripAndRejectUnsafePaths()
+    {
+        var payload = new DragPayload("device-a", new FileOfferManifest(3, "A", [new FileOfferEntry("photo.jpg", 10, false, 1)]));
+
+        var start = ClipboardCodec.EncodeDrag(ClipboardCodec.DragStartMessage, payload);
+        var decoded = ClipboardCodec.TryDecodeDrag(start);
+        Assert.Equal(ClipboardCodec.DragStartMessage, start[0]);
+        Assert.NotNull(decoded);
+        Assert.Equal("device-a", decoded.SourceId);
+        Assert.Equal("photo.jpg", Assert.Single(decoded.Manifest.Entries).Path);
+
+        var evil = payload with { Manifest = new FileOfferManifest(3, "A", [new FileOfferEntry("..\\x", 1, false, 1)]) };
+        Assert.Null(ClipboardCodec.TryDecodeDrag(ClipboardCodec.EncodeDrag(ClipboardCodec.DragOutMessage, evil)));
+        Assert.Null(ClipboardCodec.TryDecodeDrag(ClipboardCodec.EncodeDrag(ClipboardCodec.DragOutMessage, payload with { SourceId = "" })));
+    }
+
+    [Fact]
     public void FileMessagesRoundTrip()
     {
         Assert.True(FileCodec.TryDecodeRequest(FileCodec.EncodeRequest(5, 77, 3, 1L << 33, 4096), out var id, out var offer, out var index, out var offset, out var length));

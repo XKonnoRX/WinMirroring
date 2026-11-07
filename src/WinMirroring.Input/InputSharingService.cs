@@ -80,6 +80,50 @@ public sealed partial class InputSharingService : IAsyncDisposable
     /// <summary>Raised with the peer id that starts controlling this device, or null when it stops.</summary>
     public event Action<string?>? ControlledByChanged;
 
+    // ---- drag and drop support ---------------------------------------------------------------------------
+
+    /// <summary>Controlled side: raised before keys and buttons are released because control ends (peer id).</summary>
+    public event Action<string>? ControlEnding;
+
+    /// <summary>
+    /// Controlled side: awaited (at most a second) before telling the controller that the cursor leaves this device
+    /// while it holds the left button, so a drag in progress can be caught and handed over first.
+    /// </summary>
+    public Func<PeerSession, System.Drawing.Point, Task>? BeforeEdgeHandOff { get; set; }
+
+    /// <summary>Peer id of the device currently controlling this one, if any.</summary>
+    public string? ControllerId => (_player.Owner as PeerSession)?.PeerId;
+
+    /// <summary>Where the local cursor is parked (and hidden) while input goes to another device.</summary>
+    public System.Drawing.Point CursorParkPoint => Screen.VirtualScreen.PrimaryCenter;
+
+    /// <summary>Physical state of a local mouse button as seen by the hooks, even while input is captured.</summary>
+    public bool IsLocalButtonPhysicallyDown(Protocol.MouseButton button)
+    {
+        lock (_keyGate)
+        {
+            return _physicalDownButtons.Contains(button);
+        }
+    }
+
+    /// <summary>
+    /// Injects a button here. Tracked presses are released automatically when a controller leaves; untracked ones
+    /// are expected to be released by the user's own physical button.
+    /// </summary>
+    public void InjectLocalButton(Protocol.MouseButton button, bool down, bool track)
+    {
+        if (track)
+        {
+            _injector.Button(button, down);
+        }
+        else
+        {
+            _injector.ButtonUntracked(button, down);
+        }
+    }
+
+    public void NudgeCursor() => _injector.Nudge();
+
     public void Start()
     {
         _node.Sessions.SessionReady += OnSessionReady;

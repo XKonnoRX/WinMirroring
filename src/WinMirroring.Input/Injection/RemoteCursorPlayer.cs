@@ -63,6 +63,8 @@ internal sealed class RemoteCursorPlayer : IDisposable
     /// <summary>True while some controller drives the cursor.</summary>
     public bool HasOwner => Volatile.Read(ref _owner) is not null;
 
+    public object? Owner => Volatile.Read(ref _owner);
+
     public double CurrentDelayMilliseconds
     {
         get

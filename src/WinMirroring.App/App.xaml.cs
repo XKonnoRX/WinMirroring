@@ -77,6 +77,7 @@ public partial class App : Application
         try
         {
             _services.GetRequiredService<ClipboardSyncService>().Start();
+            _services.GetRequiredService<DragDropCoordinator>().Start();
         }
         catch (Exception ex)
         {
@@ -135,6 +136,7 @@ public partial class App : Application
         services.AddSingleton<InputSharingService>();
         services.AddSingleton<ClipboardSyncService>();
         services.AddSingleton<AudioService>();
+        services.AddSingleton<DragDropCoordinator>();
         services.AddSingleton<MainViewModel>();
         return services.BuildServiceProvider();
     }
@@ -199,6 +201,8 @@ public partial class App : Application
 
         if (_services is not null)
         {
+            _services.GetRequiredService<DragDropCoordinator>().Dispose();
+
             try
             {
                 await _services.GetRequiredService<InputSharingService>().DisposeAsync();

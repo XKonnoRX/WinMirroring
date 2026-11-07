@@ -28,6 +28,11 @@ public sealed partial class MainViewModel
     public partial string ClipboardActivity { get; set; } = string.Empty;
 
     [ObservableProperty]
+    public partial bool ClipboardDragDrop { get; set; }
+
+    partial void OnClipboardDragDropChanged(bool value) => SaveClipboard(s => s.DragDropEnabled = value);
+
+    [ObservableProperty]
     public partial bool AudioSendEnabled { get; set; }
 
     [ObservableProperty]
@@ -58,6 +63,7 @@ public sealed partial class MainViewModel
         ClipboardShareFiles = clipboard.ShareFiles;
         ClipboardMaxInline = clipboard.MaxInlineMegabytes;
         ClipboardDirectPaste = clipboard.MaxDirectPasteMegabytes;
+        ClipboardDragDrop = clipboard.DragDropEnabled;
         ClipboardActivity = _clipboard.LastActivity;
 
         var audio = _node.Settings.Audio;
