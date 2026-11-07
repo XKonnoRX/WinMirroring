@@ -39,6 +39,7 @@ public partial class ScreenViewerWindow : Window
     private readonly ScreenViewer _viewer;
     private readonly DragDropCoordinator? _dragDrop;
     private readonly ClipboardSyncService? _clipboard;
+    private readonly ViewModels.MainViewModel? _quick;
     private readonly DispatcherTimer _statsTimer;
     private readonly DispatcherTimer _noticeTimer;
     private readonly HashSet<MouseButton> _buttonsDown = [];
@@ -62,7 +63,12 @@ public partial class ScreenViewerWindow : Window
         _viewer = viewer;
         _dragDrop = services.GetService<DragDropCoordinator>();
         _clipboard = services.GetService<ClipboardSyncService>();
+        _quick = services.GetService<ViewModels.MainViewModel>();
         UpdateInfo();
+
+        // A tap on the picture while the quick panel is open just closes the panel.
+        Surface.PreviewMouseDown += OnSurfacePreviewDown;
+        Surface.PreviewTouchDown += OnSurfacePreviewDown;
 
         _viewer.InfoChanged += _ => Dispatcher.BeginInvoke(UpdateInfo);
         _viewer.Closed += (_, reason) => Dispatcher.BeginInvoke(() => OnRemoteClosed(reason));
@@ -88,9 +94,10 @@ public partial class ScreenViewerWindow : Window
         }, Dispatcher);
         _statsTimer.Start();
 
-        _noticeTimer = new DispatcherTimer(TimeSpan.FromSeconds(5), DispatcherPriority.Background, (_, _) =>
+        _noticeTimer = new DispatcherTimer(TimeSpan.FromSeconds(4), DispatcherPriority.Background, (_, _) =>
         {
             NoticeText.Text = string.Empty;
+            NoticeBorder.Visibility = Visibility.Collapsed;
             _noticeTimer!.Stop();
         }, Dispatcher);
         _noticeTimer.Stop();
@@ -114,10 +121,15 @@ public partial class ScreenViewerWindow : Window
         var info = _viewer.Info;
         Title = $"{info.Title} — {_viewer.PeerName}";
         TitleText.Text = Title;
-        MonitorPanel.Visibility = info.Kind == "monitor" && info.MonitorCount > 1 ? Visibility.Visible : Visibility.Collapsed;
+        QuickTitle.Text = Title;
+        var monitors = info.Kind == "monitor" && info.MonitorCount > 1 ? Visibility.Visible : Visibility.Collapsed;
+        MonitorPanel.Visibility = monitors;
+        QuickMonitorPanel.Visibility = monitors;
         MonitorText.Text = $"{info.MonitorIndex + 1} из {info.MonitorCount}";
+        QuickMonitorText.Text = $"Монитор {info.MonitorIndex + 1} из {info.MonitorCount}";
         ControlToggle.IsEnabled = info.ControlAllowed;
         KeyboardButton.IsEnabled = info.ControlAllowed;
+        QuickKeyboardButton.IsEnabled = info.ControlAllowed;
         if (!info.ControlAllowed)
         {
             ControlToggle.IsChecked = false;
@@ -128,6 +140,7 @@ public partial class ScreenViewerWindow : Window
     private void ShowNotice(string text)
     {
         NoticeText.Text = text;
+        NoticeBorder.Visibility = Visibility.Visible;
         _noticeTimer.Stop();
         _noticeTimer.Start();
     }
@@ -482,6 +495,7 @@ public partial class ScreenViewerWindow : Window
 
     private void OnToggleKeyboard(object sender, RoutedEventArgs e)
     {
+        QuickPanel.Visibility = Visibility.Collapsed;
         ScreenImage.Focus();
         Keyboard.Focus(ScreenImage);
         TouchKeyboard.Toggle();
@@ -639,13 +653,16 @@ public partial class ScreenViewerWindow : Window
 
     private void OnToggleFullScreen(object sender, RoutedEventArgs e) => ToggleFullScreen();
 
+    private bool IsFullScreen => WindowStyle == WindowStyle.None;
+
     private void ToggleFullScreen()
     {
-        if (WindowStyle == WindowStyle.None)
+        if (IsFullScreen)
         {
             WindowStyle = _styleBeforeFullScreen;
             WindowState = _stateBeforeFullScreen;
             Toolbar.Visibility = Visibility.Visible;
+            FullScreenHandle.Visibility = Visibility.Collapsed;
             Topmost = false;
         }
         else
@@ -656,8 +673,154 @@ public partial class ScreenViewerWindow : Window
             WindowState = WindowState.Normal;
             WindowState = WindowState.Maximized;
             Toolbar.Visibility = Visibility.Collapsed;
+            FullScreenHandle.Visibility = Visibility.Visible;
             Topmost = true;
         }
+
+        FullScreenToggle.IsChecked = IsFullScreen;
+        QuickPanel.Visibility = Visibility.Collapsed;
+    }
+
+    // ---- quick panel -------------------------------------------------------------------------------------
+
+    private void OnToggleQuickPanel(object sender, RoutedEventArgs e)
+    {
+        if (QuickPanel.Visibility == Visibility.Visible)
+        {
+            QuickPanel.Visibility = Visibility.Collapsed;
+            ScreenImage.Focus();
+            return;
+        }
+
+        RefreshQuickPanel();
+        QuickPanel.Visibility = Visibility.Visible;
+    }
+
+    private void CloseQuickPanel()
+    {
+        QuickPanel.Visibility = Visibility.Collapsed;
+        ScreenImage.Focus();
+    }
+
+    private void OnSurfacePreviewDown(object? sender, InputEventArgs e)
+    {
+        if (QuickPanel.Visibility == Visibility.Visible)
+        {
+            CloseQuickPanel();
+            e.Handled = true;
+        }
+    }
+
+    private void RefreshQuickPanel()
+    {
+        FullScreenToggle.IsChecked = IsFullScreen;
+        var peerId = _viewer.Session.PeerId;
+        var peerName = _viewer.PeerName;
+        var hasAudio = _quick is not null;
+        ListenToggle.Visibility = SendSoundToggle.Visibility = KeepSoundToggle.Visibility = hasAudio ? Visibility.Visible : Visibility.Collapsed;
+        if (_quick is null)
+        {
+            return;
+        }
+
+        ListenToggle.Content = $"Звук {peerName} играет здесь";
+        ListenToggle.IsChecked = _quick.IsListeningTo(peerId);
+        SendSoundToggle.Content = $"Звук этого устройства — на {peerName}";
+        SendSoundToggle.IsChecked = _quick.IsSoundSentTo(peerId);
+        KeepSoundToggle.IsChecked = _quick.SoundKeptHere;
+    }
+
+    private void OnFullScreenToggleClick(object sender, RoutedEventArgs e) => ToggleFullScreen();
+
+    private void OnCloseViewer(object sender, RoutedEventArgs e) => Close();
+
+    private void OnControlToggleClick(object sender, RoutedEventArgs e)
+    {
+        if (ControlToggle.IsChecked != true)
+        {
+            ReleaseRemoteInput();
+        }
+    }
+
+    private void OnCropToggleClick(object sender, RoutedEventArgs e)
+    {
+        if (CropToggle.IsChecked == true)
+        {
+            ReleaseRemoteInput();
+            CloseQuickPanel();
+            ShowNotice("Обведите рамкой нужную часть изображения");
+        }
+    }
+
+    private void OnReleaseRemoteInput(object sender, RoutedEventArgs e)
+    {
+        ReleaseRemoteInput();
+        ShowNotice($"Кнопки и клавиши на {_viewer.PeerName} отпущены");
+    }
+
+    private void OnReturnCursor(object sender, RoutedEventArgs e)
+    {
+        if (_quick is not null)
+        {
+            ShowNotice(_quick.ReturnCursor());
+        }
+
+        CloseQuickPanel();
+    }
+
+    private async void OnListenToggleClick(object sender, RoutedEventArgs e)
+    {
+        if (_quick is null)
+        {
+            return;
+        }
+
+        var listen = ListenToggle.IsChecked == true;
+        var ok = await _quick.SetListenAsync(_viewer.Session.PeerId, _viewer.PeerName, listen);
+        ShowNotice(!ok ? $"Нет связи с {_viewer.PeerName}" : listen ? $"Звук {_viewer.PeerName} играет здесь" : $"Звук {_viewer.PeerName} больше не запрашивается");
+        RefreshQuickPanel();
+    }
+
+    private void OnSendSoundToggleClick(object sender, RoutedEventArgs e)
+    {
+        if (_quick is null)
+        {
+            return;
+        }
+
+        if (SendSoundToggle.IsChecked == true)
+        {
+            _quick.SendSoundTo(_viewer.Session.PeerId, _viewer.PeerName);
+            ShowNotice($"Звук этого устройства играет на {_viewer.PeerName}");
+        }
+        else
+        {
+            _quick.SendSoundTo(null);
+            ShowNotice("Звук этого устройства снова следует за вводом и просмотром");
+        }
+
+        RefreshQuickPanel();
+    }
+
+    private void OnKeepSoundToggleClick(object sender, RoutedEventArgs e)
+    {
+        if (_quick is null)
+        {
+            return;
+        }
+
+        if (KeepSoundToggle.IsChecked == true)
+        {
+            _quick.KeepSoundHere();
+            ShowNotice("Звук этого устройства играет только здесь");
+        }
+        else
+        {
+            _quick.SendSoundTo(null);
+            ShowNotice("Звук этого устройства снова следует за вводом и просмотром");
+        }
+
+        RefreshQuickPanel();
     }
 
     private void OnRemoteClosed(string? reason)

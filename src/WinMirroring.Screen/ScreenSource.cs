@@ -39,6 +39,7 @@ internal sealed class ScreenSource : IAsyncDisposable
     private readonly SemaphoreSlim _window = new(MaxInFlight, MaxInFlight);
     private readonly CancellationTokenSource _cts = new();
     private readonly object _gate = new();
+    private long _lastBlockedReport = -10_000;
 
     private WgcCapture _capture;
     private MonitorDescription? _monitor;
@@ -175,6 +176,7 @@ internal sealed class ScreenSource : IAsyncDisposable
 
                 _injector.MoveAbsolute(point.X, point.Y);
                 _injector.Button(button, down: true);
+                ReportIfBlocked();
                 break;
 
             case PointerAction.Up:
@@ -204,6 +206,34 @@ internal sealed class ScreenSource : IAsyncDisposable
         }
 
         _touch.Apply(touchAction, contact, point);
+        if (touchAction == Injection.TouchInjector.Action.Down)
+        {
+            ReportIfBlocked();
+        }
+    }
+
+    /// <summary>Tells the viewer (at most every 10 s) that an elevated window in front swallows its input.</summary>
+    private void ReportIfBlocked()
+    {
+        var now = Environment.TickCount64;
+        if (now - Interlocked.Read(ref _lastBlockedReport) < 10_000 || !WinMirroring.Input.Native.InjectionGuard.IsForegroundAboveUs(out var title))
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _lastBlockedReport, now);
+        _logger.LogInformation("Input from the viewer of {Peer} is blocked by an elevated window: {Title}", Session.PeerName, title);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Session.SendControlAsync(new Core.Messages.InputBlockedMessage(title)).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
+            {
+                _logger.LogDebug("Blocked-input notice not sent: {Message}", ex.Message);
+            }
+        });
     }
 
     /// <summary>Puts a window stream's window in front (before dropping files on it, for example).</summary>

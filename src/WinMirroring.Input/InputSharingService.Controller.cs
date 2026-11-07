@@ -28,6 +28,8 @@ public sealed partial class InputSharingService
 
     private sealed record ReturnHomeCommand : Command;
 
+    private sealed record ReleaseRequestedCommand(string PeerId) : Command;
+
     private sealed record ControlPeerCommand(string PeerId) : Command;
 
     private sealed record SessionLostCommand(string PeerId) : Command;
@@ -371,6 +373,10 @@ public sealed partial class InputSharingService
 
             case ReturnHomeCommand when capture is not null:
                 EndCapture(capture, sendLeave: true, placement: null, "returned by the user");
+                break;
+
+            case ReleaseRequestedCommand released when capture is not null && capture.Session.PeerId == released.PeerId:
+                EndCapture(capture, sendLeave: true, placement: null, "returned from the controlled device");
                 break;
 
             case ControlPeerCommand control:

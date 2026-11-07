@@ -114,6 +114,22 @@ public sealed class InputInjector
         MoveAbsolute(cursor.X, cursor.Y);
     }
 
+    /// <summary>
+    /// A relative one-pixel move and back. Unlike absolute moves, it counts as a mouse being used, so a cursor
+    /// that Windows hid after touch input becomes visible again.
+    /// </summary>
+    public void Wiggle()
+    {
+        foreach (var dx in (ReadOnlySpan<int>)[1, -1])
+        {
+            Send(new INPUT
+            {
+                type = INPUT_MOUSE,
+                u = { mi = new MOUSEINPUT { dx = dx, dy = 0, dwFlags = MOUSEEVENTF_MOVE, dwExtraInfo = InjectionMarker } },
+            });
+        }
+    }
+
     public void Wheel(int delta, bool horizontal)
     {
         Send(new INPUT

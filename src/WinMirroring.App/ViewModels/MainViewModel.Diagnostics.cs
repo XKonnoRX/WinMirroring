@@ -38,13 +38,7 @@ public sealed partial class MainViewModel
             return;
         }
 
-        var listen = !_audio.IsListeningTo(peer.Id);
-        var ok = await _audio.RequestListenAsync(peer.Id, listen);
-        StatusText = !ok
-            ? $"Не удалось связаться с {peer.Name}."
-            : listen
-                ? $"Звук {peer.Name} теперь играет здесь (если на том устройстве включена передача звука). Повторите пункт меню, чтобы отключить."
-                : $"Звук {peer.Name} больше не запрашивается сюда.";
+        await SetListenAsync(peer.Id, peer.Name, !_audio.IsListeningTo(peer.Id));
     }
 
     [RelayCommand(CanExecute = nameof(SelectedIsReady))]
@@ -55,20 +49,7 @@ public sealed partial class MainViewModel
             return;
         }
 
-        if (AudioPinnedTarget is { } current && current.Id == peer.Id)
-        {
-            AudioPinnedTarget = _noDevice;
-            StatusText = $"Звук этого устройства больше не отправляется на {peer.Name} постоянно.";
-            return;
-        }
-
-        if (!AudioSendEnabled)
-        {
-            AudioSendEnabled = true;
-        }
-
-        AudioPinnedTarget = EnsureChoice(peer.Id, peer.Name);
-        StatusText = $"Звук этого устройства играет на {peer.Name}. Повторите пункт меню, чтобы вернуть его сюда.";
+        SendSoundTo(IsSoundSentTo(peer.Id) ? null : peer.Id, peer.Name);
     }
 
     [RelayCommand(CanExecute = nameof(SelectedIsReady))]

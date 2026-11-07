@@ -13,9 +13,32 @@
     </Style>
     <Style TargetType="Button" BasedOn="{StaticResource ToolButton}" />
     <Style TargetType="ToggleButton" BasedOn="{StaticResource ToolButton}" />
+
+    <!-- Quick panel: large targets for fingers -->
+    <Style TargetType="ButtonBase" x:Key="QuickBase">
+      <Setter Property="MinHeight" Value="40" />
+      <Setter Property="Margin" Value="0,3" />
+      <Setter Property="Padding" Value="12,6" />
+      <Setter Property="FontSize" Value="14" />
+      <Setter Property="HorizontalContentAlignment" Value="Left" />
+      <Setter Property="Focusable" Value="False" />
+    </Style>
+    <Style TargetType="Button" x:Key="QuickButton" BasedOn="{StaticResource QuickBase}" />
+    <Style TargetType="ToggleButton" x:Key="QuickToggle" BasedOn="{StaticResource QuickBase}" />
+    <Style TargetType="TextBlock" x:Key="QuickHeader">
+      <Setter Property="Foreground" Value="#9CA3AF" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Margin" Value="2,12,0,2" />
+    </Style>
   </Window.Resources>
-  <DockPanel>
-    <Border x:Name="Toolbar" DockPanel.Dock="Top" Background="#1F2937" Padding="8,4">
+
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+    </Grid.RowDefinitions>
+
+    <Border x:Name="Toolbar" Grid.Row="0" Background="#1F2937" Padding="8,4">
       <DockPanel LastChildFill="False">
         <TextBlock x:Name="TitleText" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="White" FontWeight="SemiBold" Margin="0,0,12,0" TextTrimming="CharacterEllipsis" MaxWidth="360" />
         <StackPanel x:Name="MonitorPanel" DockPanel.Dock="Left" Orientation="Horizontal" Visibility="Collapsed">
@@ -23,23 +46,17 @@
           <TextBlock x:Name="MonitorText" VerticalAlignment="Center" Foreground="#D1D5DB" Margin="6,0" />
           <Button Content="▶" ToolTip="Следующий монитор" Click="OnNextMonitor" MinWidth="32" Padding="6,2" Margin="0" />
         </StackPanel>
-        <TextBlock x:Name="NoticeText" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="#FBBF24" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" MaxWidth="320" />
 
         <TextBlock x:Name="StatsText" DockPanel.Dock="Right" VerticalAlignment="Center" Foreground="#9CA3AF" Margin="12,0,0,0" MinWidth="70" />
+        <Button DockPanel.Dock="Right" Content="☰ Меню" Click="OnToggleQuickPanel" FontWeight="SemiBold"
+                ToolTip="Быстрые параметры: звук, курсор, полноэкранный режим, часть изображения" />
         <Button DockPanel.Dock="Right" Content="Во весь экран (F11)" Click="OnToggleFullScreen" />
-        <Button x:Name="ResetCropButton" DockPanel.Dock="Right" Content="Всё целиком" Click="OnResetCrop" IsEnabled="False" />
-        <ToggleButton x:Name="CropToggle" DockPanel.Dock="Right" Content="Выделить часть"
-                      ToolTip="Обведите рамкой часть изображения: передаваться будет только она" />
-        <Button x:Name="ClipboardButton" DockPanel.Dock="Right" Content="Отправить буфер" Click="OnSendClipboard"
-                ToolTip="Ещё раз отправить содержимое буфера обмена этого устройства (обычно это происходит само при копировании)" />
         <Button x:Name="KeyboardButton" DockPanel.Dock="Right" Content="Клавиатура" Click="OnToggleKeyboard"
                 ToolTip="Экранная клавиатура: нажатия уходят на другое устройство" />
-        <ToggleButton x:Name="ControlToggle" DockPanel.Dock="Right" Content="Управление" IsChecked="True"
-                      ToolTip="Мышь, касания и клавиатура в этом окне управляют другим устройством. Файлы можно перетаскивать в окно и из него" />
       </DockPanel>
     </Border>
 
-    <Grid x:Name="Surface" Background="Black" ClipToBounds="True" AllowDrop="True"
+    <Grid x:Name="Surface" Grid.Row="1" Background="Black" ClipToBounds="True" AllowDrop="True"
           DragEnter="OnSurfaceDragOver" DragOver="OnSurfaceDragOver" Drop="OnSurfaceDrop">
       <Image x:Name="ScreenImage" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"
              RenderOptions.BitmapScalingMode="HighQuality" Focusable="True" FocusVisualStyle="{x:Null}"
@@ -51,5 +68,60 @@
       <TextBlock x:Name="WaitingText" Text="Ожидание изображения…" Foreground="#9CA3AF" FontSize="16"
                  HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />
     </Grid>
-  </DockPanel>
+
+    <Border x:Name="NoticeBorder" Grid.Row="1" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,24"
+            Background="#E61F2937" CornerRadius="6" Padding="14,8" Visibility="Collapsed" IsHitTestVisible="False">
+      <TextBlock x:Name="NoticeText" Foreground="#FBBF24" FontSize="14" TextWrapping="Wrap" MaxWidth="520" />
+    </Border>
+
+    <!-- In full screen the toolbar is gone: this handle opens the quick panel (and the way out). -->
+    <Button x:Name="FullScreenHandle" Grid.Row="1" VerticalAlignment="Top" HorizontalAlignment="Center" Margin="0,2,0,0"
+            Content="☰  Меню" FontSize="14" Padding="18,6" MinHeight="36" Opacity="0.55" Visibility="Collapsed"
+            Background="#CC1F2937" Foreground="White" BorderBrush="#4B5563" Focusable="False"
+            Click="OnToggleQuickPanel" ToolTip="Быстрые параметры и выход из полноэкранного режима" />
+
+    <Border x:Name="QuickPanel" Grid.Row="1" HorizontalAlignment="Right" Width="320" Background="#F21F2937"
+            BorderBrush="#374151" BorderThickness="1,0,0,0" Visibility="Collapsed">
+      <ScrollViewer VerticalScrollBarVisibility="Auto" PanningMode="VerticalOnly">
+        <StackPanel Margin="14,10,14,14">
+          <DockPanel>
+            <Button DockPanel.Dock="Right" Content="✕" Style="{StaticResource QuickButton}" MinWidth="40" HorizontalContentAlignment="Center"
+                    Click="OnToggleQuickPanel" ToolTip="Закрыть панель" />
+            <TextBlock x:Name="QuickTitle" Foreground="White" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+          </DockPanel>
+
+          <TextBlock Style="{StaticResource QuickHeader}" Text="ОКНО" />
+          <ToggleButton x:Name="FullScreenToggle" Style="{StaticResource QuickToggle}" Content="Во весь экран" Click="OnFullScreenToggleClick" />
+          <Button Style="{StaticResource QuickButton}" Content="Закрыть просмотр" Click="OnCloseViewer" />
+
+          <TextBlock Style="{StaticResource QuickHeader}" Text="УПРАВЛЕНИЕ" />
+          <ToggleButton x:Name="ControlToggle" Style="{StaticResource QuickToggle}" Content="Мышь, касания и клавиатура управляют тем устройством" IsChecked="True"
+                        Click="OnControlToggleClick" />
+          <Button x:Name="QuickKeyboardButton" Style="{StaticResource QuickButton}" Content="Экранная клавиатура" Click="OnToggleKeyboard" />
+          <Button Style="{StaticResource QuickButton}" Content="Отпустить зажатые кнопки и клавиши там" Click="OnReleaseRemoteInput" />
+          <Button Style="{StaticResource QuickButton}" Content="Вернуть курсор (общий ввод)" Click="OnReturnCursor"
+                  ToolTip="Если курсор общего ввода застрял на другом устройстве, вернуть его на место" />
+
+          <TextBlock Style="{StaticResource QuickHeader}" Text="ЗВУК" />
+          <ToggleButton x:Name="ListenToggle" Style="{StaticResource QuickToggle}" Click="OnListenToggleClick" />
+          <ToggleButton x:Name="SendSoundToggle" Style="{StaticResource QuickToggle}" Click="OnSendSoundToggleClick" />
+          <ToggleButton x:Name="KeepSoundToggle" Style="{StaticResource QuickToggle}" Content="Звук этого устройства — только здесь" Click="OnKeepSoundToggleClick" />
+
+          <TextBlock Style="{StaticResource QuickHeader}" Text="ИЗОБРАЖЕНИЕ" />
+          <DockPanel x:Name="QuickMonitorPanel">
+            <Button DockPanel.Dock="Left" Style="{StaticResource QuickButton}" Content="◀" MinWidth="48" HorizontalContentAlignment="Center" Click="OnPreviousMonitor" />
+            <Button DockPanel.Dock="Right" Style="{StaticResource QuickButton}" Content="▶" MinWidth="48" HorizontalContentAlignment="Center" Click="OnNextMonitor" />
+            <TextBlock x:Name="QuickMonitorText" Foreground="White" VerticalAlignment="Center" HorizontalAlignment="Center" FontSize="14" />
+          </DockPanel>
+          <ToggleButton x:Name="CropToggle" Style="{StaticResource QuickToggle}" Content="Выделить часть рамкой" Click="OnCropToggleClick"
+                        ToolTip="Обведите рамкой часть изображения: передаваться будет только она" />
+          <Button x:Name="ResetCropButton" Style="{StaticResource QuickButton}" Content="Показать всё целиком" Click="OnResetCrop" IsEnabled="False" />
+
+          <TextBlock Style="{StaticResource QuickHeader}" Text="БУФЕР ОБМЕНА" />
+          <Button x:Name="ClipboardButton" Style="{StaticResource QuickButton}" Content="Отправить буфер обмена ещё раз" Click="OnSendClipboard"
+                  ToolTip="Обычно буфер отправляется сам при копировании; это нужно, если копировали до подключения" />
+        </StackPanel>
+      </ScrollViewer>
+    </Border>
+  </Grid>
 </Window>

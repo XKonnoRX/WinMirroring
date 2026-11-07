@@ -1,6 +1,7 @@
 using System.Drawing;
 using Microsoft.Extensions.Logging;
 using WinMirroring.Input.Layout;
+using WinMirroring.Input.Native;
 using WinMirroring.Input.Screen;
 using WinMirroring.Input.Timing;
 
@@ -22,6 +23,7 @@ namespace WinMirroring.Input.Injection;
 internal sealed class RemoteCursorPlayer : IDisposable
 {
     private const long ResyncAfterIdleMs = 150;
+    private const long BlockedReportIntervalMs = 10_000;
 
     private readonly record struct Sample(long PlayAt, int Dx, int Dy);
 
@@ -38,6 +40,7 @@ internal sealed class RemoteCursorPlayer : IDisposable
     private object? _owner;
     private Point _tracked;
     private long _lastInjectTicks;
+    private long _lastBlockedReportTicks = -BlockedReportIntervalMs;
     private int _pushLeft;
     private int _pushRight;
     private int _pushTop;
@@ -59,6 +62,9 @@ internal sealed class RemoteCursorPlayer : IDisposable
 
     /// <summary>Raised (under the player lock, keep it short) when the cursor is pushed out across an edge.</summary>
     public event Action<object, Edge, float>? EdgeReached;
+
+    /// <summary>Raised (off the player lock, at most every 10 s) when an elevated window swallows our input.</summary>
+    public event Action<object, string>? InjectionBlocked;
 
     /// <summary>True while some controller drives the cursor.</summary>
     public bool HasOwner => Volatile.Read(ref _owner) is not null;
@@ -94,6 +100,12 @@ internal sealed class RemoteCursorPlayer : IDisposable
             Volatile.Write(ref _owner, owner);
             ResetPush();
             _tracked = entry;
+            if (InjectionGuard.IsCursorSuppressed())
+            {
+                // The last input here was touch: Windows hides the cursor until a mouse moves.
+                _injector.Wiggle();
+            }
+
             _injector.MoveAbsolute(entry.X, entry.Y);
             _lastInjectTicks = Environment.TickCount64;
         }
@@ -233,10 +245,23 @@ internal sealed class RemoteCursorPlayer : IDisposable
         }
 
         var nowTicks = Environment.TickCount64;
-        if (nowTicks - _lastInjectTicks > ResyncAfterIdleMs && VirtualScreen.TryGetCursor(out var actual))
+        if (nowTicks - _lastInjectTicks > ResyncAfterIdleMs && VirtualScreen.TryGetCursor(out var actual) && actual != _tracked)
         {
-            // Idle long enough that any difference comes from local input (touch, pen, a local mouse).
-            _tracked = actual;
+            if (InjectionGuard.IsForegroundAboveUs(out var title))
+            {
+                // Windows drops our moves while an elevated window is in front. Keep the position we track, so
+                // the cursor can still be taken back across an edge instead of being stuck here.
+                ReportBlockedLocked(title, nowTicks);
+            }
+            else
+            {
+                // Idle long enough that the difference comes from local input (touch, pen, a local mouse).
+                _tracked = actual;
+                if (InjectionGuard.IsCursorSuppressed())
+                {
+                    _injector.Wiggle();
+                }
+            }
         }
 
         var screen = VirtualScreen.Current;
@@ -290,6 +315,18 @@ internal sealed class RemoteCursorPlayer : IDisposable
     }
 
     private void ResetPush() => _pushLeft = _pushRight = _pushTop = _pushBottom = 0;
+
+    private void ReportBlockedLocked(string title, long nowTicks)
+    {
+        if (nowTicks - _lastBlockedReportTicks < BlockedReportIntervalMs || _owner is not { } owner)
+        {
+            return;
+        }
+
+        _lastBlockedReportTicks = nowTicks;
+        _logger.LogInformation("Injected input is blocked by an elevated window in front: {Title}", title);
+        _ = Task.Run(() => InjectionBlocked?.Invoke(owner, title));
+    }
 
     public void Dispose()
     {

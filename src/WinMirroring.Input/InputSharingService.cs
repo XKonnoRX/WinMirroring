@@ -54,6 +54,7 @@ public sealed partial class InputSharingService : IAsyncDisposable
         _layout = DeviceLayout.FromCells(node.Settings.Input.Layout);
         _player = new RemoteCursorPlayer(_injector, () => _node.Settings.Input.EdgeResistance, logger);
         _player.EdgeReached += OnPlayerEdgeReached;
+        _player.InjectionBlocked += OnInjectionBlocked;
         ApplyInputSettings();
     }
 
@@ -172,6 +173,51 @@ public sealed partial class InputSharingService : IAsyncDisposable
     /// <summary>Brings input back to this device (also bound to Ctrl+Alt+Home while away).</summary>
     public void ReturnHome() => _commands.Writer.TryWrite(new ReturnHomeCommand());
 
+    /// <summary>
+    /// Controller (peer name) says Windows on that device drops our input because an elevated window (title) is in front.
+    /// </summary>
+    public event Action<string, string>? RemoteInputBlocked;
+
+    /// <summary>
+    /// "Return the cursor": sends this device's input home if it is away, and if another device controls this
+    /// one, stops obeying it and asks it to take its input back. Returns what happened, for display.
+    /// </summary>
+    public string? ReturnCursor()
+    {
+        if (IsCapturing)
+        {
+            ReturnHome();
+            return "Ввод возвращён на это устройство.";
+        }
+
+        string? released = null;
+        foreach (var (peerId, state) in _controllers)
+        {
+            if (!state.Active || !_node.Sessions.TryGetSession(peerId, out var session))
+            {
+                continue;
+            }
+
+            _ = SendReleaseRequestAsync(session);
+            ReleaseControl(session, state, "returned by the user here");
+            released = session.PeerName;
+        }
+
+        return released is null ? null : $"Курсор возвращён на {released}.";
+    }
+
+    private async Task SendReleaseRequestAsync(PeerSession session)
+    {
+        try
+        {
+            await session.SendControlAsync(new InputReleaseRequestMessage(), _cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or OperationCanceledException)
+        {
+            _logger.LogDebug("Release request to {Peer} not sent: {Message}", session.PeerName, ex.Message);
+        }
+    }
+
     /// <summary>Sends this device's input to <paramref name="peerId"/> right away, cursor in the middle of its screen.</summary>
     public void ControlPeer(string peerId) => _commands.Writer.TryWrite(new ControlPeerCommand(peerId));
 
@@ -250,11 +296,22 @@ public sealed partial class InputSharingService : IAsyncDisposable
 
     private void OnControlMessage(PeerSession session, ControlMessage message)
     {
-        if (message is not LayoutMessage layout)
+        switch (message)
         {
-            return;
+            case InputReleaseRequestMessage:
+                _logger.LogInformation("{Peer} asks to take the input back", session.PeerName);
+                _commands.Writer.TryWrite(new ReleaseRequestedCommand(session.PeerId));
+                return;
+
+            case InputBlockedMessage blocked:
+                RemoteInputBlocked?.Invoke(session.PeerName, blocked.Window);
+                return;
+
+            case not LayoutMessage:
+                return;
         }
 
+        var layout = (LayoutMessage)message;
         var settings = _node.Settings.Input;
         if (layout.Version <= settings.LayoutVersion)
         {

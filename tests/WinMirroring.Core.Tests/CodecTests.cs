@@ -73,6 +73,13 @@ public class CodecTests
         new ByeMessage(null),
         new AudioStartMessage(7, "a2V5", "opus", 48000, 2, 10),
         new AudioStopMessage(7),
+        new AudioRouteRequestMessage(true),
+        new ScreenRequestMessage(5, 1),
+        new ScreenStopMessage(5, "closed"),
+        new LogRequestMessage(3),
+        new LogResponseMessage(3, "app.log", "text", null),
+        new InputReleaseRequestMessage(),
+        new InputBlockedMessage("Диспетчер задач"),
     };
 
     [Theory]

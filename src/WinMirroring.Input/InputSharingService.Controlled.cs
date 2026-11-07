@@ -168,6 +168,26 @@ public sealed partial class InputSharingService
         }
     }
 
+    private void OnInjectionBlocked(object owner, string window)
+    {
+        if (owner is PeerSession session)
+        {
+            _ = SendBlockedAsync(session, window);
+        }
+    }
+
+    private async Task SendBlockedAsync(PeerSession session, string window)
+    {
+        try
+        {
+            await session.SendControlAsync(new Core.Messages.InputBlockedMessage(window), _cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or OperationCanceledException)
+        {
+            _logger.LogDebug("Blocked-input notice to {Peer} not sent: {Message}", session.PeerName, ex.Message);
+        }
+    }
+
     private void OnPlayerEdgeReached(object owner, Edge edge, float relative)
     {
         if (owner is PeerSession session && _controllers.TryGetValue(session.PeerId, out var state))

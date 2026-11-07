@@ -23,6 +23,8 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(LogRequestMessage), "log-request")]
 [JsonDerivedType(typeof(LogResponseMessage), "log-response")]
 [JsonDerivedType(typeof(AudioRouteRequestMessage), "audio-route")]
+[JsonDerivedType(typeof(InputReleaseRequestMessage), "input-release")]
+[JsonDerivedType(typeof(InputBlockedMessage), "input-blocked")]
 public abstract record ControlMessage;
 
 /// <summary>First message in each direction. The server adds a challenge the client must sign.</summary>
@@ -76,6 +78,12 @@ public sealed record ScreenStreamMessage(uint StreamId, string Kind, string Titl
 
 /// <summary>Either side: the stream ends.</summary>
 public sealed record ScreenStopMessage(uint StreamId, string? Reason) : ControlMessage;
+
+/// <summary>Controlled → controller: take your input back (the user pressed "return the cursor" here).</summary>
+public sealed record InputReleaseRequestMessage : ControlMessage;
+
+/// <summary>Controlled → controller: an elevated window in front (<see cref="Window"/>) swallows the injected input.</summary>
+public sealed record InputBlockedMessage(string Window) : ControlMessage;
 
 /// <summary>Paired device asks for the tail of this device's application log (troubleshooting).</summary>
 public sealed record LogRequestMessage(uint RequestId) : ControlMessage;
