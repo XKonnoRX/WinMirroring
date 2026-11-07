@@ -36,6 +36,7 @@ public sealed partial class MainViewModel : ObservableObject
         WinMirroring.Clipboard.ClipboardSyncService clipboard,
         WinMirroring.Audio.AudioService audio,
         WinMirroring.Screen.ScreenStreamingService screen,
+        DialogPairingUi pairingUi,
         ILogger<MainViewModel> logger)
     {
         _node = node;
@@ -89,6 +90,7 @@ public sealed partial class MainViewModel : ObservableObject
 
         InitializeMedia();
         InitializeScreen();
+        pairingUi.StatusChanged += text => _dispatcher.InvokeAsync(() => StatusText = text);
 
         _statsTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => RefreshStats(), _dispatcher);
         _statsTimer.Start();
@@ -198,11 +200,11 @@ public sealed partial class MainViewModel : ObservableObject
         }
 
         IsBusy = true;
-        StatusText = $"Сопряжение с {peer.Name}: подтвердите запрос на другом устройстве и введите PIN.";
+        StatusText = $"Отправляю запрос на сопряжение на {peer.Name}…";
         try
         {
-            var ok = await _node.PairAsync(peer.Id);
-            StatusText = ok ? $"Сопряжено с {peer.Name}." : $"Сопряжение с {peer.Name} не выполнено.";
+            // Progress and the outcome (with the confirmation code and the reason) come from DialogPairingUi.
+            await _node.PairAsync(peer.Id);
         }
         catch (Exception ex)
         {

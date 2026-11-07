@@ -10,25 +10,23 @@
     <TextBlock x:Name="TitleText" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap" />
     <TextBlock x:Name="DescriptionText" Margin="0,8,0,0" TextWrapping="Wrap" />
 
-    <Border Background="{StaticResource PanelBrush}" CornerRadius="6" Padding="10" Margin="0,12,0,0">
+    <TextBlock Style="{StaticResource Caption}" Text="Код подтверждения (тот же, что на другом устройстве)" HorizontalAlignment="Center" Margin="0,16,0,0" />
+    <TextBlock x:Name="CodeText" FontFamily="Consolas" FontSize="34" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,2,0,12" />
+
+    <Border Background="{StaticResource PanelBrush}" CornerRadius="6" Padding="10" Margin="0,0,0,16">
       <StackPanel>
-        <TextBlock Style="{StaticResource Caption}" Text="Отпечаток другого устройства" />
-        <TextBlock x:Name="PeerFingerprintText" FontFamily="Consolas" FontSize="14" />
-        <TextBlock Style="{StaticResource Caption}" Text="Отпечаток этого устройства" Margin="0,6,0,0" />
-        <TextBlock x:Name="LocalFingerprintText" FontFamily="Consolas" FontSize="14" />
+        <TextBlock Style="{StaticResource Caption}">
+          <Run Text="Другое устройство:" /> <Run x:Name="PeerFingerprintRun" FontFamily="Consolas" />
+        </TextBlock>
+        <TextBlock Style="{StaticResource Caption}">
+          <Run Text="Это устройство:" /> <Run x:Name="LocalFingerprintRun" FontFamily="Consolas" />
+        </TextBlock>
       </StackPanel>
     </Border>
 
-    <TextBlock x:Name="PinText" FontFamily="Consolas" FontSize="40" FontWeight="Bold"
-               HorizontalAlignment="Center" Margin="0,18,0,6" Visibility="Collapsed" />
-    <TextBox x:Name="PinBox" FontFamily="Consolas" FontSize="30" MaxLength="6"
-             HorizontalContentAlignment="Center" Margin="0,18,0,6" Visibility="Collapsed" />
-
-    <TextBlock x:Name="HintText" Style="{StaticResource Caption}" HorizontalAlignment="Center" Margin="0,0,0,16" />
-
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-      <Button x:Name="AcceptButton" MinWidth="110" IsDefault="True" Click="OnAccept" />
-      <Button x:Name="RejectButton" MinWidth="110" IsCancel="True" Margin="0" />
+      <Button Content="Принять" MinWidth="110" IsDefault="True" Click="OnAccept" FontWeight="SemiBold" />
+      <Button Content="Отклонить" MinWidth="110" IsCancel="True" Margin="0" />
     </StackPanel>
   </StackPanel>
 </Window>

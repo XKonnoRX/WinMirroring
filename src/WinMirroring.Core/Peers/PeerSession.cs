@@ -42,7 +42,7 @@ public sealed class PeerSession : IAsyncDisposable
     private readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private TaskCompletionSource<ControlMessage>? _pairingReply;
-    private ResponderPairing? _responderPairing;
+    private CancellationTokenSource? _incomingConfirmation;
     private Task? _run;
     private long _lastReceivedTicks = Environment.TickCount64;
     private int _closeSignaled;
@@ -101,9 +101,6 @@ public sealed class PeerSession : IAsyncDisposable
 
     /// <summary>Environment.TickCount64 when the last frame of any channel arrived from the peer.</summary>
     public long LastReceivedTicks => Volatile.Read(ref _lastReceivedTicks);
-
-    /// <summary>Fixed PIN for automated tests; null means a random PIN is generated and the UI is asked.</summary>
-    public string? PinOverride { get; init; }
 
     public event Action<PeerSession>? StateChanged;
 
@@ -190,7 +187,13 @@ public sealed class PeerSession : IAsyncDisposable
 
     // ---- initiator side of pairing -------------------------------------------------------------------------
 
-    /// <summary>Runs PIN pairing as the initiator. The responder displays the PIN; this side asks the user for it.</summary>
+    /// <summary>The confirmation code both sides show for this pair of certificates.</summary>
+    public string ConfirmationCode => PairingCrypto.ConfirmationCode(_identity.Fingerprint, PeerFingerprint);
+
+    /// <summary>
+    /// Asks the peer to pair; its user only has to press Accept. Both certificates are already proven by the
+    /// handshake, so accepting simply pins them on both sides. Both screens show the same confirmation code.
+    /// </summary>
     public async Task<bool> PairAsync(CancellationToken ct = default)
     {
         if (!TrySetState(SessionState.Unpaired, SessionState.Pairing))
@@ -198,7 +201,7 @@ public sealed class PeerSession : IAsyncDisposable
             return State == SessionState.Ready;
         }
 
-        var prompt = new PairingPrompt(PeerId, PeerName, PeerFingerprint, _identity.Fingerprint, null);
+        var prompt = new PairingPrompt(PeerId, PeerName, PeerFingerprint, _identity.Fingerprint, ConfirmationCode);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token);
         timeout.CancelAfter(ProtocolConstants.PairingTimeout);
         var token = timeout.Token;
@@ -206,29 +209,11 @@ public sealed class PeerSession : IAsyncDisposable
         try
         {
             _pairingReply = NewReply();
+            _pairingUi.PairingStarted(prompt);
             await SendControlAsync(new PairRequestMessage(), token).ConfigureAwait(false);
 
-            var first = await _pairingReply.Task.WaitAsync(token).ConfigureAwait(false);
-            if (first is not PairChallengeMessage challenge)
-            {
-                return Fail(prompt, first is PairResultMessage r ? r.Reason : "protocol-error");
-            }
-
-            var nonce = Convert.FromBase64String(challenge.Nonce);
-            var pin = PinOverride ?? await _pairingUi.RequestPinAsync(prompt, token).ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(pin))
-            {
-                await SendControlAsync(new PairCancelMessage("cancelled"), token).ConfigureAwait(false);
-                return Fail(prompt, "cancelled");
-            }
-
-            var key = PairingCrypto.DeriveKey(pin);
-            _pairingReply = NewReply();
-            var proof = PairingCrypto.ComputeProof(key, PairingRole.Initiator, _identity.Fingerprint, PeerFingerprint, nonce);
-            await SendControlAsync(new PairProofMessage(Convert.ToBase64String(proof)), token).ConfigureAwait(false);
-
-            var second = await _pairingReply.Task.WaitAsync(token).ConfigureAwait(false);
-            if (second is not PairResultMessage result)
+            var reply = await _pairingReply.Task.WaitAsync(token).ConfigureAwait(false);
+            if (reply is not PairResultMessage result)
             {
                 return Fail(prompt, "protocol-error");
             }
@@ -236,12 +221,6 @@ public sealed class PeerSession : IAsyncDisposable
             if (!result.Ok)
             {
                 return Fail(prompt, result.Reason ?? "rejected");
-            }
-
-            var expected = PairingCrypto.ComputeProof(key, PairingRole.Responder, _identity.Fingerprint, PeerFingerprint, nonce);
-            if (!PairingCrypto.ProofMatches(expected, result.Proof))
-            {
-                return Fail(prompt, "responder-proof-mismatch");
             }
 
             await _onPaired(this).ConfigureAwait(false);
@@ -286,29 +265,32 @@ public sealed class PeerSession : IAsyncDisposable
 
     // ---- responder side of pairing -------------------------------------------------------------------------
 
-    private sealed record ResponderPairing(byte[] Key, byte[] Nonce, PairingPrompt Prompt);
-
     private async Task HandlePairRequestAsync()
     {
         if (!TrySetState(SessionState.Unpaired, SessionState.Pairing))
         {
-            await SendControlAsync(new PairResultMessage(false, null, "not-pairable"), _cts.Token).ConfigureAwait(false);
+            await SendControlAsync(new PairResultMessage(false, "not-pairable"), _cts.Token).ConfigureAwait(false);
             return;
         }
 
-        var pin = PinOverride ?? PairingCrypto.GeneratePin();
-        var prompt = new PairingPrompt(PeerId, PeerName, PeerFingerprint, _identity.Fingerprint, pin);
+        var prompt = new PairingPrompt(PeerId, PeerName, PeerFingerprint, _identity.Fingerprint, ConfirmationCode);
+        var confirmation = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+        confirmation.CancelAfter(ProtocolConstants.PairingTimeout);
+        _incomingConfirmation = confirmation;
 
         bool accepted;
         try
         {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
-            timeout.CancelAfter(ProtocolConstants.PairingTimeout);
-            accepted = await _pairingUi.ConfirmIncomingPairingAsync(prompt, timeout.Token).ConfigureAwait(false);
+            accepted = await _pairingUi.ConfirmIncomingPairingAsync(prompt, confirmation.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             accepted = false;
+        }
+        finally
+        {
+            _incomingConfirmation = null;
+            confirmation.Dispose();
         }
 
         if (State != SessionState.Pairing)
@@ -319,56 +301,31 @@ public sealed class PeerSession : IAsyncDisposable
 
         if (!accepted)
         {
-            _responderPairing = null;
             TrySetState(SessionState.Pairing, SessionState.Unpaired);
-            await SendControlAsync(new PairResultMessage(false, null, "rejected"), _cts.Token).ConfigureAwait(false);
+            await SendControlAsync(new PairResultMessage(false, "rejected"), _cts.Token).ConfigureAwait(false);
             _pairingUi.PairingFinished(prompt, false, "rejected");
             return;
         }
 
-        var nonce = PairingCrypto.GenerateNonce();
-        _responderPairing = new ResponderPairing(PairingCrypto.DeriveKey(pin), nonce, prompt);
-        await SendControlAsync(new PairChallengeMessage(Convert.ToBase64String(nonce)), _cts.Token).ConfigureAwait(false);
-    }
-
-    private async Task HandlePairProofAsync(PairProofMessage message)
-    {
-        var pending = _responderPairing;
-        if (pending is null || State != SessionState.Pairing)
-        {
-            await SendControlAsync(new PairResultMessage(false, null, "unexpected"), _cts.Token).ConfigureAwait(false);
-            return;
-        }
-
-        _responderPairing = null;
-        var expected = PairingCrypto.ComputeProof(pending.Key, PairingRole.Initiator, PeerFingerprint, _identity.Fingerprint, pending.Nonce);
-        if (!PairingCrypto.ProofMatches(expected, message.Proof))
-        {
-            TrySetState(SessionState.Pairing, SessionState.Unpaired);
-            await SendControlAsync(new PairResultMessage(false, null, "wrong-pin"), _cts.Token).ConfigureAwait(false);
-            _pairingUi.PairingFinished(pending.Prompt, false, "wrong-pin");
-            _logger.LogWarning("Pairing with {Peer} failed: wrong PIN", PeerName);
-            return;
-        }
-
-        var proof = PairingCrypto.ComputeProof(pending.Key, PairingRole.Responder, PeerFingerprint, _identity.Fingerprint, pending.Nonce);
         await _onPaired(this).ConfigureAwait(false);
         TrySetState(SessionState.Pairing, SessionState.Ready);
-        await SendControlAsync(new PairResultMessage(true, Convert.ToBase64String(proof), null), _cts.Token).ConfigureAwait(false);
-        _pairingUi.PairingFinished(pending.Prompt, true, null);
+        await SendControlAsync(new PairResultMessage(true, null), _cts.Token).ConfigureAwait(false);
+        _pairingUi.PairingFinished(prompt, true, null);
         _logger.LogInformation("Paired with {Peer} ({Fingerprint})", PeerName, CertificateFingerprint.ToDisplay(PeerFingerprint));
     }
 
     private void HandlePairCancel(PairCancelMessage message)
     {
-        var pending = _responderPairing;
-        _responderPairing = null;
-        if (TrySetState(SessionState.Pairing, SessionState.Unpaired) && pending is not null)
+        // The initiator gave up: close our confirmation dialog, if it is still open.
+        try
         {
-            _pairingUi.PairingFinished(pending.Prompt, false, message.Reason ?? "cancelled");
+            _incomingConfirmation?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
         }
 
-        _pairingReply?.TrySetResult(new PairResultMessage(false, null, message.Reason ?? "cancelled"));
+        _pairingReply?.TrySetResult(new PairResultMessage(false, message.Reason ?? "cancelled"));
     }
 
     // ---- loops ---------------------------------------------------------------------------------------------
@@ -492,15 +449,11 @@ public sealed class PeerSession : IAsyncDisposable
                 _ = Task.Run(() => GuardAsync(HandlePairRequestAsync), ct);
                 return false;
 
-            case PairProofMessage proof:
-                await GuardAsync(() => HandlePairProofAsync(proof)).ConfigureAwait(false);
-                return false;
-
             case PairCancelMessage cancel:
                 HandlePairCancel(cancel);
                 return false;
 
-            case PairChallengeMessage or PairResultMessage:
+            case PairResultMessage:
                 if (_pairingReply?.TrySetResult(message) != true)
                 {
                     _logger.LogDebug("Unexpected {Message} from {Peer}", message.GetType().Name, PeerName);

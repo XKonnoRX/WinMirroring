@@ -5,52 +5,30 @@ namespace WinMirroring.Core.Tests;
 
 public class PairingCryptoTests
 {
+    private const string Laptop = "4F1A9C0D33B2E7A1C5D6F7081920AB3C4D5E6F708192A3B4C5D6E7F80910A1B2";
+    private const string Tablet = "A1B2C3D4E5F60718293A4B5C6D7E8F90A1B2C3D4E5F60718293A4B5C6D7E8F90";
+
     [Fact]
-    public void BothSidesComputeTheSameProofFromTheSamePin()
+    public void BothDevicesShowTheSameCode()
     {
-        var nonce = PairingCrypto.GenerateNonce();
-        var initiatorKey = PairingCrypto.DeriveKey("123 456");
-        var responderKey = PairingCrypto.DeriveKey("123456");
-
-        var fromInitiator = PairingCrypto.ComputeProof(initiatorKey, PairingRole.Initiator, "aa", "BB", nonce);
-        var expectedByResponder = PairingCrypto.ComputeProof(responderKey, PairingRole.Initiator, "AA", "bb", nonce);
-
-        Assert.True(PairingCrypto.ProofMatches(expectedByResponder, Convert.ToBase64String(fromInitiator)));
+        Assert.Equal(PairingCrypto.ConfirmationCode(Laptop, Tablet), PairingCrypto.ConfirmationCode(Tablet, Laptop));
+        Assert.Equal(PairingCrypto.ConfirmationCode(Laptop, Tablet), PairingCrypto.ConfirmationCode(Laptop.ToLowerInvariant(), Tablet));
     }
 
     [Fact]
-    public void ProofDependsOnPinRoleFingerprintsAndNonce()
+    public void CodeIsSixDigitsInTwoGroups()
     {
-        var nonce = PairingCrypto.GenerateNonce();
-        var key = PairingCrypto.DeriveKey("123456");
-        var baseline = PairingCrypto.ComputeProof(key, PairingRole.Initiator, "AA", "BB", nonce);
+        var code = PairingCrypto.ConfirmationCode(Laptop, Tablet);
 
-        Assert.NotEqual(baseline, PairingCrypto.ComputeProof(PairingCrypto.DeriveKey("654321"), PairingRole.Initiator, "AA", "BB", nonce));
-        Assert.NotEqual(baseline, PairingCrypto.ComputeProof(key, PairingRole.Responder, "AA", "BB", nonce));
-        Assert.NotEqual(baseline, PairingCrypto.ComputeProof(key, PairingRole.Initiator, "BB", "AA", nonce));
-        Assert.NotEqual(baseline, PairingCrypto.ComputeProof(key, PairingRole.Initiator, "AA", "BB", PairingCrypto.GenerateNonce()));
+        Assert.Matches("^[0-9]{3} [0-9]{3}$", code);
     }
 
     [Fact]
-    public void ProofMatchesRejectsBrokenInput()
+    public void AnotherCertificateGivesAnotherCode()
     {
-        var expected = PairingCrypto.ComputeProof(PairingCrypto.DeriveKey("1"), PairingRole.Initiator, "A", "B", new byte[32]);
+        var impostor = "0" + Tablet[1..];
 
-        Assert.False(PairingCrypto.ProofMatches(expected, null));
-        Assert.False(PairingCrypto.ProofMatches(expected, ""));
-        Assert.False(PairingCrypto.ProofMatches(expected, "not base64!"));
-        Assert.False(PairingCrypto.ProofMatches(expected, Convert.ToBase64String(new byte[32])));
-    }
-
-    [Fact]
-    public void GeneratedPinHasSixDigits()
-    {
-        for (var i = 0; i < 100; i++)
-        {
-            var pin = PairingCrypto.GeneratePin();
-            Assert.Equal(6, pin.Length);
-            Assert.All(pin, c => Assert.True(char.IsAsciiDigit(c)));
-        }
+        Assert.NotEqual(PairingCrypto.ConfirmationCode(Laptop, Tablet), PairingCrypto.ConfirmationCode(Laptop, impostor));
     }
 
     [Theory]

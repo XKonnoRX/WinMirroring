@@ -9,8 +9,6 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(AuthMessage), "auth")]
 [JsonDerivedType(typeof(AuthResultMessage), "auth-result")]
 [JsonDerivedType(typeof(PairRequestMessage), "pair-request")]
-[JsonDerivedType(typeof(PairChallengeMessage), "pair-challenge")]
-[JsonDerivedType(typeof(PairProofMessage), "pair-proof")]
 [JsonDerivedType(typeof(PairResultMessage), "pair-result")]
 [JsonDerivedType(typeof(PairCancelMessage), "pair-cancel")]
 [JsonDerivedType(typeof(PingMessage), "ping")]
@@ -39,13 +37,11 @@ public sealed record AuthMessage(string Signature, string ServerFingerprint, boo
 
 public sealed record AuthResultMessage(bool Ok, bool Paired, string? Reason) : ControlMessage;
 
+/// <summary>Initiator → responder: please ask your user to accept pairing with me.</summary>
 public sealed record PairRequestMessage : ControlMessage;
 
-public sealed record PairChallengeMessage(string Nonce) : ControlMessage;
-
-public sealed record PairProofMessage(string Proof) : ControlMessage;
-
-public sealed record PairResultMessage(bool Ok, string? Proof, string? Reason) : ControlMessage;
+/// <summary>Responder → initiator: the user accepted (both sides now pin each other) or not.</summary>
+public sealed record PairResultMessage(bool Ok, string? Reason) : ControlMessage;
 
 public sealed record PairCancelMessage(string? Reason) : ControlMessage;
 

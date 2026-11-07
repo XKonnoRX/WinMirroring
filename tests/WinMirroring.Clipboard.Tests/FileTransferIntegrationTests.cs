@@ -105,7 +105,6 @@ public sealed class FileTransferIntegrationTests : IAsyncLifetime
                 DiscoveryPort = discoveryPort,
                 TransportPort = FreeTcpPort(),
                 ManualAddresses = [manualAddress],
-                PinOverride = "112233",
             },
             new AcceptAll(),
             NullLoggerFactory.Instance);
@@ -142,7 +141,5 @@ public sealed class FileTransferIntegrationTests : IAsyncLifetime
     private sealed class AcceptAll : IPairingUserInterface
     {
         public Task<bool> ConfirmIncomingPairingAsync(PairingPrompt prompt, CancellationToken ct) => Task.FromResult(true);
-
-        public Task<string?> RequestPinAsync(PairingPrompt prompt, CancellationToken ct) => Task.FromResult<string?>(null);
     }
 }

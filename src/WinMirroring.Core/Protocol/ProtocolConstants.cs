@@ -5,8 +5,8 @@ namespace WinMirroring.Core.Protocol;
 /// <summary>Wire-level constants shared by every node. Bump <see cref="Version"/> on incompatible changes.</summary>
 public static class ProtocolConstants
 {
-    /// <summary>2: timestamped mouse motion and keepalives on the Input channel.</summary>
-    public const int Version = 2;
+    /// <summary>2: timestamped mouse motion and keepalives. 3: pairing by confirmation, no PIN.</summary>
+    public const int Version = 3;
 
     public const int DefaultDiscoveryPort = 47620;
     public const int DefaultTransportPort = 47621;

@@ -135,7 +135,6 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
                 DiscoveryPort = discoveryPort,
                 TransportPort = FreeTcpPort(),
                 ManualAddresses = [manualAddress],
-                PinOverride = "445566",
             },
             new AcceptAll(),
             NullLoggerFactory.Instance);
@@ -172,7 +171,5 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
     private sealed class AcceptAll : IPairingUserInterface
     {
         public Task<bool> ConfirmIncomingPairingAsync(PairingPrompt prompt, CancellationToken ct) => Task.FromResult(true);
-
-        public Task<string?> RequestPinAsync(PairingPrompt prompt, CancellationToken ct) => Task.FromResult<string?>(null);
     }
 }

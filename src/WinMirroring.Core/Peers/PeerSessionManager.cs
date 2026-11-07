@@ -48,9 +48,6 @@ public sealed class PeerSessionManager : IAsyncDisposable
         _logger = logger;
     }
 
-    /// <summary>Fixed PIN for automated tests; propagated to every session.</summary>
-    public string? PinOverride { get; set; }
-
     public IReadOnlyCollection<PeerSession> Sessions => _sessions.Values.ToList();
 
     public event Action<PeerSession>? SessionReady;
@@ -262,10 +259,7 @@ public sealed class PeerSessionManager : IAsyncDisposable
 
     private async Task<PeerSession> RegisterSessionAsync(PeerConnection connection, HandshakeResult handshake)
     {
-        var session = new PeerSession(connection, _identity, handshake, _pairingUi, OnPairedAsync, _logger)
-        {
-            PinOverride = PinOverride,
-        };
+        var session = new PeerSession(connection, _identity, handshake, _pairingUi, OnPairedAsync, _logger);
 
         PeerSession? loser = null;
         PeerSession winner;

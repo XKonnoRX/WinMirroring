@@ -27,7 +27,6 @@ var nodeOptions = new NodeOptions
     DiscoveryPort = options.DiscoveryPort,
     TransportPort = options.TransportPort,
     ManualAddresses = options.ManualAddresses,
-    PinOverride = options.Pin,
 };
 
 await using var node = new MirroringNode(nodeOptions, new ConsolePairingUi(options.AutoAccept), loggerFactory);

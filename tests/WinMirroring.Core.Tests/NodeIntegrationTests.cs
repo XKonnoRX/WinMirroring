@@ -11,7 +11,7 @@ namespace WinMirroring.Core.Tests;
 /// <summary>Two real nodes on loopback: discovery by probe, PIN pairing, pinned reconnect.</summary>
 public sealed class NodeIntegrationTests : IAsyncLifetime
 {
-    private const string Pin = "246810";
+    private readonly Dictionary<MirroringNode, FixedAnswerPairingUi> _ui = [];
 
     private readonly List<MirroringNode> _nodes = [];
     private readonly List<string> _directories = [];
@@ -58,6 +58,10 @@ public sealed class NodeIntegrationTests : IAsyncLifetime
         var paired = await a.PairAsync(b.Identity.Id, ct);
         Assert.True(paired, "pairing failed");
 
+        // Nothing typed anywhere; both screens showed the same confirmation code.
+        Assert.NotNull(_ui[a].ShownCode);
+        Assert.Equal(_ui[a].ShownCode, _ui[b].ShownCode);
+
         await WaitUntilAsync(() => IsReady(a, b), TimeSpan.FromSeconds(10), "A has no ready session to B", ct);
         await WaitUntilAsync(() => IsReady(b, a), TimeSpan.FromSeconds(10), "B has no ready session to A", ct);
 
@@ -84,13 +88,13 @@ public sealed class NodeIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task WrongPinIsRejected()
+    public async Task RejectedPairingIsNotStored()
     {
         var ct = TestContext.Current.CancellationToken;
         var discoveryA = FreeUdpPort();
         var discoveryB = FreeUdpPort();
-        var a = CreateNode("WrongA", discoveryA, FreeTcpPort(), $"127.0.0.1:{discoveryB}", pin: "111111");
-        var b = CreateNode("WrongB", discoveryB, FreeTcpPort(), $"127.0.0.1:{discoveryA}", pin: "222222");
+        var a = CreateNode("RejectA", discoveryA, FreeTcpPort(), $"127.0.0.1:{discoveryB}");
+        var b = CreateNode("RejectB", discoveryB, FreeTcpPort(), $"127.0.0.1:{discoveryA}", accept: false);
 
         await a.StartAsync();
         await b.StartAsync();
@@ -110,10 +114,11 @@ public sealed class NodeIntegrationTests : IAsyncLifetime
     private static bool IsReady(MirroringNode from, MirroringNode to) =>
         from.Sessions.TryGetSession(to.Identity.Id, out var session) && session.State == SessionState.Ready;
 
-    private MirroringNode CreateNode(string name, int discoveryPort, int transportPort, string manualAddress, string pin = Pin)
+    private MirroringNode CreateNode(string name, int discoveryPort, int transportPort, string manualAddress, bool accept = true)
     {
         var directory = Path.Combine(Path.GetTempPath(), "WinMirroring.Tests", Guid.NewGuid().ToString("N"));
         _directories.Add(directory);
+        var ui = new FixedAnswerPairingUi(accept);
 
         var node = new MirroringNode(
             new NodeOptions
@@ -124,10 +129,10 @@ public sealed class NodeIntegrationTests : IAsyncLifetime
                 DiscoveryPort = discoveryPort,
                 TransportPort = transportPort,
                 ManualAddresses = [manualAddress],
-                PinOverride = pin,
             },
-            new AutoAcceptPairingUi(),
+            ui,
             NullLoggerFactory.Instance);
+        _ui[node] = ui;
 
         var loopback = NetworkInterfaceCatalog.Enumerate(includeLoopback: true).First(i => i.IsLoopback);
         node.Settings.SelectedInterfaceIds.Add(loopback.Id);
@@ -164,10 +169,17 @@ public sealed class NodeIntegrationTests : IAsyncLifetime
         return ((IPEndPoint)socket.Client.LocalEndPoint!).Port;
     }
 
-    private sealed class AutoAcceptPairingUi : IPairingUserInterface
+    /// <summary>Plays the user on the device being asked; records the code each side was shown.</summary>
+    private sealed class FixedAnswerPairingUi(bool accept) : IPairingUserInterface
     {
-        public Task<bool> ConfirmIncomingPairingAsync(PairingPrompt prompt, CancellationToken ct) => Task.FromResult(true);
+        public string? ShownCode { get; private set; }
 
-        public Task<string?> RequestPinAsync(PairingPrompt prompt, CancellationToken ct) => Task.FromResult<string?>(null);
+        public Task<bool> ConfirmIncomingPairingAsync(PairingPrompt prompt, CancellationToken ct)
+        {
+            ShownCode = prompt.ConfirmationCode;
+            return Task.FromResult(accept);
+        }
+
+        public void PairingStarted(PairingPrompt prompt) => ShownCode = prompt.ConfirmationCode;
     }
 }

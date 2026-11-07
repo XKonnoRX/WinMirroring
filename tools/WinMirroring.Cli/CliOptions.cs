@@ -16,8 +16,6 @@ internal sealed class CliOptions
 
     public bool Loopback { get; private set; }
 
-    public string? Pin { get; private set; }
-
     public string? PairWith { get; private set; }
 
     public bool AutoAccept { get; private set; }
@@ -55,7 +53,6 @@ internal sealed class CliOptions
                     case "--port": options.TransportPort = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                     case "--manual": options.ManualAddresses.Add(Next()); break;
                     case "--loopback": options.Loopback = true; break;
-                    case "--pin": options.Pin = Next(); break;
                     case "--pair": options.PairWith = Next(); break;
                     case "--accept": options.AutoAccept = true; break;
                     case "--exit-when-ready": options.ExitWhenReady = true; break;
@@ -89,7 +86,6 @@ internal sealed class CliOptions
               --port <port>             TCP transport port (default 47621)
               --manual <host[:port]>    peer address to probe (repeatable; port = peer's discovery port)
               --loopback                include the loopback interface (several nodes on one machine)
-              --pin <digits>            fixed PIN instead of a random one (both sides, for tests)
               --pair <name|id>          start PIN pairing with this peer once it is discovered
               --accept                  auto-accept incoming pairing requests
               --exit-when-ready         exit with code 0 after the first paired session is ready

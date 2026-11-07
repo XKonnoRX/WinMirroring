@@ -26,9 +26,6 @@ public sealed class NodeOptions
     public int? TransportPort { get; init; }
 
     public IReadOnlyList<string> ManualAddresses { get; init; } = [];
-
-    /// <summary>Fixed PIN for automated tests.</summary>
-    public string? PinOverride { get; init; }
 }
 
 /// <summary>
@@ -106,10 +103,7 @@ public sealed class MirroringNode : IAsyncDisposable
             });
         }
 
-        Sessions = new PeerSessionManager(Identity, Settings, SaveSettings, Peers, pairingUi, loggerFactory.CreateLogger<PeerSessionManager>())
-        {
-            PinOverride = options.PinOverride,
-        };
+        Sessions = new PeerSessionManager(Identity, Settings, SaveSettings, Peers, pairingUi, loggerFactory.CreateLogger<PeerSessionManager>());
 
         Network = NetworkSelection.Resolve(Settings.SelectedInterfaceIds, options.IncludeLoopback);
     }
