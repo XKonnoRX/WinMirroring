@@ -38,6 +38,15 @@ public partial class ScreenViewerWindow : Window
         Key.RightCtrl, Key.RightAlt, Key.Divide, Key.NumLock, Key.PrintScreen, Key.LWin, Key.RWin, Key.Apps,
     ];
 
+    /// <summary>Modifier keys we keep in sync with the other device: (WPF key, virtual-key, extended-key flag).</summary>
+    private static readonly (Key Key, ushort Vk, bool Extended)[] TrackedModifiers =
+    [
+        (Key.LeftShift, 0xA0, false), (Key.RightShift, 0xA1, false),
+        (Key.LeftCtrl, 0xA2, false), (Key.RightCtrl, 0xA3, true),
+        (Key.LeftAlt, 0xA4, false), (Key.RightAlt, 0xA5, true),
+        (Key.LWin, 0x5B, true), (Key.RWin, 0x5C, true),
+    ];
+
     private readonly ScreenViewer _viewer;
     private readonly DragDropCoordinator? _dragDrop;
     private readonly ClipboardSyncService? _clipboard;
@@ -517,10 +526,22 @@ public partial class ScreenViewerWindow : Window
             return;
         }
 
+        // Keep the other device's modifier state matching this window's. Without this, a combination like
+        // Shift+Enter degrades to a bare Enter (which a chat then sends instead of adding a line break) whenever
+        // the modifier's own key-down never reached us — e.g. Shift was already held when the window got focus.
+        // Modifiers are driven entirely from here, so the key event for a modifier itself is not forwarded again.
+        SyncModifiers();
+
         // Keys without a virtual key (Unicode packets from the touch keyboard, IME results) arrive as text input.
         var vk = (ushort)KeyInterop.VirtualKeyFromKey(key);
         if (vk == 0 || key is Key.ImeProcessed or Key.DeadCharProcessed)
         {
+            return;
+        }
+
+        if (IsModifier(vk))
+        {
+            e.Handled = true;
             return;
         }
 
@@ -537,6 +558,46 @@ public partial class ScreenViewerWindow : Window
 
         _viewer.SendKey(vk, scan, up: e.IsUp, extended);
         e.Handled = true;
+    }
+
+    private static bool IsModifier(ushort vk)
+    {
+        foreach (var (_, modVk, _) in TrackedModifiers)
+        {
+            if (modVk == vk)
+            {
+                return true;
+            }
+        }
+
+        return vk is 0x10 or 0x11 or 0x12; // generic Shift/Ctrl/Alt, just in case
+    }
+
+    /// <summary>Sends the modifier down/up events needed to make the other device match this window's live state.</summary>
+    private void SyncModifiers()
+    {
+        foreach (var (modKey, vk, extended) in TrackedModifiers)
+        {
+            var down = Keyboard.IsKeyDown(modKey);
+            var tracked = _keysDown.ContainsKey(vk);
+            if (down == tracked)
+            {
+                continue;
+            }
+
+            if (down)
+            {
+                var scan = (ushort)MapVirtualKeyW(vk, 0);
+                _keysDown[vk] = (scan, extended);
+                _viewer.SendKey(vk, scan, up: false, extended);
+            }
+            else
+            {
+                var (scan, ext) = _keysDown[vk];
+                _keysDown.Remove(vk);
+                _viewer.SendKey(vk, scan, up: true, ext);
+            }
+        }
     }
 
     private void OnPreviewTextInput(object sender, TextCompositionEventArgs e)
