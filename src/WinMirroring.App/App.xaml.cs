@@ -27,6 +27,11 @@ public partial class App : Application
     private const string MutexName = @"Local\WinMirroring.App.SingleInstance";
     private const string RestartedArgument = "--restarted";
 
+    /// <summary>Set by the update script (or "WinMirroring.exe --exit") to make the running instance exit cleanly.</summary>
+    private const string ExitEventName = @"Local\WinMirroring.App.Exit";
+
+    private EventWaitHandle? _exitSignal;
+
     private Mutex? _singleInstance;
     private ServiceProvider? _services;
     private TaskbarIcon? _trayIcon;
@@ -41,6 +46,21 @@ public partial class App : Application
         if (e.Args.Length >= 2 && string.Equals(e.Args[0], WinMirroring.Screen.Display.VirtualDisplaySetup.Argument, StringComparison.OrdinalIgnoreCase))
         {
             Shutdown(WinMirroring.Screen.Display.VirtualDisplaySetup.Run(e.Args[1]));
+            return;
+        }
+
+        // "--exit": ask the running instance to close (used by the update script), nothing else.
+        if (e.Args.Contains("--exit", StringComparer.OrdinalIgnoreCase))
+        {
+            if (EventWaitHandle.TryOpenExisting(ExitEventName, out var running))
+            {
+                using (running)
+                {
+                    running.Set();
+                }
+            }
+
+            Shutdown();
             return;
         }
 
@@ -67,6 +87,7 @@ public partial class App : Application
         }
 
         ConfigureLogging();
+        ListenForExitSignal();
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         TaskScheduler.UnobservedTaskException += (_, args) =>
         {
@@ -165,6 +186,34 @@ public partial class App : Application
         {
             ShowMainWindow();
         }
+    }
+
+    /// <summary>The update script sets the event: exit the normal way (speakers unmuted, virtual monitor detached).</summary>
+    private void ListenForExitSignal()
+    {
+        _exitSignal = new EventWaitHandle(false, EventResetMode.AutoReset, ExitEventName);
+        var signal = _exitSignal;
+        new Thread(() =>
+        {
+            try
+            {
+                signal.WaitOne();
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+
+            if (!_exiting)
+            {
+                Log.Information("Exit requested from outside (update)");
+                Dispatcher.BeginInvoke(() => _ = ExitAsync());
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "WinMirroring.ExitSignal",
+        }.Start();
     }
 
     private static void ConfigureLogging()
@@ -396,6 +445,7 @@ public partial class App : Application
         await Log.CloseAndFlushAsync();
         _singleInstance?.ReleaseMutex();
         Shutdown();
+        _exitSignal?.Dispose();
     }
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)

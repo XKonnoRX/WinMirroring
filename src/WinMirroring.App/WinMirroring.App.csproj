@@ -32,4 +32,10 @@
     <Resource Include="Assets\app.ico" />
   </ItemGroup>
 
+  <!-- The update script travels with every build, so any device can update itself from a copied build folder. -->
+  <ItemGroup>
+    <None Include="..\..\scripts\update.ps1" Link="update.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\..\scripts\update.cmd" Link="update.cmd" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
