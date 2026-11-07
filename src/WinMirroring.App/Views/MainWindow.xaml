@@ -53,6 +53,8 @@
                 <MenuItem Header="Управлять этим устройством" FontWeight="SemiBold" Command="{Binding ControlPeerCommand}" />
                 <MenuItem Header="Показать экран" Command="{Binding ShowScreenCommand}" />
                 <MenuItem Header="Отправить окно на это устройство…" Command="{Binding SendWindowCommand}" />
+                <MenuItem Header="Использовать как второй монитор (вкл./выкл.)" Command="{Binding ToggleSecondMonitorForSelectedCommand}" />
+                <MenuItem Header="Стать вторым монитором этого устройства" Command="{Binding BecomeSecondMonitorOfSelectedCommand}" />
                 <Separator />
                 <MenuItem Header="Слушать звук этого устройства здесь (вкл./выкл.)" Command="{Binding ToggleListenCommand}" />
                 <MenuItem Header="Отправлять звук отсюда на это устройство (вкл./выкл.)" Command="{Binding TogglePinnedAudioCommand}" />
@@ -206,6 +208,11 @@
             </StackPanel>
             <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,8"
                        Text="Передаются только изменившиеся участки экрана, частота кадров сама подстраивается под сеть. Посмотреть экран другого устройства: правая кнопка по нему на вкладке «Устройства» → «Показать экран». В окне просмотра можно выделить часть изображения." />
+
+            <TextBlock Style="{StaticResource SectionTitle}" Text="Второй монитор" Margin="0,8,0,4" />
+            <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,0,0,4"
+                       Text="Экран этого устройства расширяется на другое, как на обычный второй монитор: окна перетаскиваются туда за край экрана и здесь не остаются, на планшете работают касания. Место монитора берётся из раскладки." />
+            <TextBlock Text="{Binding VirtualDisplayStatus}" TextWrapping="Wrap" Foreground="{StaticResource AccentBrush}" />
           </StackPanel>
 
           <DockPanel Grid.Column="2">

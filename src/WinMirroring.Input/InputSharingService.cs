@@ -95,6 +95,23 @@ public sealed partial class InputSharingService : IAsyncDisposable
     /// <summary>Peer id of the device currently controlling this one, if any.</summary>
     public string? ControllerId => (_player.Owner as PeerSession)?.PeerId;
 
+    /// <summary>Crossing an edge to this peer id does nothing (it is used as this device's second monitor).</summary>
+    public Func<string, bool>? IsCrossingSuppressed { get; set; }
+
+    /// <summary>Which side of this device the peer sits on in the layout: "right", "left", "top", "bottom" or null.</summary>
+    public string? SideOf(string peerId)
+    {
+        foreach (var edge in (ReadOnlySpan<Edge>)[Edge.Right, Edge.Left, Edge.Top, Edge.Bottom])
+        {
+            if (_layout.Neighbor(_node.Identity.Id, edge) == peerId)
+            {
+                return edge.ToString().ToLowerInvariant();
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>Where the local cursor is parked (and hidden) while input goes to another device.</summary>
     public System.Drawing.Point CursorParkPoint => Screen.VirtualScreen.PrimaryCenter;
 

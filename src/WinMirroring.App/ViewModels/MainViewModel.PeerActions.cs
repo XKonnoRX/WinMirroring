@@ -35,6 +35,8 @@ public sealed partial class MainViewModel
         ToggleListenCommand.NotifyCanExecuteChanged();
         TogglePinnedAudioCommand.NotifyCanExecuteChanged();
         FetchPeerLogCommand.NotifyCanExecuteChanged();
+        ToggleSecondMonitorForSelectedCommand.NotifyCanExecuteChanged();
+        BecomeSecondMonitorOfSelectedCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnSelectedPeerChanged(PeerItemViewModel? value) => RefreshPeerCommands();

@@ -37,6 +37,13 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        // Elevated helper run: add a resolution to the virtual monitor driver, then exit (no UI, no single-instance lock).
+        if (e.Args.Length >= 2 && string.Equals(e.Args[0], WinMirroring.Screen.Display.VirtualDisplaySetup.Argument, StringComparison.OrdinalIgnoreCase))
+        {
+            Shutdown(WinMirroring.Screen.Display.VirtualDisplaySetup.Run(e.Args[1]));
+            return;
+        }
+
         // After "restart as administrator" the old instance is still shutting down: wait for it.
         var restarted = e.Args.Contains(RestartedArgument, StringComparer.OrdinalIgnoreCase);
         _singleInstance = new Mutex(initiallyOwned: false, MutexName);
@@ -118,6 +125,33 @@ public partial class App : Application
             screen.Start();
             screen.AttachWindowDrag(input);
         });
+        health.Start("Второй монитор", () =>
+        {
+            screen.AddDisplayModeAsync = (width, height) => Dispatcher.Invoke(() =>
+            {
+                ShowNotification("WinMirroring: разрешение для второго монитора",
+                    $"Добавляю в драйвер виртуального монитора разрешение {width}×{height}. Windows попросит права администратора, мониторы на секунду мигнут. Это нужно один раз.");
+                return WinMirroring.Screen.Display.VirtualDisplaySetup.AddModeElevatedAsync(width, height);
+            });
+            screen.SideOf = peerId => input.SideOf(peerId) ?? "right";
+            input.IsCrossingSuppressed = screen.IsExtendedTo;
+            screen.ExtendFailed += (peer, reason) => Dispatcher.BeginInvoke(() => ShowNotification($"Второй монитор: {peer}", $"Не получилось: {reason}."));
+            screen.ExtendedChanged += peerId => Dispatcher.BeginInvoke(() =>
+            {
+                if (peerId is not null && _services?.GetService<MainViewModel>() is { } vm)
+                {
+                    var name = vm.ReadyPeers.FirstOrDefault(p => p.Id == peerId)?.Name ?? peerId;
+                    ShowNotification("WinMirroring: второй монитор", $"Рабочий стол расширен на {name}: перетаскивайте окна за край экрана в его сторону, как на обычный второй монитор.");
+                }
+            });
+            screen.DetachLeftoverDisplay();
+        });
+        if (health.Snapshot.Any(f => f.Name == "Второй монитор" && f.Ok))
+        {
+            health.Set("Второй монитор", true, ScreenStreamingService.IsVirtualDisplayAvailable
+                ? "драйвер виртуального монитора найден"
+                : "драйвер виртуального монитора не установлен (нужен только устройству, чей экран расширяется)");
+        }
         health.Start("Диагностика", _services.GetRequiredService<DiagnosticsService>().Start);
 
         CreateTrayIcon();
@@ -222,8 +256,18 @@ public partial class App : Application
                     screens.Items.Add(new MenuItem { Header = peer.Name, Command = new RelayCommand(() => _ = screen.RequestScreenAsync(peer.Id)) });
                 }
 
+                var extend = new MenuItem { Header = "Использовать как второй монитор" };
+                var become = new MenuItem { Header = "Стать вторым монитором для" };
+                foreach (var peer in peers)
+                {
+                    extend.Items.Add(CheckItem(peer.Name, vm.IsSecondMonitor(peer.Id), () => _ = vm.ToggleSecondMonitorAsync(peer.Id, peer.Name)));
+                    become.Items.Add(new MenuItem { Header = peer.Name, Command = new RelayCommand(() => _ = vm.BecomeSecondMonitorAsync(peer.Id, peer.Name)) });
+                }
+
                 menu.Items.Add(listen);
                 menu.Items.Add(screens);
+                menu.Items.Add(extend);
+                menu.Items.Add(become);
             }
         }
 

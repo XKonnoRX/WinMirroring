@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using WinMirroring.Core;
 using WinMirroring.Core.Messages;
@@ -17,7 +17,7 @@ public sealed record ActiveScreenSource(uint StreamId, string PeerName, string T
 /// pushes one of its windows to another device (from a menu, or by dragging the window across a screen edge).
 /// Frames, acknowledgements and remote input travel on the Screen channel of the session.
 /// </summary>
-public sealed class ScreenStreamingService : IAsyncDisposable
+public sealed partial class ScreenStreamingService : IAsyncDisposable
 {
     private readonly MirroringNode _node;
     private readonly ILogger _logger;
@@ -207,6 +207,7 @@ public sealed class ScreenStreamingService : IAsyncDisposable
 
         await source.DisposeAsync().ConfigureAwait(false);
         RaiseSourcesChanged();
+        OnSourceRemoved(source);
     }
 
     // ---- window drag -------------------------------------------------------------------------------------
@@ -251,6 +252,7 @@ public sealed class ScreenStreamingService : IAsyncDisposable
             if (_sources.TryRemove(source.StreamId, out _))
             {
                 _ = source.DisposeAsync().AsTask();
+                OnSourceRemoved(source);
             }
         }
 
@@ -282,6 +284,7 @@ public sealed class ScreenStreamingService : IAsyncDisposable
                 {
                     _ = source.DisposeAsync().AsTask();
                     RaiseSourcesChanged();
+                    OnSourceRemoved(source);
                 }
 
                 if (_viewers.TryGetValue(stop.StreamId, out var viewer) && ReferenceEquals(viewer.Session, session) && _viewers.TryRemove(stop.StreamId, out _))
@@ -290,6 +293,10 @@ public sealed class ScreenStreamingService : IAsyncDisposable
                 }
 
                 _requested.TryRemove(stop.StreamId, out _);
+                break;
+
+            default:
+                OnDisplayMessage(session, message);
                 break;
         }
     }
@@ -353,7 +360,8 @@ public sealed class ScreenStreamingService : IAsyncDisposable
         }
 
         var requested = _requested.TryRemove(info.StreamId, out var peerId) && peerId == session.PeerId;
-        if (!requested && info.Kind != "window")
+        var accepted = requested || info.Kind == "window" || (info.Kind == "display" && AcceptsDisplayFrom(session.PeerId));
+        if (!accepted)
         {
             return; // monitors are only shown when we asked for them
         }
@@ -436,6 +444,12 @@ public sealed class ScreenStreamingService : IAsyncDisposable
         foreach (var id in _sources.Keys.ToList())
         {
             await StopSourceAsync(id, "shutdown").ConfigureAwait(false);
+        }
+
+        // Do not leave an empty monitor on the desktop when the app exits.
+        if (_displayDevice is { } device)
+        {
+            Display.VirtualDisplay.Detach(device);
         }
 
         foreach (var viewer in _viewers.Values.ToList())

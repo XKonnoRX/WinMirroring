@@ -18,6 +18,9 @@ public enum StreamKind
 {
     Monitor,
     Window,
+
+    /// <summary>The virtual monitor this device extends onto the viewer (it is the viewer's screen).</summary>
+    Display,
 }
 
 /// <summary>
@@ -40,6 +43,7 @@ internal sealed class ScreenSource : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly object _gate = new();
     private long _lastBlockedReport = -10_000;
+    private long _monitorCheckedTicks;
 
     private WgcCapture _capture;
     private MonitorDescription? _monitor;
@@ -91,12 +95,16 @@ internal sealed class ScreenSource : IAsyncDisposable
         return new ScreenSource(session, streamId, StreamKind.Window, WgcCapture.ForWindow(window, logger), null, window, string.IsNullOrEmpty(title) ? "Окно" : title, settings, logger);
     }
 
+    /// <summary>Streams the virtual monitor that extends this desktop onto the viewer.</summary>
+    public static ScreenSource ForDisplay(PeerSession session, uint streamId, MonitorDescription monitor, ScreenSettings settings, ILogger logger) =>
+        new(session, streamId, StreamKind.Display, WgcCapture.ForMonitor(monitor.Handle, logger), monitor, 0, $"Второй монитор {Environment.MachineName}", settings, logger);
+
     public ScreenStreamMessage Describe() => new(
         StreamId,
-        Kind == StreamKind.Monitor ? "monitor" : "window",
+        Kind switch { StreamKind.Monitor => "monitor", StreamKind.Display => "display", _ => "window" },
         Title,
-        MonitorIndex,
-        Kind == StreamKind.Monitor ? DisplayCatalog.Monitors().Count : 0,
+        Kind == StreamKind.Monitor ? MonitorIndex : 0,
+        Kind switch { StreamKind.Monitor => DisplayCatalog.Monitors().Count, StreamKind.Display => 1, _ => 0 },
         _settings.AllowControl);
 
     public void Start()
@@ -272,7 +280,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         {
             frame = _frameSize;
             crop = _crop;
-            bounds = Kind == StreamKind.Monitor ? _monitor!.Bounds : GetVisibleBounds(Window) ?? Rectangle.Empty;
+            bounds = Kind != StreamKind.Window ? CurrentMonitorBoundsLocked() : GetVisibleBounds(Window) ?? Rectangle.Empty;
         }
 
         if (frame.Width <= 0 || frame.Height <= 0 || bounds.Width <= 0 || bounds.Height <= 0)
@@ -282,6 +290,22 @@ internal sealed class ScreenSource : IAsyncDisposable
 
         point = MapToScreen(x, y, crop, frame, bounds);
         return true;
+    }
+
+    /// <summary>Monitor bounds, re-read at most once a second: monitors move when the display layout changes.</summary>
+    private Rectangle CurrentMonitorBoundsLocked()
+    {
+        var now = Environment.TickCount64;
+        if (now - _monitorCheckedTicks > 1000)
+        {
+            _monitorCheckedTicks = now;
+            if (DisplayCatalog.Monitors().FirstOrDefault(m => string.Equals(m.DeviceName, _monitor!.DeviceName, StringComparison.OrdinalIgnoreCase)) is { } fresh)
+            {
+                _monitor = _monitor! with { Bounds = fresh.Bounds, Handle = fresh.Handle };
+            }
+        }
+
+        return _monitor!.Bounds;
     }
 
     internal static Point MapToScreen(float x, float y, RectangleF crop, Size frame, Rectangle bounds)

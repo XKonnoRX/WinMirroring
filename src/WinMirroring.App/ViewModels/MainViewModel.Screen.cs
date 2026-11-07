@@ -84,6 +84,64 @@ public sealed partial class MainViewModel
             : $"Не удалось отправить окно на {peer.Name}.";
     }
 
+    public string VirtualDisplayStatus => ScreenStreamingService.IsVirtualDisplayAvailable
+        ? "Драйвер виртуального монитора установлен: экран этого устройства можно расширить на другое (правая кнопка по нему → «Использовать как второй монитор»)."
+        : "Драйвер виртуального монитора не установлен. Он нужен только устройству, чей экран расширяется (например, ноутбуку). Установка: winget install --id=VirtualDrivers.Virtual-Display-Driver -e, или приложение Virtual Driver Control с github.com/VirtualDrivers. После установки перезапустите WinMirroring.";
+
+    /// <summary>Turns the device into this device's second monitor, or stops that.</summary>
+    public async Task<string> ToggleSecondMonitorAsync(string peerId, string peerName)
+    {
+        string text;
+        if (_screen.IsExtendedTo(peerId))
+        {
+            await _screen.StopExtendingAsync();
+            text = $"{peerName} больше не второй монитор.";
+        }
+        else if (!ScreenStreamingService.IsVirtualDisplayAvailable)
+        {
+            text = "Для второго монитора на этом устройстве нужен драйвер виртуального монитора (см. вкладку «Экран»).";
+        }
+        else
+        {
+            text = await _screen.InviteAsDisplayAsync(peerId)
+                ? $"Подключаю {peerName} как второй монитор…"
+                : $"Не удалось связаться с {peerName}.";
+        }
+
+        StatusText = text;
+        return text;
+    }
+
+    /// <summary>Asks the device to extend its desktop onto this screen.</summary>
+    public async Task<string> BecomeSecondMonitorAsync(string peerId, string peerName)
+    {
+        var text = await _screen.RequestExtendAsync(peerId)
+            ? $"Прошу {peerName} расширить рабочий стол на этот экран…"
+            : $"Не удалось связаться с {peerName}.";
+        StatusText = text;
+        return text;
+    }
+
+    public bool IsSecondMonitor(string peerId) => _screen.IsExtendedTo(peerId);
+
+    [RelayCommand(CanExecute = nameof(SelectedIsReady))]
+    private async Task ToggleSecondMonitorForSelectedAsync()
+    {
+        if (SelectedPeer is { } peer)
+        {
+            await ToggleSecondMonitorAsync(peer.Id, peer.Name);
+        }
+    }
+
+    [RelayCommand(CanExecute = nameof(SelectedIsReady))]
+    private async Task BecomeSecondMonitorOfSelectedAsync()
+    {
+        if (SelectedPeer is { } peer)
+        {
+            await BecomeSecondMonitorAsync(peer.Id, peer.Name);
+        }
+    }
+
     [RelayCommand]
     private async Task StopScreenSourceAsync(ActiveScreenSource? source)
     {

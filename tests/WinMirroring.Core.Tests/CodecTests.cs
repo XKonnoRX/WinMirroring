@@ -80,6 +80,9 @@ public class CodecTests
         new LogResponseMessage(3, "app.log", "text", null),
         new InputReleaseRequestMessage(),
         new InputBlockedMessage("Диспетчер задач"),
+        new DisplayInviteMessage(),
+        new DisplayExtendRequestMessage(1920, 1280, 150),
+        new DisplayExtendResultMessage(false, "нет драйвера"),
     };
 
     [Theory]

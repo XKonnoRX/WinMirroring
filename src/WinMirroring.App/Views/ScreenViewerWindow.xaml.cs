@@ -109,7 +109,48 @@ public partial class ScreenViewerWindow : Window
             PlaceAtCursor();
         }
 
-        Loaded += (_, _) => ScreenImage.Focus();
+        if (IsDisplayMode)
+        {
+            PrepareDisplayMode();
+        }
+
+        Loaded += (_, _) =>
+        {
+            if (IsDisplayMode && !IsFullScreen)
+            {
+                ToggleFullScreen();
+            }
+
+            ScreenImage.Focus();
+        };
+    }
+
+    /// <summary>This screen is the other device's second monitor (its desktop extends onto us).</summary>
+    private bool IsDisplayMode => _viewer.Info.Kind == "display";
+
+    /// <summary>
+    /// Second monitor: the whole primary screen, no frame, nothing to crop or switch; closing it ends the extension.
+    /// </summary>
+    private void PrepareDisplayMode()
+    {
+        _sizedToContent = true;
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        var work = SystemParameters.WorkArea;
+        Left = work.Left;
+        Top = work.Top;
+        ImageHeader.Visibility = Visibility.Collapsed;
+        QuickMonitorPanel.Visibility = Visibility.Collapsed;
+        CropToggle.Visibility = Visibility.Collapsed;
+        ResetCropButton.Visibility = Visibility.Collapsed;
+        CloseViewerButton.Content = "Отключить второй монитор";
+        ControlToggle.IsChecked = true;
+    }
+
+    private void OnMinimize(object sender, RoutedEventArgs e)
+    {
+        CloseQuickPanel();
+        ReleaseRemoteInput();
+        WindowState = WindowState.Minimized;
     }
 
     private bool ControlEnabled => ControlToggle.IsChecked == true && _viewer.Info.ControlAllowed && CropToggle.IsChecked != true;

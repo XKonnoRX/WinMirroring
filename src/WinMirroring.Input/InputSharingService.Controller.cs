@@ -360,6 +360,11 @@ public sealed partial class InputSharingService
         {
             case CrossEdgeCommand cross when capture is null:
                 var neighborId = _layout.Neighbor(_node.Identity.Id, cross.Edge);
+                if (neighborId is not null && IsCrossingSuppressed?.Invoke(neighborId) == true)
+                {
+                    break; // that device shows our desktop as a second monitor: it is not a separate computer now
+                }
+
                 if (neighborId is not null && TryGetUsableSession(neighborId, out var neighbor))
                 {
                     BeginCapture(neighbor, atCenter: false, EdgeMath.Opposite(cross.Edge), cross.Relative);

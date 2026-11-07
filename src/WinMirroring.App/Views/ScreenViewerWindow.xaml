@@ -92,7 +92,8 @@
 
           <TextBlock Style="{StaticResource QuickHeader}" Text="ОКНО" />
           <ToggleButton x:Name="FullScreenToggle" Style="{StaticResource QuickToggle}" Content="Во весь экран" Click="OnFullScreenToggleClick" />
-          <Button Style="{StaticResource QuickButton}" Content="Закрыть просмотр" Click="OnCloseViewer" />
+          <Button Style="{StaticResource QuickButton}" Content="Свернуть" Click="OnMinimize" ToolTip="Убрать окно на панель задач, не закрывая его" />
+          <Button x:Name="CloseViewerButton" Style="{StaticResource QuickButton}" Content="Закрыть просмотр" Click="OnCloseViewer" />
 
           <TextBlock Style="{StaticResource QuickHeader}" Text="УПРАВЛЕНИЕ" />
           <ToggleButton x:Name="ControlToggle" Style="{StaticResource QuickToggle}" Content="Мышь, касания и клавиатура управляют тем устройством" IsChecked="True"
@@ -107,7 +108,7 @@
           <ToggleButton x:Name="SendSoundToggle" Style="{StaticResource QuickToggle}" Click="OnSendSoundToggleClick" />
           <ToggleButton x:Name="KeepSoundToggle" Style="{StaticResource QuickToggle}" Content="Звук этого устройства — только здесь" Click="OnKeepSoundToggleClick" />
 
-          <TextBlock Style="{StaticResource QuickHeader}" Text="ИЗОБРАЖЕНИЕ" />
+          <TextBlock x:Name="ImageHeader" Style="{StaticResource QuickHeader}" Text="ИЗОБРАЖЕНИЕ" />
           <DockPanel x:Name="QuickMonitorPanel">
             <Button DockPanel.Dock="Left" Style="{StaticResource QuickButton}" Content="◀" MinWidth="48" HorizontalContentAlignment="Center" Click="OnPreviousMonitor" />
             <Button DockPanel.Dock="Right" Style="{StaticResource QuickButton}" Content="▶" MinWidth="48" HorizontalContentAlignment="Center" Click="OnNextMonitor" />

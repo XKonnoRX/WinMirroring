@@ -25,6 +25,9 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(AudioRouteRequestMessage), "audio-route")]
 [JsonDerivedType(typeof(InputReleaseRequestMessage), "input-release")]
 [JsonDerivedType(typeof(InputBlockedMessage), "input-blocked")]
+[JsonDerivedType(typeof(DisplayInviteMessage), "display-invite")]
+[JsonDerivedType(typeof(DisplayExtendRequestMessage), "display-extend")]
+[JsonDerivedType(typeof(DisplayExtendResultMessage), "display-result")]
 public abstract record ControlMessage;
 
 /// <summary>First message in each direction. The server adds a challenge the client must sign.</summary>
@@ -84,6 +87,15 @@ public sealed record InputReleaseRequestMessage : ControlMessage;
 
 /// <summary>Controlled → controller: an elevated window in front (<see cref="Window"/>) swallows the injected input.</summary>
 public sealed record InputBlockedMessage(string Window) : ControlMessage;
+
+/// <summary>Host → device: "become my second monitor"; the device answers with <see cref="DisplayExtendRequestMessage"/>.</summary>
+public sealed record DisplayInviteMessage : ControlMessage;
+
+/// <summary>Device → host: extend your desktop onto me; my screen is <see cref="Width"/>×<see cref="Height"/> physical pixels.</summary>
+public sealed record DisplayExtendRequestMessage(int Width, int Height, int ScalePercent) : ControlMessage;
+
+/// <summary>Host → device: the extension did not start (the stream message follows when it did).</summary>
+public sealed record DisplayExtendResultMessage(bool Ok, string? Error) : ControlMessage;
 
 /// <summary>Paired device asks for the tail of this device's application log (troubleshooting).</summary>
 public sealed record LogRequestMessage(uint RequestId) : ControlMessage;

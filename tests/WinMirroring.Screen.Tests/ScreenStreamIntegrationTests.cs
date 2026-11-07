@@ -121,6 +121,44 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
         await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
     }
 
+    [Fact]
+    public async Task ExtendWithoutTheDriverIsRefusedWithAReason()
+    {
+        if (ScreenStreamingService.IsVirtualDisplayAvailable)
+        {
+            Assert.Skip("The virtual display driver is installed here; this test covers the machine without it.");
+        }
+
+        var ct = TestContext.Current.CancellationToken;
+        var discoveryA = FreeUdpPort();
+        var discoveryB = FreeUdpPort();
+        var host = CreateNode("HostA", discoveryA, $"127.0.0.1:{discoveryB}");
+        var tablet = CreateNode("TabletB", discoveryB, $"127.0.0.1:{discoveryA}");
+        await host.StartAsync();
+        await tablet.StartAsync();
+
+        await using var hostScreen = new ScreenStreamingService(host, NullLogger<ScreenStreamingService>.Instance);
+        await using var tabletScreen = new ScreenStreamingService(tablet, NullLogger<ScreenStreamingService>.Instance);
+        hostScreen.Start();
+        tabletScreen.Start();
+
+        await WaitUntilAsync(() => tablet.Peers.TryGet(host.Identity.Id, out var peer) && peer.TransportEndPoint is not null, ct);
+        Assert.True(await tablet.PairAsync(host.Identity.Id, ct));
+        await WaitUntilAsync(() => host.Sessions.TryGetSession(tablet.Identity.Id, out var s) && s.State == SessionState.Ready, ct);
+
+        var failed = new TaskCompletionSource<(string Peer, string Reason)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        tabletScreen.ExtendFailed += (peer, reason) => failed.TrySetResult((peer, reason));
+
+        // The host invites; the tablet answers with its screen size; the host has no virtual monitor and says so.
+        Assert.True(await hostScreen.InviteAsDisplayAsync(tablet.Identity.Id));
+        var (peerName, why) = await failed.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        Assert.Equal("HostA", peerName);
+        Assert.Contains("драйвер", why);
+        Assert.Null(hostScreen.ExtendedTo);
+        Assert.Empty(hostScreen.Sources);
+    }
+
     private MirroringNode CreateNode(string name, int discoveryPort, string manualAddress)
     {
         var directory = Path.Combine(Path.GetTempPath(), "WinMirroring.ScreenTests", Guid.NewGuid().ToString("N"));
