@@ -18,6 +18,20 @@
     <ProjectReference Include="..\WinMirroring.Screen\WinMirroring.Screen.csproj" />
   </ItemGroup>
 
+  <!-- The elevated input helper (WinMirroring.InputHost.exe) ships next to the app. It is a full, self-contained
+       app of its own, so it is published into the same folder rather than copied as a bare reference (which would
+       leave it without its runtimeconfig). It is launched, with a UAC prompt, only when the user turns on control
+       of administrator windows. -->
+  <Target Name="PublishInputHost" AfterTargets="Publish">
+    <PropertyGroup>
+      <_InputHostRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</_InputHostRid>
+      <_InputHostRid Condition="'$(RuntimeIdentifier)' == ''">win-x64</_InputHostRid>
+      <_InputHostSelfContained Condition="'$(SelfContained)' != ''">$(SelfContained)</_InputHostSelfContained>
+      <_InputHostSelfContained Condition="'$(SelfContained)' == ''">true</_InputHostSelfContained>
+    </PropertyGroup>
+    <Exec Command="dotnet publish &quot;$(MSBuildThisFileDirectory)..\WinMirroring.InputHost\WinMirroring.InputHost.csproj&quot; -c $(Configuration) -r $(_InputHostRid) --self-contained $(_InputHostSelfContained) -o &quot;$(PublishDir.TrimEnd('\'))&quot;" />
+  </Target>
+
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="H.NotifyIcon.WPF" Version="2.4.1" />

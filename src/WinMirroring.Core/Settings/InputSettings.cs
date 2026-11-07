@@ -20,6 +20,12 @@ public sealed class InputSettings
     /// <summary>The device that gets the keyboard switches to the controller's layout, and layout switches made there come back.</summary>
     public bool SyncKeyboardLayout { get; set; } = true;
 
+    /// <summary>
+    /// Route injection through a separate elevated helper so input from other devices reaches administrator windows,
+    /// while the app itself stays at normal integrity. Off by default: it is a deliberate grant of elevated input.
+    /// </summary>
+    public bool ElevatedInjector { get; set; }
+
     /// <summary>Unix milliseconds of the last layout change; peers adopt the newest layout they see.</summary>
     public long LayoutVersion { get; set; }
 

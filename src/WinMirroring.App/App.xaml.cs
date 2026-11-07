@@ -122,7 +122,7 @@ public partial class App : Application
             input.RemoteInputBlocked += (peer, window) => Dispatcher.BeginInvoke(() => ShowNotification(
                 $"{peer}: окно администратора не принимает ввод",
                 $"«{(window.Length > 0 ? window : "Окно")}» запущено с правами администратора, и Windows не пропускает в него ввод с другого устройства. " +
-                $"Курсор можно увести обратно через край или Ctrl+Alt+Home. Чтобы управлять такими окнами, перезапустите WinMirroring на {peer} от имени администратора (вкладка «Настройки»)."));
+                $"Курсор можно увести обратно через край или Ctrl+Alt+Home. Чтобы управлять такими окнами, включите на {peer} «Управление окнами администратора» (вкладка «Настройки»)."));
             input.KeyboardLayoutMissing += name => Dispatcher.BeginInvoke(() => ShowNotification(
                 "WinMirroring: нет такой раскладки",
                 $"На этом устройстве нет раскладки «{name}», поэтому язык ввода не переключился вслед за другим устройством. " +
@@ -185,6 +185,28 @@ public partial class App : Application
                 : "драйвер виртуального монитора не установлен (нужен только устройству, чей экран расширяется)");
         }
         health.Start("Диагностика", _services.GetRequiredService<DiagnosticsService>().Start);
+
+        // Control of administrator windows: a separate elevated helper does the injecting while this app stays normal.
+        var adminInjector = _services.GetRequiredService<WinMirroring.Input.Injection.ElevatedInjector>();
+        adminInjector.StateChanged += (active, detail) => Dispatcher.BeginInvoke(() =>
+        {
+            health.Set("Управление окнами администратора", true, active ? detail : $"выключено: {detail}");
+            _services?.GetService<MainViewModel>()?.SetAdminControlState(active, detail);
+            ShowNotification("WinMirroring: окна администратора", detail);
+        });
+        if (WinMirroring.Input.Injection.ElevatedInjector.HelperPath is null)
+        {
+            health.Set("Управление окнами администратора", true, "вспомогательная программа WinMirroring.InputHost.exe не входит в эту сборку");
+        }
+        else if (node.Settings.Input.ElevatedInjector)
+        {
+            health.Set("Управление окнами администратора", true, "включаю…");
+            _ = adminInjector.EnableAsync();
+        }
+        else
+        {
+            health.Set("Управление окнами администратора", true, "выключено (окна администратора не принимают ввод с других устройств)");
+        }
 
         CreateTrayIcon();
         _services.GetRequiredService<DialogPairingUi>().Notify = ShowNotification;
@@ -259,6 +281,7 @@ public partial class App : Application
             sp.GetRequiredService<IPairingUserInterface>(),
             sp.GetRequiredService<ILoggerFactory>()));
         services.AddSingleton<InputSharingService>();
+        services.AddSingleton<WinMirroring.Input.Injection.ElevatedInjector>();
         services.AddSingleton<ClipboardSyncService>();
         services.AddSingleton<AudioService>();
         services.AddSingleton<DragDropCoordinator>();
@@ -359,6 +382,29 @@ public partial class App : Application
         return true;
     }
 
+    /// <summary>Turns control of administrator windows (the elevated input helper) on or off and remembers the choice.</summary>
+    public async Task SetAdminWindowControlAsync(bool enable)
+    {
+        if (_services is null)
+        {
+            return;
+        }
+
+        var node = _services.GetRequiredService<MirroringNode>();
+        node.Settings.Input.ElevatedInjector = enable;
+        node.SaveSettings();
+
+        var injector = _services.GetRequiredService<WinMirroring.Input.Injection.ElevatedInjector>();
+        if (enable)
+        {
+            await injector.EnableAsync();
+        }
+        else
+        {
+            injector.Disable();
+        }
+    }
+
     private void ShowMainWindow()
     {
         if (_services is null)
@@ -411,6 +457,15 @@ public partial class App : Application
             catch (Exception ex)
             {
                 Log.Warning(ex, "Screen streaming shutdown failed");
+            }
+
+            try
+            {
+                _services.GetRequiredService<WinMirroring.Input.Injection.ElevatedInjector>().Dispose();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Elevated injector shutdown failed");
             }
 
             try

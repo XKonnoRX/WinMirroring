@@ -265,7 +265,7 @@ internal sealed class ScreenSource : IAsyncDisposable
     {
         if (_settings.AllowControl && text.Length > 0)
         {
-            WinMirroring.Input.Injection.InputInjector.TypeText(text);
+            _injector.TypeText(text);
         }
     }
 

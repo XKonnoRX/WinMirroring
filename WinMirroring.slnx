@@ -5,6 +5,7 @@
     <Project Path="src/WinMirroring.Clipboard/WinMirroring.Clipboard.csproj" />
     <Project Path="src/WinMirroring.Core/WinMirroring.Core.csproj" />
     <Project Path="src/WinMirroring.Input/WinMirroring.Input.csproj" />
+    <Project Path="src/WinMirroring.InputHost/WinMirroring.InputHost.csproj" />
     <Project Path="src/WinMirroring.Screen/WinMirroring.Screen.csproj" />
   </Folder>
   <Folder Name="/tests/">

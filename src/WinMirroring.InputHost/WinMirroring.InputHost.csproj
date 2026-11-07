@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>WinMirroring.InputHost</AssemblyName>
+    <RootNamespace>WinMirroring.InputHost</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Description>Elevated input helper: injects mouse, keyboard and touch on behalf of WinMirroring so input can reach administrator windows, while the main app stays at normal integrity.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WinMirroring.Input\WinMirroring.Input.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,3 +1,5 @@
+using CommunityToolkit.Mvvm.ComponentModel;
+
 namespace WinMirroring.App.ViewModels;
 
 /// <summary>Quick actions shared by the tray menu, the screen viewer panel and the device menu.</summary>
@@ -65,6 +67,35 @@ public sealed partial class MainViewModel
         {
             StatusText = "Перезапуск с правами администратора отменён.";
         }
+    }
+
+    private bool _applyingAdminControl;
+
+    /// <summary>Control of administrator windows via the elevated helper (a separate process, not this app elevated).</summary>
+    [ObservableProperty]
+    public partial bool AdminWindowControl { get; set; }
+
+    [ObservableProperty]
+    public partial string AdminWindowControlText { get; set; } =
+        "Отдельный помощник с правами администратора вводит мышь, клавиатуру и касания с других устройств в окна администратора. Само приложение остаётся с обычными правами, поэтому перетаскивание и вставка файлов продолжают работать. При включении Windows один раз спросит права администратора.";
+
+    partial void OnAdminWindowControlChanged(bool value)
+    {
+        if (!_initialized || _applyingAdminControl)
+        {
+            return;
+        }
+
+        _ = ((App)System.Windows.Application.Current).SetAdminWindowControlAsync(value);
+    }
+
+    /// <summary>Called by the app when the helper connects, fails or goes away, to reflect the real state.</summary>
+    public void SetAdminControlState(bool active, string detail)
+    {
+        _applyingAdminControl = true;
+        AdminWindowControl = active;
+        _applyingAdminControl = false;
+        AdminWindowControlText = detail;
     }
 
     /// <summary>Takes the shared cursor back (here, or from the device controlling this one).</summary>

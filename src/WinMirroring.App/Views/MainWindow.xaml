@@ -324,12 +324,18 @@
           <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,16"
                      Text="Окна с правами администратора и UAC не принимают ввод от обычного приложения: пока курсор над ними, управление с другого устройства не работает. Это ограничение Windows, служба для обхода запланирована." />
 
-          <TextBlock Style="{StaticResource SectionTitle}" Text="Права" />
+          <TextBlock Style="{StaticResource SectionTitle}" Text="Окна администратора" />
+          <CheckBox Content="Управлять окнами администратора через помощника (рекомендуется)" IsChecked="{Binding AdminWindowControl}" />
+          <TextBlock Style="{StaticResource Caption}" Text="{Binding AdminWindowControlText}" TextWrapping="Wrap" Margin="0,4,0,4" />
+          <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,12"
+                     Text="Помощник — это отдельная программа WinMirroring.InputHost.exe рядом с приложением. Он только вводит мышь, клавиатуру и касания и больше ничего не делает. Это сознательно даёт вводу с других устройств доступ к окнам администратора, поэтому по умолчанию выключено. Пока запрос прав администратора приходится подтверждать при каждом запуске; автозапуск без запроса — следующий шаг." />
+
+          <TextBlock Style="{StaticResource SectionTitle}" Text="Запуск всего приложения от администратора" Margin="0,4,0,0" />
           <TextBlock Style="{StaticResource Caption}" Text="{Binding ElevationText}" TextWrapping="Wrap" Margin="0,0,0,4" />
           <Button Content="Перезапустить от имени администратора" Command="{Binding RestartElevatedCommand}" HorizontalAlignment="Left"
                   IsEnabled="{Binding CanRestartElevated}" />
           <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,16"
-                     Text="С правами администратора Windows не даёт обычному Explorer перетаскивать файлы в WinMirroring и вставлять скопированные с других устройств файлы на этом устройстве. Используйте это, когда нужно управлять окнами администратора; после перезагрузки приложение снова запустится с обычными правами." />
+                     Text="Старый способ и запасной вариант. С правами администратора Windows не даёт обычному Explorer перетаскивать файлы в WinMirroring и вставлять скопированные с других устройств файлы, поэтому лучше включить помощника выше. После перезагрузки приложение снова запустится с обычными правами." />
 
           <TextBlock Style="{StaticResource SectionTitle}" Text="Запуск" />
           <CheckBox Content="Запускать при входе в Windows (свернуто в трей)" IsChecked="{Binding StartWithWindows}" Margin="0,0,0,16" />
