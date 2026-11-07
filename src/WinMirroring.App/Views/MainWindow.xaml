@@ -45,7 +45,7 @@
             <Button Content="Сопрячь…" Command="{Binding PairCommand}" />
             <Button Content="Разорвать сопряжение" Command="{Binding UnpairCommand}" />
             <TextBlock VerticalAlignment="Center" Style="{StaticResource Caption}"
-                       Text="Сопряжение запрашивается с этого устройства; PIN показывается на другом." />
+                       Text="Сопряжение запрашивается с этого устройства и подтверждается кнопкой на другом." />
           </StackPanel>
           <ListView ItemsSource="{Binding Peers}" SelectedItem="{Binding SelectedPeer}">
             <ListView.ContextMenu>
@@ -54,11 +54,15 @@
                 <MenuItem Header="Показать экран" Command="{Binding ShowScreenCommand}" />
                 <MenuItem Header="Отправить окно на это устройство…" Command="{Binding SendWindowCommand}" />
                 <Separator />
+                <MenuItem Header="Слушать звук этого устройства здесь (вкл./выкл.)" Command="{Binding ToggleListenCommand}" />
+                <MenuItem Header="Отправлять звук отсюда на это устройство (вкл./выкл.)" Command="{Binding TogglePinnedAudioCommand}" />
+                <Separator />
                 <MenuItem Header="Проверить задержку" Command="{Binding MeasureLatencyCommand}" />
                 <MenuItem Header="Ping в консоли" Command="{Binding IcmpPingCommand}" />
                 <MenuItem Header="Удалённый рабочий стол (RDP)" Command="{Binding RemoteDesktopCommand}" />
                 <MenuItem Header="Открыть сетевую папку" Command="{Binding OpenShareCommand}" />
                 <MenuItem Header="Копировать IP-адрес" Command="{Binding CopyAddressCommand}" />
+                <MenuItem Header="Получить журнал этого устройства" Command="{Binding FetchPeerLogCommand}" />
                 <Separator />
                 <MenuItem Header="Переподключить" Command="{Binding ReconnectCommand}" />
                 <MenuItem Header="Сопрячь…" Command="{Binding PairCommand}" />
@@ -288,6 +292,7 @@
 
       <!-- Settings -->
       <TabItem Header="Настройки">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="8" MaxWidth="560" HorizontalAlignment="Left">
           <TextBlock Style="{StaticResource SectionTitle}" Text="Имя устройства" />
           <TextBlock Style="{StaticResource Caption}" Text="Под этим именем устройство видят остальные. Применяется кнопкой «Применить» на вкладке «Сеть»." Margin="0,0,0,6" />
@@ -313,10 +318,33 @@
           <CheckBox Content="Запускать при входе в Windows (свернуто в трей)" IsChecked="{Binding StartWithWindows}" Margin="0,0,0,16" />
 
           <TextBlock Style="{StaticResource SectionTitle}" Text="Диагностика" />
+          <TextBlock Style="{StaticResource Caption}" Text="Что запустилось на этом устройстве:" Margin="0,0,0,4" />
+          <ItemsControl ItemsSource="{Binding FeatureStatuses}" Margin="0,0,0,8">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <TextBlock TextWrapping="Wrap" Margin="0,1">
+                  <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                      <Setter Property="Foreground" Value="#047857" />
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding Ok}" Value="False">
+                          <Setter Property="Foreground" Value="#B91C1C" />
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </TextBlock.Style>
+                  <Run Text="{Binding Mark, Mode=OneWay}" /> <Run Text="{Binding Name, Mode=OneWay}" FontWeight="SemiBold" /><Run Text=": " /><Run Text="{Binding Detail, Mode=OneWay}" />
+                </TextBlock>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,6"
+                     Text="Журнал другого устройства можно получить отсюда: правая кнопка по нему на вкладке «Устройства» → «Получить журнал этого устройства»." />
           <StackPanel Orientation="Horizontal">
             <Button Content="Открыть папку журналов" Command="{Binding OpenLogsCommand}" />
           </StackPanel>
         </StackPanel>
+        </ScrollViewer>
       </TabItem>
 
     </TabControl>

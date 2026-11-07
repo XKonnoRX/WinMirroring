@@ -33,8 +33,11 @@ public sealed class AudioService : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly object _focusGate = new();
 
+    private readonly ConcurrentDictionary<string, byte> _listeners = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _listeningTo = new(StringComparer.Ordinal);
     private AudioSender? _sender;
     private string? _focusTarget;
+    private IReadOnlyCollection<string> _viewers = [];
     private CancellationTokenSource? _pendingStop;
 
     public AudioService(MirroringNode node, ILogger<AudioService> logger)
@@ -104,6 +107,38 @@ public sealed class AudioService : IAsyncDisposable
         }
     }
 
+    /// <summary>Devices currently watching one of this device's monitors.</summary>
+    public void SetViewers(IReadOnlyCollection<string> peerIds)
+    {
+        Volatile.Write(ref _viewers, peerIds);
+        RequestReevaluate();
+    }
+
+    /// <summary>True while this device asked <paramref name="peerId"/> to send its sound here.</summary>
+    public bool IsListeningTo(string peerId) => _listeningTo.ContainsKey(peerId);
+
+    /// <summary>Asks <paramref name="peerId"/> to send its sound here (or to stop).</summary>
+    public async Task<bool> RequestListenAsync(string peerId, bool listen)
+    {
+        if (!TryGetReady(peerId, out var session))
+        {
+            return false;
+        }
+
+        await session.SendControlAsync(new AudioRouteRequestMessage(listen)).ConfigureAwait(false);
+        if (listen)
+        {
+            _listeningTo[peerId] = 0;
+        }
+        else
+        {
+            _listeningTo.TryRemove(peerId, out _);
+        }
+
+        StatusChanged?.Invoke();
+        return true;
+    }
+
     /// <summary>Re-reads audio settings (target, bitrate, buffer).</summary>
     public void ApplySettings()
     {
@@ -136,9 +171,19 @@ public sealed class AudioService : IAsyncDisposable
             return null;
         }
 
+        // Priority: what the user pinned here, then who asked to listen, then who controls this device, then who
+        // watches its screen.
         if (!string.IsNullOrEmpty(settings.PinnedTargetId) && TryGetReady(settings.PinnedTargetId, out var pinned))
         {
             return pinned;
+        }
+
+        foreach (var listener in _listeners.Keys)
+        {
+            if (TryGetReady(listener, out var asked))
+            {
+                return asked;
+            }
         }
 
         string? focus;
@@ -147,7 +192,23 @@ public sealed class AudioService : IAsyncDisposable
             focus = _focusTarget;
         }
 
-        return settings.FollowInput && focus is not null && TryGetReady(focus, out var followed) ? followed : null;
+        if (settings.FollowInput && focus is not null && TryGetReady(focus, out var followed))
+        {
+            return followed;
+        }
+
+        if (settings.FollowScreenViewer)
+        {
+            foreach (var viewer in Volatile.Read(ref _viewers))
+            {
+                if (TryGetReady(viewer, out var watching))
+                {
+                    return watching;
+                }
+            }
+        }
+
+        return null;
     }
 
     private bool TryGetReady(string peerId, out PeerSession session) =>
@@ -214,6 +275,8 @@ public sealed class AudioService : IAsyncDisposable
     private void OnSessionClosed(PeerSession session)
     {
         session.ControlMessageReceived -= OnControlMessage;
+        _listeners.TryRemove(session.PeerId, out _);
+        _listeningTo.TryRemove(session.PeerId, out _);
         foreach (var stream in _incoming.Values.Where(s => ReferenceEquals(s.Owner, session)).ToList())
         {
             RemoveIncoming(stream.StreamId);
@@ -235,6 +298,21 @@ public sealed class AudioService : IAsyncDisposable
 
             case AudioStopMessage stop when _incoming.TryGetValue(stop.StreamId, out var stream) && ReferenceEquals(stream.Owner, session):
                 RemoveIncoming(stop.StreamId);
+                break;
+
+            case AudioRouteRequestMessage route:
+                if (route.Listen)
+                {
+                    _listeners[session.PeerId] = 0;
+                    _logger.LogInformation("{Peer} asked to hear this device's sound", session.PeerName);
+                }
+                else
+                {
+                    _listeners.TryRemove(session.PeerId, out _);
+                    _logger.LogInformation("{Peer} no longer wants this device's sound", session.PeerName);
+                }
+
+                RequestReevaluate();
                 break;
         }
     }

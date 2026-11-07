@@ -16,7 +16,9 @@ namespace WinMirroring.Clipboard;
 /// </summary>
 internal sealed class ClipboardThread : IDisposable
 {
-    private const string ClassName = "WinMirroring.ClipboardSink";
+    // Unique per instance: a window class carries its window procedure, so two instances sharing one class name
+    // would have the second instance's messages handled by the first instance's object.
+    private readonly string ClassName = $"WinMirroring.ClipboardSink.{Guid.NewGuid():N}";
     private const uint WmInvoke = WM_APP + 1;
     private const nuint DebounceTimerId = 1;
     private const uint DebounceMs = 150;
@@ -50,6 +52,11 @@ internal sealed class ClipboardThread : IDisposable
     /// <summary>The user copied something on this device. Raised on the clipboard thread.</summary>
     public event Action<ClipboardSnapshot>? LocalChanged;
 
+    /// <summary>Diagnostics: clipboard update notifications received / changes handled after debounce.</summary>
+    internal int Notifications;
+
+    internal int ChangesHandled;
+
     public void Start()
     {
         _thread.Start();
@@ -81,6 +88,15 @@ internal sealed class ClipboardThread : IDisposable
             completion.TrySetException(new InvalidOperationException("The clipboard thread is not running."));
         }
 
+        return completion.Task;
+    }
+
+    /// <summary>Reads the clipboard right now (diagnostics and tests).</summary>
+    public Task<ClipboardSnapshot?> ReadNowAsync()
+    {
+        var completion = new TaskCompletionSource<ClipboardSnapshot?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ = InvokeAsync(() => completion.TrySetResult(ReadSnapshot()))
+            .ContinueWith(t => completion.TrySetException(t.Exception!.InnerExceptions), TaskContinuationOptions.OnlyOnFaulted);
         return completion.Task;
     }
 
@@ -188,11 +204,13 @@ internal sealed class ClipboardThread : IDisposable
         {
             case WM_CLIPBOARDUPDATE:
                 // Apps often set several formats in a row; read once things settle.
+                Notifications++;
                 SetTimer(hWnd, DebounceTimerId, DebounceMs, 0);
                 return 0;
 
             case WM_TIMER when wParam == (nint)DebounceTimerId:
                 KillTimer(hWnd, DebounceTimerId);
+                ChangesHandled++;
                 HandleChange();
                 return 0;
 

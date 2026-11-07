@@ -55,61 +55,55 @@ public partial class App : Application
         _services = BuildServices();
 
         var node = _services.GetRequiredService<MirroringNode>();
+        var health = _services.GetRequiredService<FeatureHealth>();
+        var input = _services.GetRequiredService<InputSharingService>();
+        var clipboard = _services.GetRequiredService<ClipboardSyncService>();
+        var audio = _services.GetRequiredService<AudioService>();
+        var screen = _services.GetRequiredService<ScreenStreamingService>();
+
         try
         {
             await node.StartAsync();
+            health.Set("Сеть", true, "работает");
         }
         catch (Exception ex)
         {
             Log.Error(ex, "Node failed to start");
-            MessageBox.Show($"Не удалось запустить сетевую часть: {ex.Message}", "WinMirroring", MessageBoxButton.OK, MessageBoxImage.Error);
+            health.Set("Сеть", false, ex.Message);
         }
 
-        try
+        // Every feature starts on its own: one failing must not take the others down.
+        health.Start("Общий ввод", input.Start);
+        health.Start("Буфер обмена", clipboard.Start);
+        health.Start("Перетаскивание файлов", () =>
         {
-            _services.GetRequiredService<InputSharingService>().Start();
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "Input sharing failed to start");
-            MessageBox.Show($"Не удалось включить общий ввод: {ex.Message}", "WinMirroring", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-
-        try
-        {
-            _services.GetRequiredService<ClipboardSyncService>().Start();
+            // Started regardless: it also hands dragged windows over. Only the file part needs the OLE surface.
             _services.GetRequiredService<DragDropCoordinator>().Start();
-        }
-        catch (Exception ex)
+            if (clipboard.Drag is null)
+            {
+                throw new InvalidOperationException("OLE drag and drop is unavailable on this device");
+            }
+        });
+        health.Start("Звук", () =>
         {
-            Log.Error(ex, "Clipboard sharing failed to start");
-        }
-
-        try
-        {
-            var audio = _services.GetRequiredService<AudioService>();
             audio.Start();
-            _services.GetRequiredService<InputSharingService>().ControlledByChanged += audio.SetFocusTarget;
-        }
-        catch (Exception ex)
+            input.ControlledByChanged += audio.SetFocusTarget;
+            screen.ViewersChanged += audio.SetViewers;
+        });
+        health.Start("Экран и окна", () =>
         {
-            Log.Error(ex, "Sound forwarding failed to start");
-        }
-
-        try
-        {
-            var screen = _services.GetRequiredService<ScreenStreamingService>();
-            screen.ViewerOpened += viewer => Dispatcher.BeginInvoke(() => new ScreenViewerWindow(viewer).Show());
+            screen.ViewerOpened += viewer => Dispatcher.BeginInvoke(() => new ScreenViewerWindow(viewer, _services!).Show());
             screen.Start();
-            screen.AttachWindowDrag(_services.GetRequiredService<InputSharingService>());
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "Screen streaming failed to start");
-        }
+            screen.AttachWindowDrag(input);
+        });
+        health.Start("Диагностика", _services.GetRequiredService<DiagnosticsService>().Start);
 
         CreateTrayIcon();
         _services.GetRequiredService<DialogPairingUi>().Notify = ShowNotification;
+        if (health.Failures.Any())
+        {
+            ShowNotification("WinMirroring: не всё запустилось", string.Join("; ", health.Failures.Select(f => $"{f.Name}: {f.Detail}")));
+        }
 
         if (!e.Args.Contains("--minimized", StringComparer.OrdinalIgnoreCase))
         {
@@ -141,6 +135,8 @@ public partial class App : Application
         services.AddSingleton<ILoggerFactory>(new SerilogLoggerFactory(Log.Logger));
         services.AddSingleton(typeof(ILogger<>), typeof(Logger<>));
         services.AddSingleton<DialogPairingUi>();
+        services.AddSingleton<FeatureHealth>();
+        services.AddSingleton<DiagnosticsService>();
         services.AddSingleton<IPairingUserInterface>(sp => sp.GetRequiredService<DialogPairingUi>());
         services.AddSingleton(sp => new MirroringNode(
             new NodeOptions(),

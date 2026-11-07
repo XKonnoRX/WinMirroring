@@ -223,8 +223,7 @@ public sealed class PeerSession : IAsyncDisposable
                 return Fail(prompt, result.Reason ?? "rejected");
             }
 
-            await _onPaired(this).ConfigureAwait(false);
-            TrySetState(SessionState.Pairing, SessionState.Ready);
+            // The receive loop already stored the pairing and switched to Ready (see HandleControlAsync).
             _pairingUi.PairingFinished(prompt, true, null);
             _logger.LogInformation("Paired with {Peer} ({Fingerprint})", PeerName, CertificateFingerprint.ToDisplay(PeerFingerprint));
             return true;
@@ -308,8 +307,11 @@ public sealed class PeerSession : IAsyncDisposable
         }
 
         await _onPaired(this).ConfigureAwait(false);
-        TrySetState(SessionState.Pairing, SessionState.Ready);
+
+        // Result first, Ready second: becoming Ready makes the features start talking, and the initiator must
+        // see the result before any of that traffic.
         await SendControlAsync(new PairResultMessage(true, null), _cts.Token).ConfigureAwait(false);
+        TrySetState(SessionState.Pairing, SessionState.Ready);
         _pairingUi.PairingFinished(prompt, true, null);
         _logger.LogInformation("Paired with {Peer} ({Fingerprint})", PeerName, CertificateFingerprint.ToDisplay(PeerFingerprint));
     }
@@ -453,12 +455,31 @@ public sealed class PeerSession : IAsyncDisposable
                 HandlePairCancel(cancel);
                 return false;
 
-            case PairResultMessage:
-                if (_pairingReply?.TrySetResult(message) != true)
+            case PairResultMessage result:
+                if (_pairingReply is not { } reply)
                 {
-                    _logger.LogDebug("Unexpected {Message} from {Peer}", message.GetType().Name, PeerName);
+                    _logger.LogDebug("Unexpected pairing result from {Peer}", PeerName);
+                    return false;
                 }
 
+                if (result.Ok && State == SessionState.Pairing)
+                {
+                    // Become Ready here, before the next frame is read: the peer starts sending feature traffic
+                    // right behind this message, and handlers are registered when the session turns Ready.
+                    try
+                    {
+                        await _onPaired(this).ConfigureAwait(false);
+                        TrySetState(SessionState.Pairing, SessionState.Ready);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+                    {
+                        _logger.LogError(ex, "Storing the pairing with {Peer} failed", PeerName);
+                        reply.TrySetResult(new PairResultMessage(false, "storage-error"));
+                        return false;
+                    }
+                }
+
+                reply.TrySetResult(result);
                 return false;
 
             case null:

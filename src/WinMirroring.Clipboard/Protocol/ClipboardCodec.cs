@@ -22,6 +22,52 @@ public static class ClipboardCodec
     /// <summary>[5] JSON <see cref="DragPayload"/>: a drag leaves the sender; start it wherever the cursor lands.</summary>
     public const byte DragOutMessage = 5;
 
+    /// <summary>[6] viewer → source: drop these files at a point of the stream.</summary>
+    public const byte ViewerDropMessage = 6;
+
+    /// <summary>[7] viewer → source: a drag was pulled out of the viewer; catch it at a point of the stream.</summary>
+    public const byte ViewerCatchMessage = 7;
+
+    /// <summary>[8] source → viewer: what the catch found (payload may be absent).</summary>
+    public const byte ViewerCaughtMessage = 8;
+
+    public static byte[] EncodeViewerDrag(byte type, ViewerDragMessage message)
+    {
+        var json = JsonSerializer.SerializeToUtf8Bytes(message, Json);
+        var bytes = new byte[json.Length + 1];
+        bytes[0] = type;
+        json.CopyTo(bytes, 1);
+        return bytes;
+    }
+
+    public static ViewerDragMessage? TryDecodeViewerDrag(ReadOnlySpan<byte> message)
+    {
+        if (message.Length < 2 || message[0] is not (ViewerDropMessage or ViewerCatchMessage or ViewerCaughtMessage))
+        {
+            return null;
+        }
+
+        try
+        {
+            var decoded = JsonSerializer.Deserialize<ViewerDragMessage>(message[1..], Json);
+            if (decoded is null || !float.IsFinite(decoded.X) || !float.IsFinite(decoded.Y))
+            {
+                return null;
+            }
+
+            if (decoded.Payload is { } payload && (payload.SourceId.Length == 0 || payload.Manifest?.Entries is null || !payload.Manifest.Entries.All(IsSafeEntry)))
+            {
+                return null;
+            }
+
+            return decoded;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     public static byte[] EncodeDrag(byte type, DragPayload payload)
     {
         var json = JsonSerializer.SerializeToUtf8Bytes(payload, Json);

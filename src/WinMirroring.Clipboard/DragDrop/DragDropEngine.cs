@@ -67,10 +67,17 @@ public sealed class DragDropEngine
         return await completion.Task.WaitAsync(timeout + TimeSpan.FromSeconds(1)).ConfigureAwait(false);
     }
 
-    /// <summary>Puts the origin surface under the cursor so the button press that starts our drag lands on it.</summary>
-    public Task ShowOriginAsync() => _thread.InvokeAsync(() =>
+    /// <summary>
+    /// Puts the origin surface under the cursor (or at <paramref name="at"/>) so the button press that starts our
+    /// drag lands on it.
+    /// </summary>
+    public Task ShowOriginAsync(Point? at = null) => _thread.InvokeAsync(() =>
     {
-        if (GetCursorPos(out var cursor))
+        if (at is { } point)
+        {
+            _surface.ShowOrigin(point);
+        }
+        else if (GetCursorPos(out var cursor))
         {
             _surface.ShowOrigin(new Point(cursor.X, cursor.Y));
         }

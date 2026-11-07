@@ -52,6 +52,21 @@ public sealed class ClipboardSyncService : IAsyncDisposable
     /// <summary>A device this one controls says a drag is leaving it (we are the controller).</summary>
     public event Action<PeerSession, DragPayload>? DragOutReceived;
 
+    /// <summary>Viewer drag and drop messages (type byte, message), raised inline on the receive loop.</summary>
+    public event Action<PeerSession, byte, ViewerDragMessage>? ViewerDragReceived;
+
+    public async Task SendViewerDragAsync(PeerSession session, byte type, ViewerDragMessage message)
+    {
+        try
+        {
+            await session.SendAsync(ChannelId.Clipboard, ClipboardCodec.EncodeViewerDrag(type, message), _cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or OperationCanceledException)
+        {
+            _logger.LogDebug("Viewer drag message to {Peer} not sent: {Message}", session.PeerName, ex.Message);
+        }
+    }
+
     /// <summary>OLE drag and drop on the clipboard thread; available after <see cref="Start"/>.</summary>
     public DragDropEngine? Drag { get; private set; }
 
@@ -66,10 +81,22 @@ public sealed class ClipboardSyncService : IAsyncDisposable
         thread.Start();
         _thread = thread;
 
-        var drag = new DragDropEngine(thread, _logger);
-        if (drag.InitializeAsync().Wait(TimeSpan.FromSeconds(5)))
+        // Drag and drop is optional: if its surface cannot be created, the clipboard itself keeps working.
+        try
         {
-            Drag = drag;
+            var drag = new DragDropEngine(thread, _logger);
+            if (drag.InitializeAsync().Wait(TimeSpan.FromSeconds(5)))
+            {
+                Drag = drag;
+            }
+            else
+            {
+                _logger.LogWarning("Drag surface did not initialise in time; drag and drop is off");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Drag surface failed; drag and drop is off");
         }
 
         _node.Sessions.SessionReady += OnSessionReady;
@@ -188,6 +215,23 @@ public sealed class ClipboardSyncService : IAsyncDisposable
         Report($"Отправлено: {what} → {sent} устр.");
     }
 
+    /// <summary>Sends what is on the local clipboard right now to every connected device (manual resync).</summary>
+    public async Task<bool> PublishNowAsync()
+    {
+        if (_thread is not { } thread)
+        {
+            return false;
+        }
+
+        var snapshot = await thread.ReadNowAsync().ConfigureAwait(false);
+        if (snapshot is null || snapshot.IsEmpty)
+        {
+            return false;
+        }
+
+        return _outbox.Writer.TryWrite(snapshot);
+    }
+
     // ---- drag and drop -----------------------------------------------------------------------------------
 
     /// <summary>Turns local paths (caught from a drag) into a payload this device serves.</summary>
@@ -237,7 +281,15 @@ public sealed class ClipboardSyncService : IAsyncDisposable
             // must find the drag already registered.
             if (_node.Settings.Clipboard.DragDropEnabled && ClipboardCodec.TryDecodeDrag(payload.Span) is { } drag)
             {
-                var handler = payload.Span[0] == ClipboardCodec.DragStartMessage ? DragStartReceived : DragOutReceived;
+                var start = payload.Span[0] == ClipboardCodec.DragStartMessage;
+                _logger.LogInformation("Drag {Kind} from {Peer}: {Count} item(s) served by {Source}",
+                    start ? "start" : "hand-off", session.PeerName, drag.Manifest.TopLevel.Count(), drag.Manifest.SourceName);
+                var handler = start ? DragStartReceived : DragOutReceived;
+                if (handler is null)
+                {
+                    _logger.LogWarning("Drag message from {Peer} ignored: drag and drop is not running here", session.PeerName);
+                }
+
                 try
                 {
                     handler?.Invoke(session, drag);
@@ -245,6 +297,23 @@ public sealed class ClipboardSyncService : IAsyncDisposable
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Drag message handler failed");
+                }
+            }
+
+            return ValueTask.CompletedTask;
+        }
+
+        if (payload.Span[0] is ClipboardCodec.ViewerDropMessage or ClipboardCodec.ViewerCatchMessage or ClipboardCodec.ViewerCaughtMessage)
+        {
+            if (_node.Settings.Clipboard.DragDropEnabled && ClipboardCodec.TryDecodeViewerDrag(payload.Span) is { } viewerDrag)
+            {
+                try
+                {
+                    ViewerDragReceived?.Invoke(session, payload.Span[0], viewerDrag);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Viewer drag handler failed");
                 }
             }
 
@@ -302,13 +371,14 @@ public sealed class ClipboardSyncService : IAsyncDisposable
                     var dataObject = new VirtualFileDataObject(manifest, source, AllowsDirectPaste(manifest), session.PeerId, _logger);
                     dataObject.DownloadStarted += m => Report($"Вставка: загрузка {DescribeFiles(m)} с {m.SourceName}…");
                     await thread.SetDataObjectAsync(dataObject).ConfigureAwait(false);
+                    _logger.LogInformation("Files from {Peer} put on the clipboard: {What}", session.PeerName, DescribeFiles(manifest));
                     Report($"Получено с {session.PeerName}: {DescribeFiles(manifest)}");
                     break;
             }
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or System.Runtime.InteropServices.COMException or OperationCanceledException)
+        catch (Exception ex)
         {
-            _logger.LogWarning("Clipboard from {Peer} not applied: {Message}", session.PeerName, ex.Message);
+            _logger.LogWarning(ex, "Clipboard from {Peer} not applied", session.PeerName);
         }
     }
 
@@ -321,6 +391,7 @@ public sealed class ClipboardSyncService : IAsyncDisposable
         }
 
         await thread.WriteItemsAsync(items).ConfigureAwait(false);
+        _logger.LogInformation("Clipboard from {Peer} applied: {What}", session.PeerName, DescribeItems(items));
         Report($"Получено с {session.PeerName}: {DescribeItems(items)}");
     }
 

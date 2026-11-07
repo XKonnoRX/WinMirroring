@@ -34,6 +34,7 @@ internal sealed class ScreenSource : IAsyncDisposable
     private readonly ScreenSettings _settings;
     private readonly ILogger _logger;
     private readonly InputInjector _injector = new();
+    private readonly Injection.TouchInjector _touch;
     private readonly TileEncoder _encoder = new();
     private readonly SemaphoreSlim _window = new(MaxInFlight, MaxInFlight);
     private readonly CancellationTokenSource _cts = new();
@@ -59,6 +60,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         Title = title;
         _settings = settings;
         _logger = logger;
+        _touch = new Injection.TouchInjector(logger);
         _capture.Closed += OnCaptureClosed;
     }
 
@@ -188,11 +190,44 @@ internal sealed class ScreenSource : IAsyncDisposable
         }
     }
 
+    public void OnTouch(byte action, byte contact, float x, float y)
+    {
+        if (!_settings.AllowControl || !TryMapToScreen(x, y, out var point))
+        {
+            return;
+        }
+
+        var touchAction = (Injection.TouchInjector.Action)action;
+        if (touchAction == Injection.TouchInjector.Action.Down && Kind == StreamKind.Window)
+        {
+            BringWindowForward();
+        }
+
+        _touch.Apply(touchAction, contact, point);
+    }
+
+    /// <summary>Puts a window stream's window in front (before dropping files on it, for example).</summary>
+    public void BringForward()
+    {
+        if (Kind == StreamKind.Window)
+        {
+            BringWindowForward();
+        }
+    }
+
     public void OnKey(ushort virtualKey, ushort scanCode, bool up, bool extended)
     {
         if (_settings.AllowControl)
         {
             _injector.Key(virtualKey, scanCode, up, extended);
+        }
+    }
+
+    public void OnText(string text)
+    {
+        if (_settings.AllowControl && text.Length > 0)
+        {
+            WinMirroring.Input.Injection.InputInjector.TypeText(text);
         }
     }
 
@@ -410,6 +445,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         capture.Dispose();
         _encoder.Dispose();
         _injector.ReleaseAll();
+        _touch.Dispose();
         _cts.Dispose();
         _logger.LogInformation("Stopped streaming {Title} to {Peer}", Title, Session.PeerName);
     }

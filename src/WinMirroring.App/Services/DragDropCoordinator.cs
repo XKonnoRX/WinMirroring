@@ -20,7 +20,7 @@ namespace WinMirroring.App.Services;
 /// </list>
 /// Contents are pulled from the device that owns the files only when the drop happens.
 /// </summary>
-public sealed class DragDropCoordinator : IDisposable
+public sealed partial class DragDropCoordinator : IDisposable
 {
     private const int VkLButton = 0x01;
     private static readonly TimeSpan CatchTimeout = TimeSpan.FromMilliseconds(300);
@@ -28,17 +28,24 @@ public sealed class DragDropCoordinator : IDisposable
     private readonly MirroringNode _node;
     private readonly InputSharingService _input;
     private readonly ClipboardSyncService _clipboard;
+    private readonly WinMirroring.Screen.ScreenStreamingService _screen;
     private readonly ILogger _logger;
     private readonly object _gate = new();
 
     private string? _focus;
     private DragPayload? _handedToUs;
 
-    public DragDropCoordinator(MirroringNode node, InputSharingService input, ClipboardSyncService clipboard, ILogger<DragDropCoordinator> logger)
+    public DragDropCoordinator(
+        MirroringNode node,
+        InputSharingService input,
+        ClipboardSyncService clipboard,
+        WinMirroring.Screen.ScreenStreamingService screen,
+        ILogger<DragDropCoordinator> logger)
     {
         _node = node;
         _input = input;
         _clipboard = clipboard;
+        _screen = screen;
         _logger = logger;
     }
 
@@ -51,6 +58,7 @@ public sealed class DragDropCoordinator : IDisposable
         _input.BeforeEdgeHandOff = HandOffAsync;
         _clipboard.DragStartReceived += OnDragStart;
         _clipboard.DragOutReceived += OnDragOut;
+        _clipboard.ViewerDragReceived += OnViewerDrag;
     }
 
     // ---- controller side ---------------------------------------------------------------------------------
@@ -83,7 +91,7 @@ public sealed class DragDropCoordinator : IDisposable
                     _ = SendStartAsync(peerId, handed);
                 }
             }
-            else if (previous is null && leftHeld)
+            else if (previous is null && leftHeld && !_screen.IsMovingWindow)
             {
                 _ = Guard(() => CatchLocalDragAsync(peerId));
             }
@@ -170,8 +178,15 @@ public sealed class DragDropCoordinator : IDisposable
 
     private void OnDragStart(PeerSession from, DragPayload payload)
     {
-        if (!Enabled || _input.ControllerId != from.PeerId)
+        if (!Enabled)
         {
+            _logger.LogInformation("Drag from {Peer} ignored: file drag and drop is off here", from.PeerName);
+            return;
+        }
+
+        if (_input.ControllerId != from.PeerId)
+        {
+            _logger.LogInformation("Drag from {Peer} ignored: it does not control this device (controller: {Controller})", from.PeerName, _input.ControllerId ?? "none");
             return;
         }
 
@@ -193,11 +208,18 @@ public sealed class DragDropCoordinator : IDisposable
         // Stands for the controller's button, which was already down when the cursor arrived. Tracked, so it is
         // released (and the drag cancelled first) if control leaves before the drop.
         _input.InjectLocalButton(MouseButton.Left, down: true, track: true);
-        await drag.StartDragAsync(payload, source, _clipboard.AllowsDirectPaste(payload.Manifest));
+        var effect = await drag.StartDragAsync(payload, source, _clipboard.AllowsDirectPaste(payload.Manifest));
+        _logger.LogInformation("Drag of files from {Source} finished here with effect {Effect}", payload.Manifest.SourceName, effect);
     }
 
     private async Task HandOffAsync(PeerSession controller, System.Drawing.Point at)
     {
+        // A window being moved by its title bar goes to the controller as a window stream.
+        if (await _screen.TrySendMovingWindowAsync(controller.PeerId))
+        {
+            return;
+        }
+
         if (!Enabled)
         {
             return;
@@ -239,5 +261,6 @@ public sealed class DragDropCoordinator : IDisposable
         _input.BeforeEdgeHandOff = null;
         _clipboard.DragStartReceived -= OnDragStart;
         _clipboard.DragOutReceived -= OnDragOut;
+        _clipboard.ViewerDragReceived -= OnViewerDrag;
     }
 }

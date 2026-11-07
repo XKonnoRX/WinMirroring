@@ -99,6 +99,27 @@ public class CodecTests
     }
 
     [Fact]
+    public void ViewerDragMessagesRoundTripAndRejectUnsafePaths()
+    {
+        var payload = new DragPayload("device-a", new FileOfferManifest(3, "A", [new FileOfferEntry("photo.jpg", 10, false, 1)]));
+
+        var drop = ClipboardCodec.EncodeViewerDrag(ClipboardCodec.ViewerDropMessage, new ViewerDragMessage(7, 0.25f, 0.5f, 11, payload));
+        Assert.Equal(ClipboardCodec.ViewerDropMessage, drop[0]);
+        var decoded = ClipboardCodec.TryDecodeViewerDrag(drop);
+        Assert.NotNull(decoded);
+        Assert.Equal((7u, 0.25f, 0.5f, 11u), (decoded.StreamId, decoded.X, decoded.Y, decoded.RequestId));
+        Assert.Equal("photo.jpg", Assert.Single(decoded.Payload!.Manifest.Entries).Path);
+
+        var catchRequest = ClipboardCodec.TryDecodeViewerDrag(ClipboardCodec.EncodeViewerDrag(ClipboardCodec.ViewerCatchMessage, new ViewerDragMessage(7, 1, 0, 12, null)));
+        Assert.NotNull(catchRequest);
+        Assert.Null(catchRequest.Payload);
+
+        var evil = payload with { Manifest = new FileOfferManifest(3, "A", [new FileOfferEntry("C:\\Windows\\x", 1, false, 1)]) };
+        Assert.Null(ClipboardCodec.TryDecodeViewerDrag(ClipboardCodec.EncodeViewerDrag(ClipboardCodec.ViewerCaughtMessage, new ViewerDragMessage(7, 0, 0, 1, evil))));
+        Assert.Null(ClipboardCodec.TryDecodeViewerDrag(ClipboardCodec.EncodeViewerDrag(ClipboardCodec.DragStartMessage, new ViewerDragMessage(7, 0, 0, 1, null))));
+    }
+
+    [Fact]
     public void FileMessagesRoundTrip()
     {
         Assert.True(FileCodec.TryDecodeRequest(FileCodec.EncodeRequest(5, 77, 3, 1L << 33, 4096), out var id, out var offer, out var index, out var offset, out var length));

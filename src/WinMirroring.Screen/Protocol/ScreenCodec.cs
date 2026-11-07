@@ -29,6 +29,12 @@ public enum ScreenMessageType : byte
 
     /// <summary>Viewer → source: stream only this normalized part of the captured image.</summary>
     Crop = 5,
+
+    /// <summary>Viewer → source: a touch contact (real touch is injected on the source).</summary>
+    Touch = 6,
+
+    /// <summary>Viewer → source: characters without a key (touch keyboard, IME), typed as Unicode.</summary>
+    Text = 7,
 }
 
 public sealed record ScreenFrame(uint StreamId, uint FrameNo, int Width, int Height, IReadOnlyList<EncodedTile> Tiles);
@@ -140,6 +146,81 @@ public static class ScreenCodec
         BinaryPrimitives.WriteUInt16LittleEndian(message.AsSpan(7), scanCode);
         message[9] = (byte)((up ? 1 : 0) | (extended ? 2 : 0));
         return message;
+    }
+
+    /// <summary>Touch: u8 action (1 down, 2 move, 3 up, 4 cancel), u8 contact id, f32 x, f32 y.</summary>
+    public static byte[] EncodeTouch(uint streamId, byte action, byte contact, float x, float y)
+    {
+        var message = new byte[15];
+        message[0] = (byte)ScreenMessageType.Touch;
+        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(1), streamId);
+        message[5] = action;
+        message[6] = contact;
+        BinaryPrimitives.WriteSingleLittleEndian(message.AsSpan(7), x);
+        BinaryPrimitives.WriteSingleLittleEndian(message.AsSpan(11), y);
+        return message;
+    }
+
+    public static bool TryDecodeTouch(ReadOnlySpan<byte> message, out byte action, out byte contact, out float x, out float y)
+    {
+        action = contact = 0;
+        x = y = 0;
+        if (message.Length < 15 || message[0] != (byte)ScreenMessageType.Touch)
+        {
+            return false;
+        }
+
+        action = message[5];
+        contact = message[6];
+        x = BinaryPrimitives.ReadSingleLittleEndian(message[7..]);
+        y = BinaryPrimitives.ReadSingleLittleEndian(message[11..]);
+        if (!float.IsFinite(x) || !float.IsFinite(y) || action is < 1 or > 4)
+        {
+            return false;
+        }
+
+        x = Math.Clamp(x, 0f, 1f);
+        y = Math.Clamp(y, 0f, 1f);
+        return true;
+    }
+
+    public const int MaxTextLength = 4096;
+
+    /// <summary>Text: UTF-16 code units, at most <see cref="MaxTextLength"/>.</summary>
+    public static byte[] EncodeText(uint streamId, string text)
+    {
+        if (text.Length > MaxTextLength)
+        {
+            text = text[..MaxTextLength];
+        }
+
+        var message = new byte[5 + text.Length * 2];
+        message[0] = (byte)ScreenMessageType.Text;
+        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(1), streamId);
+        for (var i = 0; i < text.Length; i++)
+        {
+            BinaryPrimitives.WriteUInt16LittleEndian(message.AsSpan(5 + i * 2), text[i]);
+        }
+
+        return message;
+    }
+
+    public static bool TryDecodeText(ReadOnlySpan<byte> message, out string text)
+    {
+        text = string.Empty;
+        if (message.Length < 7 || message[0] != (byte)ScreenMessageType.Text || (message.Length - 5) % 2 != 0 || (message.Length - 5) / 2 > MaxTextLength)
+        {
+            return false;
+        }
+
+        var chars = new char[(message.Length - 5) / 2];
+        for (var i = 0; i < chars.Length; i++)
+        {
+            chars[i] = (char)BinaryPrimitives.ReadUInt16LittleEndian(message[(5 + i * 2)..]);
+        }
+
+        text = new string(chars);
+        return true;
     }
 
     public static byte[] EncodeCrop(uint streamId, RectangleF crop)

@@ -20,6 +20,9 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(ScreenRequestMessage), "screen-request")]
 [JsonDerivedType(typeof(ScreenStreamMessage), "screen-stream")]
 [JsonDerivedType(typeof(ScreenStopMessage), "screen-stop")]
+[JsonDerivedType(typeof(LogRequestMessage), "log-request")]
+[JsonDerivedType(typeof(LogResponseMessage), "log-response")]
+[JsonDerivedType(typeof(AudioRouteRequestMessage), "audio-route")]
 public abstract record ControlMessage;
 
 /// <summary>First message in each direction. The server adds a challenge the client must sign.</summary>
@@ -62,6 +65,9 @@ public sealed record AudioStartMessage(uint StreamId, string Key, string Codec, 
 
 public sealed record AudioStopMessage(uint StreamId) : ControlMessage;
 
+/// <summary>"Send me your sound" (or stop): the sender wants to hear the receiver's sound until it says otherwise.</summary>
+public sealed record AudioRouteRequestMessage(bool Listen) : ControlMessage;
+
 /// <summary>Viewer → source: stream monitor <see cref="MonitorIndex"/> as <see cref="StreamId"/> (again with a new index to switch).</summary>
 public sealed record ScreenRequestMessage(uint StreamId, int MonitorIndex) : ControlMessage;
 
@@ -70,3 +76,9 @@ public sealed record ScreenStreamMessage(uint StreamId, string Kind, string Titl
 
 /// <summary>Either side: the stream ends.</summary>
 public sealed record ScreenStopMessage(uint StreamId, string? Reason) : ControlMessage;
+
+/// <summary>Paired device asks for the tail of this device's application log (troubleshooting).</summary>
+public sealed record LogRequestMessage(uint RequestId) : ControlMessage;
+
+/// <summary>Tail of the log; <see cref="Text"/> is empty with an <see cref="Error"/> when it could not be read.</summary>
+public sealed record LogResponseMessage(uint RequestId, string FileName, string Text, string? Error) : ControlMessage;

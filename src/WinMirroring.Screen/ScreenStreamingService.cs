@@ -24,6 +24,7 @@ public sealed class ScreenStreamingService : IAsyncDisposable
     private readonly ConcurrentDictionary<uint, ScreenSource> _sources = new();
     private readonly ConcurrentDictionary<uint, ScreenViewer> _viewers = new();
     private readonly ConcurrentDictionary<uint, string> _requested = new();
+    private readonly ConcurrentDictionary<(nint Window, string PeerId), byte> _windowsStarting = new();
     private WindowDragWatcher? _watcher;
     private InputSharingService? _input;
 
@@ -37,6 +38,49 @@ public sealed class ScreenStreamingService : IAsyncDisposable
     public event Action<ScreenViewer>? ViewerOpened;
 
     public event Action? SourcesChanged;
+
+    /// <summary>Peer ids currently watching one of this device's monitors (sound can follow them).</summary>
+    public event Action<IReadOnlyCollection<string>>? ViewersChanged;
+
+    /// <summary>True while a window is being moved by its title bar on this device.</summary>
+    public bool IsMovingWindow => _watcher is { } watcher && watcher.Moving != 0;
+
+    private void RaiseSourcesChanged()
+    {
+        SourcesChanged?.Invoke();
+        ViewersChanged?.Invoke(_sources.Values
+            .Where(s => s.Kind == StreamKind.Monitor)
+            .Select(s => s.Session.PeerId)
+            .Distinct()
+            .ToList());
+    }
+
+    /// <summary>
+    /// Controlled side: the cursor leaves this device while a window is being moved here, so send that window to
+    /// the device that controls us. Returns false when no window is being moved.
+    /// </summary>
+    public async Task<bool> TrySendMovingWindowAsync(string peerId)
+    {
+        var settings = _node.Settings.Screen;
+        if (_watcher is null || !settings.WindowDragEnabled || !settings.AllowViewing)
+        {
+            return false;
+        }
+
+        var moving = _watcher.Moving;
+        if (moving == 0)
+        {
+            return false;
+        }
+
+        _watcher.MarkSent(moving);
+        _logger.LogInformation("Window dragged out to {Peer}", peerId);
+
+        // Setting up a capture can take a second; the cursor hand-off must not wait for it.
+        _ = SendWindowAsync(peerId, moving);
+        await Task.CompletedTask.ConfigureAwait(false);
+        return true;
+    }
 
     public IReadOnlyList<ActiveScreenSource> Sources =>
         _sources.Values.Select(s => new ActiveScreenSource(s.StreamId, s.Session.PeerName, s.Title)).ToList();
@@ -64,6 +108,26 @@ public sealed class ScreenStreamingService : IAsyncDisposable
     }
 
     public static IReadOnlyList<WindowDescription> ShareableWindows() => DisplayCatalog.Windows();
+
+    /// <summary>
+    /// A point of an outgoing stream (normalized image coordinates, as the viewer sends them) on this device's
+    /// screen, when that viewer may control this device. Used to drop or catch files where the viewer points.
+    /// </summary>
+    public bool TryMapToScreen(string peerId, uint streamId, float x, float y, out System.Drawing.Point point, bool bringForward = false)
+    {
+        point = default;
+        if (!_node.Settings.Screen.AllowControl || !_sources.TryGetValue(streamId, out var source) || source.Session.PeerId != peerId)
+        {
+            return false;
+        }
+
+        if (bringForward)
+        {
+            source.BringForward();
+        }
+
+        return source.TryMapToScreen(Math.Clamp(x, 0f, 1f), Math.Clamp(y, 0f, 1f), out point);
+    }
 
     /// <summary>Asks <paramref name="peerId"/> to stream one of its monitors here.</summary>
     public async Task<bool> RequestScreenAsync(string peerId, int monitorIndex = 0)
@@ -96,18 +160,34 @@ public sealed class ScreenStreamingService : IAsyncDisposable
             return false;
         }
 
-        ScreenSource source;
-        try
+        // Crossing the edge twice during one drag must not open the same window twice over there, also while the
+        // first stream is still being set up (creating a capture can take a second).
+        var key = (window, peerId);
+        if (_sources.Values.Any(s => s.Kind == StreamKind.Window && s.Window == window && s.Session.PeerId == peerId)
+            || !_windowsStarting.TryAdd(key, 0))
         {
-            source = ScreenSource.ForWindow(session, NewStreamId(), window, _node.Settings.Screen, _logger);
-        }
-        catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or ArgumentException or InvalidOperationException)
-        {
-            _logger.LogWarning("Window cannot be captured: {Message}", ex.Message);
-            return false;
+            return true;
         }
 
-        return await StartSourceAsync(session, source).ConfigureAwait(false);
+        try
+        {
+            ScreenSource source;
+            try
+            {
+                source = ScreenSource.ForWindow(session, NewStreamId(), window, _node.Settings.Screen, _logger);
+            }
+            catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or ArgumentException or InvalidOperationException)
+            {
+                _logger.LogWarning("Window cannot be captured: {Message}", ex.Message);
+                return false;
+            }
+
+            return await StartSourceAsync(session, source).ConfigureAwait(false);
+        }
+        finally
+        {
+            _windowsStarting.TryRemove(key, out _);
+        }
     }
 
     public async Task StopSourceAsync(uint streamId, string reason = "stopped")
@@ -126,7 +206,7 @@ public sealed class ScreenStreamingService : IAsyncDisposable
         }
 
         await source.DisposeAsync().ConfigureAwait(false);
-        SourcesChanged?.Invoke();
+        RaiseSourcesChanged();
     }
 
     // ---- window drag -------------------------------------------------------------------------------------
@@ -141,6 +221,11 @@ public sealed class ScreenStreamingService : IAsyncDisposable
 
         var moving = _watcher.Moving;
         if (moving == 0 || !_input.IsLocalButtonPhysicallyDown(Input.Protocol.MouseButton.Left))
+        {
+            return;
+        }
+
+        if (_sources.Values.Any(s => s.Kind == StreamKind.Window && s.Window == moving && s.Session.PeerId == peerId))
         {
             return;
         }
@@ -177,7 +262,7 @@ public sealed class ScreenStreamingService : IAsyncDisposable
             }
         }
 
-        SourcesChanged?.Invoke();
+        RaiseSourcesChanged();
     }
 
     private void OnControlMessage(PeerSession session, ControlMessage message)
@@ -196,7 +281,7 @@ public sealed class ScreenStreamingService : IAsyncDisposable
                 if (_sources.TryGetValue(stop.StreamId, out var source) && ReferenceEquals(source.Session, session) && _sources.TryRemove(stop.StreamId, out _))
                 {
                     _ = source.DisposeAsync().AsTask();
-                    SourcesChanged?.Invoke();
+                    RaiseSourcesChanged();
                 }
 
                 if (_viewers.TryGetValue(stop.StreamId, out var viewer) && ReferenceEquals(viewer.Session, session) && _viewers.TryRemove(stop.StreamId, out _))
@@ -223,7 +308,7 @@ public sealed class ScreenStreamingService : IAsyncDisposable
             {
                 existing.SwitchMonitor(request.MonitorIndex);
                 await session.SendControlAsync(existing.Describe()).ConfigureAwait(false);
-                SourcesChanged?.Invoke();
+                RaiseSourcesChanged();
                 return;
             }
 
@@ -244,7 +329,7 @@ public sealed class ScreenStreamingService : IAsyncDisposable
         {
             await session.SendControlAsync(source.Describe()).ConfigureAwait(false);
             source.Start();
-            SourcesChanged?.Invoke();
+            RaiseSourcesChanged();
             return true;
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
@@ -319,6 +404,14 @@ public sealed class ScreenStreamingService : IAsyncDisposable
 
             case ScreenMessageType.Crop when ScreenCodec.TryDecodeCrop(span, out var crop):
                 source.OnCrop(crop);
+                break;
+
+            case ScreenMessageType.Touch when ScreenCodec.TryDecodeTouch(span, out var touchAction, out var contact, out var tx, out var ty):
+                source.OnTouch(touchAction, contact, tx, ty);
+                break;
+
+            case ScreenMessageType.Text when ScreenCodec.TryDecodeText(span, out var text):
+                source.OnText(text);
                 break;
         }
 

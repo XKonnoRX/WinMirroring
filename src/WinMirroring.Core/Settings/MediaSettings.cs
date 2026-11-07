@@ -45,6 +45,9 @@ public sealed class AudioSettings
     /// <summary>Always send sound to this device while it is connected (empty: none).</summary>
     public string PinnedTargetId { get; set; } = string.Empty;
 
+    /// <summary>Send sound to a device that is watching one of this device's monitors.</summary>
+    public bool FollowScreenViewer { get; set; } = true;
+
     /// <summary>Mute the local speakers while the sound plays elsewhere. Capture is not affected by mute.</summary>
     public bool MuteLocalWhileSending { get; set; } = true;
 

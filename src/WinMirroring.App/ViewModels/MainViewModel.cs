@@ -37,6 +37,8 @@ public sealed partial class MainViewModel : ObservableObject
         WinMirroring.Audio.AudioService audio,
         WinMirroring.Screen.ScreenStreamingService screen,
         DialogPairingUi pairingUi,
+        FeatureHealth health,
+        DiagnosticsService diagnostics,
         ILogger<MainViewModel> logger)
     {
         _node = node;
@@ -44,6 +46,8 @@ public sealed partial class MainViewModel : ObservableObject
         _clipboard = clipboard;
         _audio = audio;
         _screen = screen;
+        _health = health;
+        _diagnostics = diagnostics;
         _logger = logger;
         _dispatcher = Application.Current.Dispatcher;
 
@@ -90,6 +94,7 @@ public sealed partial class MainViewModel : ObservableObject
 
         InitializeMedia();
         InitializeScreen();
+        InitializeDiagnostics();
         pairingUi.StatusChanged += text => _dispatcher.InvokeAsync(() => StatusText = text);
 
         _statsTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => RefreshStats(), _dispatcher);

@@ -141,6 +141,30 @@ public sealed class InputInjector
         SendKey(virtualKey, scanCode, up, extended);
     }
 
+    /// <summary>Types characters as Unicode packets (no layout involved): what a touch keyboard or IME produced.</summary>
+    public static void TypeText(string text)
+    {
+        const uint KeyeventfUnicode = 0x0004;
+        foreach (var ch in text)
+        {
+            if (ch == '\r' || ch == '\n')
+            {
+                SendKey(0x0D, 0, up: false, extended: false);
+                SendKey(0x0D, 0, up: true, extended: false);
+                continue;
+            }
+
+            foreach (var up in (ReadOnlySpan<bool>)[false, true])
+            {
+                Send(new INPUT
+                {
+                    type = INPUT_KEYBOARD,
+                    u = { ki = new KEYBDINPUT { wScan = ch, dwFlags = KeyeventfUnicode | (up ? KEYEVENTF_KEYUP : 0u), dwExtraInfo = InjectionMarker } },
+                });
+            }
+        }
+    }
+
     /// <summary>Releases every key and button we still hold down; called when the controller leaves or disconnects.</summary>
     public void ReleaseAll()
     {

@@ -124,6 +124,9 @@ public sealed partial class InputSharingService : IAsyncDisposable
 
     public void NudgeCursor() => _injector.Nudge();
 
+    /// <summary>Moves this device's cursor (marked as ours, so our own hooks let it through).</summary>
+    public void MoveCursorTo(System.Drawing.Point point) => _injector.MoveAbsolute(point.X, point.Y);
+
     public void Start()
     {
         _node.Sessions.SessionReady += OnSessionReady;

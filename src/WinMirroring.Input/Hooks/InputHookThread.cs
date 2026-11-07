@@ -13,8 +13,9 @@ namespace WinMirroring.Input.Hooks;
 /// </summary>
 internal sealed class InputHookThread : IDisposable
 {
-    private const string WindowClassName = "WinMirroring.InputSink";
-    private const string ShieldClassName = "WinMirroring.CursorShield";
+    // Unique per instance: a window class carries its window procedure (see ClipboardThread).
+    private readonly string WindowClassName = $"WinMirroring.InputSink.{Guid.NewGuid():N}";
+    private readonly string ShieldClassName = $"WinMirroring.CursorShield.{Guid.NewGuid():N}";
     private const uint WmShieldShow = WM_APP + 1;
     private const uint WmShieldHide = WM_APP + 2;
     private const int ShieldSize = 64;

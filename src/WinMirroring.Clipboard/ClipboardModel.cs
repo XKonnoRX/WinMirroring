@@ -27,6 +27,12 @@ public sealed record FileOfferEntry(string Path, long Size, bool IsDirectory, lo
 /// <summary>Files being dragged across devices; <see cref="SourceId"/> is the device that serves their contents.</summary>
 public sealed record DragPayload(string SourceId, FileOfferManifest Manifest);
 
+/// <summary>
+/// Drag and drop through a screen viewer window. <see cref="X"/>/<see cref="Y"/> are normalized coordinates in the
+/// stream <see cref="StreamId"/>; <see cref="Payload"/> carries files for a drop, or what a catch found.
+/// </summary>
+public sealed record ViewerDragMessage(uint StreamId, float X, float Y, uint RequestId, DragPayload? Payload);
+
 /// <summary>What a drag hovering over our drop surface carried: real local paths, or a drag we started ourselves.</summary>
 public sealed record DragCatch(IReadOnlyList<string>? LocalPaths, DragPayload? Forwarded);
 

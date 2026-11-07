@@ -69,8 +69,21 @@ public sealed class ScreenViewer : IAsyncDisposable
     public void SendPointer(PointerAction action, MouseButton button, float x, float y, int wheel = 0) =>
         _outbox.Writer.TryWrite(ScreenCodec.EncodePointer(StreamId, action, button, x, y, wheel));
 
+    /// <summary>Touch contact: action 1 down, 2 move, 3 up, 4 cancel; <paramref name="contact"/> 0–9.</summary>
+    public void SendTouch(byte action, byte contact, float x, float y) =>
+        _outbox.Writer.TryWrite(ScreenCodec.EncodeTouch(StreamId, action, contact, x, y));
+
     public void SendKey(ushort virtualKey, ushort scanCode, bool up, bool extended) =>
         _outbox.Writer.TryWrite(ScreenCodec.EncodeKey(StreamId, virtualKey, scanCode, up, extended));
+
+    /// <summary>Characters that came without a usable key (touch keyboard, IME, emoji).</summary>
+    public void SendText(string text)
+    {
+        if (text.Length > 0)
+        {
+            _outbox.Writer.TryWrite(ScreenCodec.EncodeText(StreamId, text));
+        }
+    }
 
     /// <summary>Stream only this normalized part of the source image (the full image is 0,0,1,1).</summary>
     public void SetCrop(RectangleF crop) => _outbox.Writer.TryWrite(ScreenCodec.EncodeCrop(StreamId, ScreenCodec.Normalize(crop)));

@@ -32,6 +32,9 @@ public sealed partial class MainViewModel
         OpenShareCommand.NotifyCanExecuteChanged();
         CopyAddressCommand.NotifyCanExecuteChanged();
         ReconnectCommand.NotifyCanExecuteChanged();
+        ToggleListenCommand.NotifyCanExecuteChanged();
+        TogglePinnedAudioCommand.NotifyCanExecuteChanged();
+        FetchPeerLogCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnSelectedPeerChanged(PeerItemViewModel? value) => RefreshPeerCommands();

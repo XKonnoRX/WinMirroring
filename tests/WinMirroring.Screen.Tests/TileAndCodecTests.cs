@@ -110,6 +110,23 @@ public class TileAndCodecTests
         Assert.Equal(99u, frameNo);
     }
 
+    [Fact]
+    public void TouchAndTextMessagesRoundTrip()
+    {
+        Assert.True(ScreenCodec.TryDecodeTouch(ScreenCodec.EncodeTouch(3, 2, 7, 0.5f, 1.5f), out var action, out var contact, out var x, out var y));
+        Assert.Equal(((byte)2, (byte)7, 0.5f, 1f), (action, contact, x, y));
+        Assert.False(ScreenCodec.TryDecodeTouch(ScreenCodec.EncodeTouch(3, 9, 0, 0.5f, 0.5f), out _, out _, out _, out _));
+        Assert.False(ScreenCodec.TryDecodeTouch(ScreenCodec.EncodeTouch(3, 1, 0, float.NaN, 0.5f), out _, out _, out _, out _));
+
+        Assert.True(ScreenCodec.TryDecodeText(ScreenCodec.EncodeText(3, "Привет 👋"), out var text));
+        Assert.Equal("Привет 👋", text);
+        Assert.True(ScreenCodec.TryReadHeader(ScreenCodec.EncodeText(5, "a"), out var type, out var streamId));
+        Assert.Equal((ScreenMessageType.Text, 5u), (type, streamId));
+        Assert.True(ScreenCodec.TryDecodeText(ScreenCodec.EncodeText(3, new string('x', 10_000)), out var clipped));
+        Assert.Equal(ScreenCodec.MaxTextLength, clipped.Length);
+        Assert.False(ScreenCodec.TryDecodeText([(byte)ScreenMessageType.Text, 3, 0, 0, 0, 1], out _));
+    }
+
     [Theory]
     [InlineData(-1f, -1f, 5f, 5f, 0f, 0f, 1f, 1f)]
     [InlineData(0.5f, 0.5f, 0.001f, 0.5f, 0f, 0f, 1f, 1f)]

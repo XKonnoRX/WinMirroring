@@ -20,7 +20,7 @@ namespace WinMirroring.Clipboard.DragDrop;
 [ComVisible(true)]
 internal sealed class DragSurface : IOleDropTarget
 {
-    private const string ClassName = "WinMirroring.DragSurface";
+    private readonly string ClassName = $"WinMirroring.DragSurface.{Guid.NewGuid():N}";
     private const int SurfaceSize = 96;
     private const nuint HideTimerId = 11;
     private const nuint CatchTimeoutTimerId = 12;
