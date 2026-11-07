@@ -465,6 +465,7 @@ public sealed partial class InputSharingService
 
         Volatile.Write(ref _capture, new Capture(session, sender));
         _hooks?.ShowCursorShield(VirtualScreen.PrimaryCenter);
+        OnCaptureStartedForLayout(session, fromHere: true);
         _logger.LogInformation("Input moved to {Peer}", session.PeerName);
         FocusChanged?.Invoke(session.PeerId);
     }
@@ -487,6 +488,7 @@ public sealed partial class InputSharingService
         }
 
         capture.Sender.CompleteWithLeave();
+        OnCaptureStartedForLayout(next, fromHere: false);
         _logger.LogInformation("Input moved from {From} to {To}", capture.Session.PeerName, next.PeerName);
         FocusChanged?.Invoke(next.PeerId);
     }
@@ -523,6 +525,7 @@ public sealed partial class InputSharingService
         }
 
         ResetPush();
+        OnCaptureEndedForLayout();
         _logger.LogInformation("Input is back on this device (was on {Peer}): {Reason}", capture.Session.PeerName, reason);
         FocusChanged?.Invoke(null);
     }

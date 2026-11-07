@@ -123,7 +123,18 @@ public partial class App : Application
                 $"{peer}: окно администратора не принимает ввод",
                 $"«{(window.Length > 0 ? window : "Окно")}» запущено с правами администратора, и Windows не пропускает в него ввод с другого устройства. " +
                 $"Курсор можно увести обратно через край или Ctrl+Alt+Home. Чтобы управлять такими окнами, перезапустите WinMirroring на {peer} от имени администратора (вкладка «Настройки»)."));
+            input.KeyboardLayoutMissing += name => Dispatcher.BeginInvoke(() => ShowNotification(
+                "WinMirroring: нет такой раскладки",
+                $"На этом устройстве нет раскладки «{name}», поэтому язык ввода не переключился вслед за другим устройством. " +
+                "Добавьте этот язык: Параметры → Время и язык → Язык и регион."));
         });
+
+        // Layouts only switch to ones installed here, so the list is worth comparing between devices.
+        var layoutNames = WinMirroring.Input.Keyboard.KeyboardLayouts.Installed()
+            .Select(WinMirroring.Input.Keyboard.KeyboardLayouts.DisplayName)
+            .Distinct()
+            .ToList();
+        health.Set("Раскладка клавиатуры", true, layoutNames.Count == 0 ? "не удалось прочитать список раскладок" : "здесь: " + string.Join(", ", layoutNames));
         health.Start("Буфер обмена", clipboard.Start);
         health.Start("Перетаскивание файлов", () =>
         {

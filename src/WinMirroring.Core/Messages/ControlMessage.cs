@@ -28,6 +28,7 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(DisplayInviteMessage), "display-invite")]
 [JsonDerivedType(typeof(DisplayExtendRequestMessage), "display-extend")]
 [JsonDerivedType(typeof(DisplayExtendResultMessage), "display-result")]
+[JsonDerivedType(typeof(KeyboardLayoutMessage), "kbd-layout")]
 public abstract record ControlMessage;
 
 /// <summary>First message in each direction. The server adds a challenge the client must sign.</summary>
@@ -96,6 +97,12 @@ public sealed record DisplayExtendRequestMessage(int Width, int Height, int Scal
 
 /// <summary>Host → device: the extension did not start (the stream message follows when it did).</summary>
 public sealed record DisplayExtendResultMessage(bool Ok, string? Error) : ControlMessage;
+
+/// <summary>
+/// Keyboard layout (low 32 bits of an HKL: language in the low word). Controller → controlled device and viewer →
+/// source: "type with this layout"; controlled device → controller: "the user switched to this layout here".
+/// </summary>
+public sealed record KeyboardLayoutMessage(int Layout) : ControlMessage;
 
 /// <summary>Paired device asks for the tail of this device's application log (troubleshooting).</summary>
 public sealed record LogRequestMessage(uint RequestId) : ControlMessage;

@@ -158,6 +158,7 @@ public sealed partial class InputSharingService : IAsyncDisposable
         }
 
         _worker = Task.Run(() => WorkerAsync(_cts.Token));
+        StartKeyboardLayoutWatcher();
 
         if (_node.Settings.Input.Enabled)
         {
@@ -324,6 +325,10 @@ public sealed partial class InputSharingService : IAsyncDisposable
                 RemoteInputBlocked?.Invoke(session.PeerName, blocked.Window);
                 return;
 
+            case KeyboardLayoutMessage keyboard:
+                OnKeyboardLayoutMessage(session, keyboard);
+                return;
+
             case not LayoutMessage:
                 return;
         }
@@ -367,11 +372,16 @@ public sealed partial class InputSharingService : IAsyncDisposable
 
         _commands.Writer.TryComplete();
         await _cts.CancelAsync().ConfigureAwait(false);
-        if (_worker is not null)
+        foreach (var task in new[] { _worker, _layoutWatcher })
         {
+            if (task is null)
+            {
+                continue;
+            }
+
             try
             {
-                await _worker.ConfigureAwait(false);
+                await task.ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {

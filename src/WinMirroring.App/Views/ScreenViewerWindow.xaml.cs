@@ -9,9 +9,11 @@ using System.Windows.Threading;
 using Microsoft.Extensions.DependencyInjection;
 using WinMirroring.App.Services;
 using WinMirroring.Clipboard;
+using WinMirroring.Input;
 using WinMirroring.Screen;
 using WinMirroring.Screen.Protocol;
 using InputButton = WinMirroring.Input.Protocol.MouseButton;
+using KeyboardLayouts = WinMirroring.Input.Keyboard.KeyboardLayouts;
 
 namespace WinMirroring.App.Views;
 
@@ -40,8 +42,10 @@ public partial class ScreenViewerWindow : Window
     private readonly DragDropCoordinator? _dragDrop;
     private readonly ClipboardSyncService? _clipboard;
     private readonly ViewModels.MainViewModel? _quick;
+    private readonly InputSharingService? _input;
     private readonly DispatcherTimer _statsTimer;
     private readonly DispatcherTimer _noticeTimer;
+    private readonly DispatcherTimer _layoutTimer;
     private readonly HashSet<MouseButton> _buttonsDown = [];
     private readonly Dictionary<ushort, (ushort Scan, bool Extended)> _keysDown = [];
     private readonly Dictionary<int, (byte Contact, float X, float Y)> _touches = [];
@@ -64,6 +68,7 @@ public partial class ScreenViewerWindow : Window
         _dragDrop = services.GetService<DragDropCoordinator>();
         _clipboard = services.GetService<ClipboardSyncService>();
         _quick = services.GetService<ViewModels.MainViewModel>();
+        _input = services.GetService<InputSharingService>();
         UpdateInfo();
 
         // A tap on the picture while the quick panel is open just closes the panel.
@@ -86,6 +91,15 @@ public partial class ScreenViewerWindow : Window
         PreviewKeyUp += OnPreviewKey;
         PreviewTextInput += OnPreviewTextInput;
         Deactivated += (_, _) => ReleaseRemoteInput();
+        Activated += (_, _) => ScheduleLayoutPush();
+        InputLanguageManager.Current.InputLanguageChanged += OnInputLanguageChanged;
+
+        _layoutTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(300), DispatcherPriority.Background, (_, _) =>
+        {
+            _layoutTimer!.Stop();
+            PushKeyboardLayout();
+        }, Dispatcher);
+        _layoutTimer.Stop();
 
         _statsTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) =>
         {
@@ -534,6 +548,35 @@ public partial class ScreenViewerWindow : Window
         }
     }
 
+    // ---- keyboard layout ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// While this window controls the other device, that device types with this one's layout. Sent a moment later:
+    /// a layout hotkey pressed here also goes there as keys and switches it on its own, and this has to come after.
+    /// </summary>
+    private void ScheduleLayoutPush()
+    {
+        _layoutTimer.Stop();
+        _layoutTimer.Start();
+    }
+
+    private void OnInputLanguageChanged(object sender, InputLanguageEventArgs e)
+    {
+        if (IsActive)
+        {
+            ScheduleLayoutPush();
+        }
+    }
+
+    private void PushKeyboardLayout()
+    {
+        // A second monitor is this device's own desktop: the touch keyboard there types text, not keys.
+        if (_input is not null && IsActive && ControlEnabled && !IsDisplayMode)
+        {
+            _input.PushKeyboardLayout(_viewer.Session.PeerId, KeyboardLayouts.OfCurrentThread());
+        }
+    }
+
     private void OnToggleKeyboard(object sender, RoutedEventArgs e)
     {
         QuickPanel.Visibility = Visibility.Collapsed;
@@ -781,6 +824,10 @@ public partial class ScreenViewerWindow : Window
         {
             ReleaseRemoteInput();
         }
+        else
+        {
+            ScheduleLayoutPush();
+        }
     }
 
     private void OnCropToggleClick(object sender, RoutedEventArgs e)
@@ -884,6 +931,8 @@ public partial class ScreenViewerWindow : Window
     {
         _statsTimer.Stop();
         _noticeTimer.Stop();
+        _layoutTimer.Stop();
+        InputLanguageManager.Current.InputLanguageChanged -= OnInputLanguageChanged;
         ReleaseRemoteInput();
         if (!_closingFromRemote)
         {

@@ -83,6 +83,7 @@ public class CodecTests
         new DisplayInviteMessage(),
         new DisplayExtendRequestMessage(1920, 1280, 150),
         new DisplayExtendResultMessage(false, "нет драйвера"),
+        new KeyboardLayoutMessage(unchecked((int)0xF0020409)),
     };
 
     [Theory]

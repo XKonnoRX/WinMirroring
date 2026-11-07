@@ -17,6 +17,9 @@ public sealed class InputSettings
     /// <summary>Upper bound for the jitter buffer; the buffer adapts below it to the measured jitter.</summary>
     public int MaxSmoothingDelayMs { get; set; } = 30;
 
+    /// <summary>The device that gets the keyboard switches to the controller's layout, and layout switches made there come back.</summary>
+    public bool SyncKeyboardLayout { get; set; } = true;
+
     /// <summary>Unix milliseconds of the last layout change; peers adopt the newest layout they see.</summary>
     public long LayoutVersion { get; set; }
 

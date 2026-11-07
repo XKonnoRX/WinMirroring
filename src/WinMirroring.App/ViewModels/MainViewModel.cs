@@ -61,6 +61,7 @@ public sealed partial class MainViewModel : ObservableObject
         EdgeResistance = node.Settings.Input.EdgeResistance;
         SmoothingEnabled = node.Settings.Input.SmoothingEnabled;
         MaxSmoothingDelay = node.Settings.Input.MaxSmoothingDelayMs;
+        SyncKeyboardLayout = node.Settings.Input.SyncKeyboardLayout;
 
         foreach (var address in node.Settings.ManualPeerAddresses)
         {
@@ -168,6 +169,17 @@ public sealed partial class MainViewModel : ObservableObject
 
     [ObservableProperty]
     public partial string SmoothingText { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial bool SyncKeyboardLayout { get; set; }
+
+    partial void OnSyncKeyboardLayoutChanged(bool value)
+    {
+        if (_initialized)
+        {
+            _input.SetSyncKeyboardLayout(value);
+        }
+    }
 
     partial void OnSmoothingEnabledChanged(bool value)
     {
