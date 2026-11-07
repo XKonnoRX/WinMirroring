@@ -206,8 +206,17 @@
               <TextBlock VerticalAlignment="Center" Text="Качество JPEG, 30–95:" Width="210" />
               <TextBox Width="60" Text="{Binding ScreenQuality, UpdateSourceTrigger=LostFocus}" />
             </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,2">
+              <TextBlock VerticalAlignment="Center" Text="Кодек изображения:" Width="210" />
+              <ComboBox Width="240" ItemsSource="{Binding ScreenVideoCodecOptions}" DisplayMemberPath="Label"
+                        SelectedValuePath="Value" SelectedValue="{Binding ScreenVideoCodec}" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,2">
+              <TextBlock VerticalAlignment="Center" Text="Битрейт H.264, кбит/с:" Width="210" />
+              <TextBox Width="60" Text="{Binding ScreenVideoBitrate, UpdateSourceTrigger=LostFocus}" />
+            </StackPanel>
             <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,8"
-                       Text="Передаются только изменившиеся участки экрана, частота кадров сама подстраивается под сеть. Посмотреть экран другого устройства: правая кнопка по нему на вкладке «Устройства» → «Показать экран». В окне просмотра можно выделить часть изображения." />
+                       Text="H.264 кодирует весь кадр целиком с аппаратным ускорением (нужен поддерживающий кодер на передающем устройстве); JPEG передаёт только изменившиеся участки экрана. В режиме «Авто» H.264 используется, когда оба устройства его поддерживают, иначе включается JPEG. Частота кадров сама подстраивается под сеть. Посмотреть экран другого устройства: правая кнопка по нему на вкладке «Устройства» → «Показать экран». В окне просмотра можно выделить часть изображения." />
 
             <TextBlock Style="{StaticResource SectionTitle}" Text="Второй монитор" Margin="0,8,0,4" />
             <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,0,0,4"

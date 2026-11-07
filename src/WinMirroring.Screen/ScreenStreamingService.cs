@@ -3,9 +3,11 @@ using Microsoft.Extensions.Logging;
 using WinMirroring.Core;
 using WinMirroring.Core.Messages;
 using WinMirroring.Core.Peers;
+using WinMirroring.Core.Settings;
 using WinMirroring.Core.Transport;
 using WinMirroring.Input;
 using WinMirroring.Screen.Capture;
+using WinMirroring.Screen.Encoding;
 using WinMirroring.Screen.Protocol;
 
 namespace WinMirroring.Screen;
@@ -25,6 +27,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
     private readonly ConcurrentDictionary<uint, ScreenViewer> _viewers = new();
     private readonly ConcurrentDictionary<uint, string> _requested = new();
     private readonly ConcurrentDictionary<(nint Window, string PeerId), byte> _windowsStarting = new();
+    private readonly ConcurrentDictionary<string, ScreenCapabilityMessage> _peerCapabilities = new();
     private WindowDragWatcher? _watcher;
     private InputSharingService? _input;
 
@@ -174,7 +177,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             ScreenSource source;
             try
             {
-                source = ScreenSource.ForWindow(session, NewStreamId(), window, _node.Settings.Screen, _logger);
+                source = ScreenSource.ForWindow(session, NewStreamId(), window, _node.Settings.Screen, NegotiateVideo(session), _logger);
             }
             catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or ArgumentException or InvalidOperationException)
             {
@@ -242,11 +245,37 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
     {
         session.RegisterHandler(ChannelId.Screen, OnScreenFrameAsync);
         session.ControlMessageReceived += OnControlMessage;
+        _ = Task.Run(() => SendCapabilityAsync(session));
+    }
+
+    /// <summary>Tells the peer which screen codecs this device can use (so it only sends H.264 when we can decode).</summary>
+    private async Task SendCapabilityAsync(PeerSession session)
+    {
+        try
+        {
+            await session.SendControlAsync(new ScreenCapabilityMessage(VideoCodecSupport.CanEncodeH264, VideoCodecSupport.CanDecodeH264)).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
+        {
+            _logger.LogDebug("Screen capability not sent to {Peer}: {Message}", session.PeerName, ex.Message);
+        }
+    }
+
+    /// <summary>H.264 is used only when this device may encode it, the setting allows it, and the peer can decode it.</summary>
+    private bool NegotiateVideo(PeerSession session)
+    {
+        if (_node.Settings.Screen.VideoCodec == VideoCodec.Jpeg || !VideoCodecSupport.CanEncodeH264)
+        {
+            return false;
+        }
+
+        return _peerCapabilities.TryGetValue(session.PeerId, out var capability) && capability.CanDecodeH264;
     }
 
     private void OnSessionClosed(PeerSession session)
     {
         session.ControlMessageReceived -= OnControlMessage;
+        _peerCapabilities.TryRemove(session.PeerId, out _);
         foreach (var source in _sources.Values.Where(s => ReferenceEquals(s.Session, session)).ToList())
         {
             if (_sources.TryRemove(source.StreamId, out _))
@@ -277,6 +306,10 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
 
             case ScreenStreamMessage info:
                 HandleStreamInfo(session, info);
+                break;
+
+            case ScreenCapabilityMessage capability:
+                _peerCapabilities[session.PeerId] = capability;
                 break;
 
             case ScreenStopMessage stop:
@@ -319,7 +352,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
                 return;
             }
 
-            var source = ScreenSource.ForMonitor(session, request.StreamId, request.MonitorIndex, _node.Settings.Screen, _logger);
+            var source = ScreenSource.ForMonitor(session, request.StreamId, request.MonitorIndex, _node.Settings.Screen, NegotiateVideo(session), _logger);
             await StartSourceAsync(session, source).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or System.Runtime.InteropServices.COMException or ArgumentException)

@@ -54,7 +54,13 @@ internal sealed class ScreenSource : IAsyncDisposable
     private Task? _loop;
     private int _ended;
 
-    private ScreenSource(PeerSession session, uint streamId, StreamKind kind, WgcCapture capture, MonitorDescription? monitor, nint window, string title, ScreenSettings settings, ILogger logger)
+    // Video (H.264) state, touched only by the streaming loop thread.
+    private readonly bool _useVideo;
+    private H264VideoEncoder? _videoEncoder;
+    private bool _videoFailed;
+    private uint _frameNo;
+
+    private ScreenSource(PeerSession session, uint streamId, StreamKind kind, WgcCapture capture, MonitorDescription? monitor, nint window, string title, ScreenSettings settings, bool useVideo, ILogger logger)
     {
         Session = session;
         StreamId = streamId;
@@ -64,10 +70,14 @@ internal sealed class ScreenSource : IAsyncDisposable
         Window = window;
         Title = title;
         _settings = settings;
+        _useVideo = useVideo;
         _logger = logger;
         _touch = new Injection.TouchInjector(logger);
         _capture.Closed += OnCaptureClosed;
     }
+
+    /// <summary>The codec this stream announces to the viewer: H.264 when negotiated, otherwise JPEG tiles.</summary>
+    private string Codec => _useVideo && !_videoFailed ? "h264" : "jpeg";
 
     public PeerSession Session { get; }
 
@@ -83,21 +93,21 @@ internal sealed class ScreenSource : IAsyncDisposable
 
     public event Action<ScreenSource, string>? Ended;
 
-    public static ScreenSource ForMonitor(PeerSession session, uint streamId, int monitorIndex, ScreenSettings settings, ILogger logger)
+    public static ScreenSource ForMonitor(PeerSession session, uint streamId, int monitorIndex, ScreenSettings settings, bool useVideo, ILogger logger)
     {
         var monitor = PickMonitor(monitorIndex);
-        return new ScreenSource(session, streamId, StreamKind.Monitor, WgcCapture.ForMonitor(monitor.Handle, logger), monitor, 0, MonitorTitle(monitor), settings, logger);
+        return new ScreenSource(session, streamId, StreamKind.Monitor, WgcCapture.ForMonitor(monitor.Handle, logger), monitor, 0, MonitorTitle(monitor), settings, useVideo, logger);
     }
 
-    public static ScreenSource ForWindow(PeerSession session, uint streamId, nint window, ScreenSettings settings, ILogger logger)
+    public static ScreenSource ForWindow(PeerSession session, uint streamId, nint window, ScreenSettings settings, bool useVideo, ILogger logger)
     {
         var title = GetTitle(window);
-        return new ScreenSource(session, streamId, StreamKind.Window, WgcCapture.ForWindow(window, logger), null, window, string.IsNullOrEmpty(title) ? "Окно" : title, settings, logger);
+        return new ScreenSource(session, streamId, StreamKind.Window, WgcCapture.ForWindow(window, logger), null, window, string.IsNullOrEmpty(title) ? "Окно" : title, settings, useVideo, logger);
     }
 
     /// <summary>Streams the virtual monitor that extends this desktop onto the viewer.</summary>
-    public static ScreenSource ForDisplay(PeerSession session, uint streamId, MonitorDescription monitor, ScreenSettings settings, ILogger logger) =>
-        new(session, streamId, StreamKind.Display, WgcCapture.ForMonitor(monitor.Handle, logger), monitor, 0, $"Второй монитор {Environment.MachineName}", settings, logger);
+    public static ScreenSource ForDisplay(PeerSession session, uint streamId, MonitorDescription monitor, ScreenSettings settings, bool useVideo, ILogger logger) =>
+        new(session, streamId, StreamKind.Display, WgcCapture.ForMonitor(monitor.Handle, logger), monitor, 0, $"Второй монитор {Environment.MachineName}", settings, useVideo, logger);
 
     public ScreenStreamMessage Describe() => new(
         StreamId,
@@ -105,7 +115,8 @@ internal sealed class ScreenSource : IAsyncDisposable
         Title,
         Kind == StreamKind.Monitor ? MonitorIndex : 0,
         Kind switch { StreamKind.Monitor => DisplayCatalog.Monitors().Count, StreamKind.Display => 1, _ => 0 },
-        _settings.AllowControl);
+        _settings.AllowControl,
+        Codec);
 
     public void Start()
     {
@@ -332,7 +343,6 @@ internal sealed class ScreenSource : IAsyncDisposable
     {
         var frame = Array.Empty<byte>();
         long seen = 0;
-        uint frameNo = 0;
         WgcCapture? lastCapture = null;
         var pacing = Stopwatch.StartNew();
 
@@ -376,14 +386,23 @@ internal sealed class ScreenSource : IAsyncDisposable
                         crop = ScreenCodec.ToPixels(_crop, width, height);
                     }
 
-                    _encoder.Quality = Math.Clamp(_settings.Quality, 30, 95) / 100f;
-                    var tiles = _encoder.Encode(frame, width, height, crop, force);
-                    if (tiles.Count == 0)
+                    List<byte[]>? messages = null;
+                    if (_useVideo && !_videoFailed)
+                    {
+                        messages = BuildVideoMessages(frame, width, crop, force);
+                        if (_videoFailed)
+                        {
+                            force = true; // just fell back to tiles: make the first JPEG frame complete
+                        }
+                    }
+
+                    messages ??= BuildJpegMessages(frame, width, height, crop, force);
+                    if (messages.Count == 0)
                     {
                         continue;
                     }
 
-                    foreach (var part in Split(tiles))
+                    foreach (var message in messages)
                     {
                         if (!slotHeld)
                         {
@@ -392,7 +411,7 @@ internal sealed class ScreenSource : IAsyncDisposable
 
                         slotHeld = false;
                         Interlocked.Increment(ref _outstanding);
-                        await Session.SendAsync(ChannelId.Screen, ScreenCodec.EncodeFrame(StreamId, ++frameNo, _encoder.Width, _encoder.Height, part), ct).ConfigureAwait(false);
+                        await Session.SendAsync(ChannelId.Screen, message, ct).ConfigureAwait(false);
                     }
                 }
                 finally
@@ -425,6 +444,86 @@ internal sealed class ScreenSource : IAsyncDisposable
             _logger.LogError(ex, "Screen stream {Stream} failed", StreamId);
             End("error");
         }
+    }
+
+    /// <summary>
+    /// Encodes one frame as H.264 and returns the ready access units as VideoFrame messages. Returns null to mean
+    /// "use JPEG for this frame" — because the crop is too small for video, or because the encoder could not be
+    /// created (which also sets <see cref="_videoFailed"/> so the whole stream stays on tiles from now on). An
+    /// empty list means the encoder pipeline has no output yet; nothing is sent this frame.
+    /// </summary>
+    private List<byte[]>? BuildVideoMessages(byte[] frame, int frameWidth, Rectangle crop, bool force)
+    {
+        var videoWidth = Nv12Converter.Even(crop.Width);
+        var videoHeight = Nv12Converter.Even(crop.Height);
+        if (videoWidth < 16 || videoHeight < 16)
+        {
+            return null; // too small for H.264 this frame; the tile path handles it
+        }
+
+        if (_videoEncoder is null || _videoEncoder.Width != videoWidth || _videoEncoder.Height != videoHeight)
+        {
+            _videoEncoder?.Dispose();
+            var fps = Math.Clamp(_settings.MaxFps, 1, 60);
+            _videoEncoder = H264VideoEncoder.TryCreate(videoWidth, videoHeight, fps, ScaleBitrate(videoWidth, videoHeight), _logger);
+            if (_videoEncoder is null)
+            {
+                _logger.LogInformation("H.264 encoder unavailable for {Title}; using JPEG tiles", Title);
+                _videoFailed = true;
+                return null;
+            }
+
+            force = true; // a fresh encoder emits a key frame anyway
+        }
+
+        var videoCrop = new Rectangle(crop.X, crop.Y, videoWidth, videoHeight);
+        IReadOnlyList<VideoAccessUnit> units;
+        try
+        {
+            units = _videoEncoder.Encode(frame, frameWidth, videoCrop, force);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("H.264 encode failed for {Title}; using JPEG tiles: {Message}", Title, ex.Message);
+            _videoEncoder.Dispose();
+            _videoEncoder = null;
+            _videoFailed = true;
+            return null;
+        }
+
+        var messages = new List<byte[]>(units.Count);
+        foreach (var unit in units)
+        {
+            messages.Add(ScreenCodec.EncodeVideoFrame(StreamId, ++_frameNo, videoWidth, videoHeight, unit.Keyframe, unit.Data));
+        }
+
+        return messages;
+    }
+
+    private List<byte[]> BuildJpegMessages(byte[] frame, int frameWidth, int frameHeight, Rectangle crop, bool force)
+    {
+        _encoder.Quality = Math.Clamp(_settings.Quality, 30, 95) / 100f;
+        var tiles = _encoder.Encode(frame, frameWidth, frameHeight, crop, force);
+        if (tiles.Count == 0)
+        {
+            return [];
+        }
+
+        var messages = new List<byte[]>();
+        foreach (var part in Split(tiles))
+        {
+            messages.Add(ScreenCodec.EncodeFrame(StreamId, ++_frameNo, _encoder.Width, _encoder.Height, part));
+        }
+
+        return messages;
+    }
+
+    /// <summary>Full-screen bitrate scaled down for smaller crops (at least 15% of the configured value).</summary>
+    private int ScaleBitrate(int width, int height)
+    {
+        var baseKbps = Math.Clamp(_settings.VideoBitrateKbps, 500, 100_000);
+        var fraction = Math.Clamp(width * (double)height / (1920 * 1080), 0.15, 1.0);
+        return (int)Math.Round(baseKbps * fraction);
     }
 
     private static IEnumerable<List<EncodedTile>> Split(List<EncodedTile> tiles)
@@ -498,6 +597,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         capture.Closed -= OnCaptureClosed;
         capture.Dispose();
         _encoder.Dispose();
+        _videoEncoder?.Dispose();
         _injector.ReleaseAll();
         _touch.Dispose();
         _cts.Dispose();

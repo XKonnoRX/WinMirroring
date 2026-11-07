@@ -20,6 +20,7 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(ScreenRequestMessage), "screen-request")]
 [JsonDerivedType(typeof(ScreenStreamMessage), "screen-stream")]
 [JsonDerivedType(typeof(ScreenStopMessage), "screen-stop")]
+[JsonDerivedType(typeof(ScreenCapabilityMessage), "screen-cap")]
 [JsonDerivedType(typeof(LogRequestMessage), "log-request")]
 [JsonDerivedType(typeof(LogResponseMessage), "log-response")]
 [JsonDerivedType(typeof(AudioRouteRequestMessage), "audio-route")]
@@ -77,11 +78,21 @@ public sealed record AudioRouteRequestMessage(bool Listen) : ControlMessage;
 /// <summary>Viewer → source: stream monitor <see cref="MonitorIndex"/> as <see cref="StreamId"/> (again with a new index to switch).</summary>
 public sealed record ScreenRequestMessage(uint StreamId, int MonitorIndex) : ControlMessage;
 
-/// <summary>Source → viewer: a stream starts or changes. Kind is "monitor" or "window".</summary>
-public sealed record ScreenStreamMessage(uint StreamId, string Kind, string Title, int MonitorIndex, int MonitorCount, bool ControlAllowed) : ControlMessage;
+/// <summary>
+/// Source → viewer: a stream starts or changes. Kind is "monitor", "window" or "display". <see cref="Codec"/>
+/// is the encoding the source will use ("jpeg" changed tiles, or "h264" full-frame video); it defaults to "jpeg"
+/// so a message from an older peer that omits the field is read as the tile path.
+/// </summary>
+public sealed record ScreenStreamMessage(uint StreamId, string Kind, string Title, int MonitorIndex, int MonitorCount, bool ControlAllowed, string Codec = "jpeg") : ControlMessage;
 
 /// <summary>Either side: the stream ends.</summary>
 public sealed record ScreenStopMessage(uint StreamId, string? Reason) : ControlMessage;
+
+/// <summary>
+/// Exchanged once per session when it becomes ready: which screen codecs this device can use. The source only
+/// chooses H.264 when it can encode it and the viewer advertised it can decode it; otherwise JPEG tiles are used.
+/// </summary>
+public sealed record ScreenCapabilityMessage(bool CanEncodeH264, bool CanDecodeH264) : ControlMessage;
 
 /// <summary>Controlled → controller: take your input back (the user pressed "return the cursor" here).</summary>
 public sealed record InputReleaseRequestMessage : ControlMessage;
