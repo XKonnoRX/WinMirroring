@@ -121,7 +121,7 @@ public sealed partial class MainViewModel
         {
             try
             {
-                Clipboard.SetText(peer.Host);
+                System.Windows.Clipboard.SetText(peer.Host);
                 StatusText = $"Адрес {peer.Host} скопирован.";
             }
             catch (System.Runtime.InteropServices.ExternalException ex)
@@ -173,5 +173,6 @@ public sealed partial class MainViewModel
             ? $"Сглаживание: {_input.PlayoutDelayMilliseconds:F0} мс"
             : string.Empty;
         ControlPeerCommand.NotifyCanExecuteChanged();
+        RefreshMediaStatus();
     }
 }

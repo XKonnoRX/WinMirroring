@@ -77,6 +77,9 @@ public sealed partial class InputSharingService : IAsyncDisposable
 
     public event Action? LayoutChanged;
 
+    /// <summary>Raised with the peer id that starts controlling this device, or null when it stops.</summary>
+    public event Action<string?>? ControlledByChanged;
+
     public void Start()
     {
         _node.Sessions.SessionReady += OnSessionReady;

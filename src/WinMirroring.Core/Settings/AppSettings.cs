@@ -28,6 +28,10 @@ public sealed class AppSettings
 
     public InputSettings Input { get; set; } = new();
 
+    public ClipboardSettings Clipboard { get; set; } = new();
+
+    public AudioSettings Audio { get; set; } = new();
+
     public PairedPeer? FindPairedById(string peerId) =>
         PairedPeers.FirstOrDefault(p => string.Equals(p.Id, peerId, StringComparison.Ordinal));
 

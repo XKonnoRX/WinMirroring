@@ -1,10 +1,14 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/WinMirroring.App/WinMirroring.App.csproj" />
+    <Project Path="src/WinMirroring.Audio/WinMirroring.Audio.csproj" />
+    <Project Path="src/WinMirroring.Clipboard/WinMirroring.Clipboard.csproj" />
     <Project Path="src/WinMirroring.Core/WinMirroring.Core.csproj" />
     <Project Path="src/WinMirroring.Input/WinMirroring.Input.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/WinMirroring.Audio.Tests/WinMirroring.Audio.Tests.csproj" />
+    <Project Path="tests/WinMirroring.Clipboard.Tests/WinMirroring.Clipboard.Tests.csproj" />
     <Project Path="tests/WinMirroring.Core.Tests/WinMirroring.Core.Tests.csproj" />
     <Project Path="tests/WinMirroring.Input.Tests/WinMirroring.Input.Tests.csproj" />
   </Folder>

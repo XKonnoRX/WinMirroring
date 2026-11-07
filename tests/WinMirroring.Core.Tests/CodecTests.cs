@@ -72,6 +72,8 @@ public class CodecTests
         new PingMessage(123456789),
         new PongMessage(42),
         new ByeMessage(null),
+        new AudioStartMessage(7, "a2V5", "opus", 48000, 2, 10),
+        new AudioStopMessage(7),
     };
 
     [Theory]

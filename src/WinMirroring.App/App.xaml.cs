@@ -15,6 +15,8 @@ using WinMirroring.App.Views;
 using WinMirroring.Core;
 using WinMirroring.Core.Pairing;
 using WinMirroring.Core.Settings;
+using WinMirroring.Audio;
+using WinMirroring.Clipboard;
 using WinMirroring.Input;
 
 namespace WinMirroring.App;
@@ -72,6 +74,26 @@ public partial class App : Application
             MessageBox.Show($"Не удалось включить общий ввод: {ex.Message}", "WinMirroring", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
 
+        try
+        {
+            _services.GetRequiredService<ClipboardSyncService>().Start();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Clipboard sharing failed to start");
+        }
+
+        try
+        {
+            var audio = _services.GetRequiredService<AudioService>();
+            audio.Start();
+            _services.GetRequiredService<InputSharingService>().ControlledByChanged += audio.SetFocusTarget;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Sound forwarding failed to start");
+        }
+
         CreateTrayIcon();
         _services.GetRequiredService<DialogPairingUi>().Notify = ShowNotification;
 
@@ -111,6 +133,8 @@ public partial class App : Application
             sp.GetRequiredService<IPairingUserInterface>(),
             sp.GetRequiredService<ILoggerFactory>()));
         services.AddSingleton<InputSharingService>();
+        services.AddSingleton<ClipboardSyncService>();
+        services.AddSingleton<AudioService>();
         services.AddSingleton<MainViewModel>();
         return services.BuildServiceProvider();
     }
@@ -182,6 +206,24 @@ public partial class App : Application
             catch (Exception ex)
             {
                 Log.Warning(ex, "Input sharing shutdown failed");
+            }
+
+            try
+            {
+                await _services.GetRequiredService<AudioService>().DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Sound shutdown failed");
+            }
+
+            try
+            {
+                await _services.GetRequiredService<ClipboardSyncService>().DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Clipboard shutdown failed");
             }
 
             try

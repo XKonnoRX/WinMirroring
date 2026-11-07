@@ -2,6 +2,7 @@ using System.Net;
 using Microsoft.Extensions.Logging;
 using WinMirroring.Core.Discovery;
 using WinMirroring.Core.Identity;
+using WinMirroring.Core.Media;
 using WinMirroring.Core.Network;
 using WinMirroring.Core.Pairing;
 using WinMirroring.Core.Peers;
@@ -43,6 +44,7 @@ public sealed class MirroringNode : IAsyncDisposable
 
     private DiscoveryService? _discovery;
     private PeerListener? _listener;
+    private MediaSocket? _media;
 
     public MirroringNode(NodeOptions options, IPairingUserInterface pairingUi, ILoggerFactory loggerFactory)
     {
@@ -127,6 +129,27 @@ public sealed class MirroringNode : IAsyncDisposable
     public bool IsRunning => _discovery is not null;
 
     public IReadOnlyList<IPEndPoint> ListeningEndPoints => _listener?.BoundEndPoints ?? [];
+
+    /// <summary>UDP port of the media socket, or 0 when it is not running.</summary>
+    public int MediaPort => _media?.Port ?? 0;
+
+    /// <summary>Every UDP media datagram; stream owners authenticate and filter.</summary>
+    public event MediaPacketHandler? MediaPacketReceived;
+
+    /// <summary>Sends a sealed media datagram; false when the media socket is not running.</summary>
+    public bool SendMedia(IPEndPoint to, ReadOnlySpan<byte> datagram)
+    {
+        var media = _media;
+        if (media is null)
+        {
+            return false;
+        }
+
+        media.Send(to, datagram);
+        return true;
+    }
+
+    private void OnMediaPacket(IPEndPoint from, ReadOnlySpan<byte> packet) => MediaPacketReceived?.Invoke(from, packet);
 
     public void SaveSettings() => SettingsStore.Save(Settings);
 
@@ -215,10 +238,29 @@ public sealed class MirroringNode : IAsyncDisposable
         discovery.PeerSeen += Sessions.OnPeerSeen;
         discovery.Start();
         _discovery = discovery;
+
+        try
+        {
+            var media = new MediaSocket(Settings.TransportPort, _loggerFactory.CreateLogger<MediaSocket>());
+            media.PacketReceived += OnMediaPacket;
+            media.Start();
+            _media = media;
+        }
+        catch (System.Net.Sockets.SocketException ex)
+        {
+            _logger.LogWarning(ex, "UDP media port {Port} is unavailable; sound cannot be received", Settings.TransportPort);
+        }
     }
 
     private async Task StopNetworkAsync()
     {
+        if (_media is { } media)
+        {
+            media.PacketReceived -= OnMediaPacket;
+            _media = null;
+            await media.DisposeAsync().ConfigureAwait(false);
+        }
+
         if (_discovery is { } discovery)
         {
             discovery.PeerSeen -= Sessions.OnPeerSeen;

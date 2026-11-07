@@ -17,6 +17,8 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(PongMessage), "pong")]
 [JsonDerivedType(typeof(ByeMessage), "bye")]
 [JsonDerivedType(typeof(LayoutMessage), "layout")]
+[JsonDerivedType(typeof(AudioStartMessage), "audio-start")]
+[JsonDerivedType(typeof(AudioStopMessage), "audio-stop")]
 public abstract record ControlMessage;
 
 /// <summary>First message in each direction. The server adds a challenge the client must sign.</summary>
@@ -52,3 +54,11 @@ public sealed record ByeMessage(string? Reason) : ControlMessage;
 
 /// <summary>The device grid, broadcast whenever it changes; the newest version wins everywhere.</summary>
 public sealed record LayoutMessage(long Version, List<LayoutCell> Cells) : ControlMessage;
+
+/// <summary>
+/// Sender → receiver: an audio stream begins. Packets arrive over UDP at the receiver's transport port, sealed with
+/// <see cref="Key"/> (base64, AES-256-GCM). Codec "opus" or "pcm16".
+/// </summary>
+public sealed record AudioStartMessage(uint StreamId, string Key, string Codec, int SampleRate, int Channels, int FrameMs) : ControlMessage;
+
+public sealed record AudioStopMessage(uint StreamId) : ControlMessage;

@@ -1,0 +1,347 @@
+using System.Collections.Concurrent;
+using System.Globalization;
+using System.Threading.Channels;
+using Microsoft.Extensions.Logging;
+using WinMirroring.Clipboard.Files;
+using WinMirroring.Clipboard.Protocol;
+using WinMirroring.Core;
+using WinMirroring.Core.Peers;
+using WinMirroring.Core.Protocol;
+using WinMirroring.Core.Transport;
+
+namespace WinMirroring.Clipboard;
+
+/// <summary>
+/// Shared clipboard across all paired devices. A local copy is sent to every connected peer: small data inline,
+/// large data as a reference the peers pull in bounded chunks (so mouse input on the same link stays responsive),
+/// and files as an offer that becomes virtual files on the other side, transferred only when pasted.
+/// </summary>
+public sealed class ClipboardSyncService : IAsyncDisposable
+{
+    private const int InlineLimit = 256 * 1024;
+    private const int MaxDirectPasteEntries = 5000;
+
+    private readonly MirroringNode _node;
+    private readonly ILogger _logger;
+    private readonly LocalOfferStore _offers = new();
+    private readonly FileServer _server;
+    private readonly ConcurrentDictionary<PeerSession, FileFetcher> _fetchers = new();
+    private readonly Channel<ClipboardSnapshot> _outbox = Channel.CreateBounded<ClipboardSnapshot>(
+        new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
+    private readonly CancellationTokenSource _cts = new();
+
+    private ClipboardThread? _thread;
+    private Task? _publisher;
+
+    public ClipboardSyncService(MirroringNode node, ILogger<ClipboardSyncService> logger)
+    {
+        _node = node;
+        _logger = logger;
+        _server = new FileServer(_offers, logger);
+    }
+
+    /// <summary>Short Russian description of the last clipboard exchange, for the UI.</summary>
+    public string LastActivity { get; private set; } = string.Empty;
+
+    public event Action<string>? Activity;
+
+    private long MaxInlineBytes => Math.Clamp(_node.Settings.Clipboard.MaxInlineMegabytes, 1, 1024) * 1024L * 1024;
+
+    public void Start()
+    {
+        OfferDownloader.CleanUp();
+
+        var thread = new ClipboardThread(_logger, () => MaxInlineBytes);
+        thread.LocalChanged += snapshot => _outbox.Writer.TryWrite(snapshot);
+        thread.Start();
+        _thread = thread;
+
+        _node.Sessions.SessionReady += OnSessionReady;
+        _node.Sessions.SessionClosed += OnSessionClosed;
+        foreach (var session in _node.Sessions.Sessions)
+        {
+            if (session.State == SessionState.Ready)
+            {
+                OnSessionReady(session);
+            }
+        }
+
+        _publisher = Task.Run(() => PublishLoopAsync(_cts.Token));
+    }
+
+    private void OnSessionReady(PeerSession session)
+    {
+        _fetchers[session] = new FileFetcher(session);
+        session.RegisterHandler(ChannelId.Clipboard, OnClipboardFrameAsync);
+        session.RegisterHandler(ChannelId.File, OnFileFrameAsync);
+    }
+
+    private void OnSessionClosed(PeerSession session)
+    {
+        if (_fetchers.TryRemove(session, out var fetcher))
+        {
+            fetcher.Close();
+        }
+    }
+
+    // ---- outgoing ----------------------------------------------------------------------------------------
+
+    private async Task PublishLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            await foreach (var snapshot in _outbox.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+            {
+                try
+                {
+                    await PublishAsync(snapshot, ct).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "Publishing the clipboard failed");
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task PublishAsync(ClipboardSnapshot snapshot, CancellationToken ct)
+    {
+        var settings = _node.Settings.Clipboard;
+        if (!settings.Enabled)
+        {
+            return;
+        }
+
+        var targets = _node.Sessions.Sessions.Where(s => s.State == SessionState.Ready).ToList();
+        if (targets.Count == 0)
+        {
+            return;
+        }
+
+        byte[] message;
+        string what;
+        if (snapshot.Files.Count > 0)
+        {
+            if (!settings.ShareFiles)
+            {
+                return;
+            }
+
+            var manifest = _offers.Create(snapshot.Files, _node.Settings.DeviceName);
+            if (manifest is null)
+            {
+                return;
+            }
+
+            message = ClipboardCodec.EncodeOffer(manifest);
+            what = DescribeFiles(manifest);
+        }
+        else
+        {
+            var encoded = ClipboardCodec.EncodeData(snapshot.Items);
+            message = encoded.Length <= InlineLimit
+                ? encoded
+                : ClipboardCodec.EncodeDataRef(_offers.AddBlob(encoded), encoded.Length);
+            what = DescribeItems(snapshot.Items);
+        }
+
+        if (message.Length > ProtocolConstants.MaxFrameSize)
+        {
+            Report($"Буфер обмена слишком большой для отправки ({what})");
+            return;
+        }
+
+        var sent = 0;
+        foreach (var session in targets)
+        {
+            try
+            {
+                await session.SendAsync(ChannelId.Clipboard, message, ct).ConfigureAwait(false);
+                sent++;
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
+            {
+                _logger.LogDebug("Clipboard not sent to {Peer}: {Message}", session.PeerName, ex.Message);
+            }
+        }
+
+        _logger.LogInformation("Clipboard ({What}) sent to {Count} device(s)", what, sent);
+        Report($"Отправлено: {what} → {sent} устр.");
+    }
+
+    // ---- incoming ----------------------------------------------------------------------------------------
+
+    private ValueTask OnClipboardFrameAsync(PeerSession session, ReadOnlyMemory<byte> payload, CancellationToken ct)
+    {
+        if (!_node.Settings.Clipboard.Enabled || payload.IsEmpty)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        var message = payload.ToArray();
+        _ = Task.Run(() => ReceiveAsync(session, message));
+        return ValueTask.CompletedTask;
+    }
+
+    private async Task ReceiveAsync(PeerSession session, byte[] message)
+    {
+        var thread = _thread;
+        if (thread is null)
+        {
+            return;
+        }
+
+        try
+        {
+            switch (message[0])
+            {
+                case ClipboardCodec.DataMessage:
+                    await ApplyDataAsync(thread, session, message).ConfigureAwait(false);
+                    break;
+
+                case ClipboardCodec.DataRefMessage when ClipboardCodec.TryDecodeDataRef(message, out var blobId, out var length):
+                    if (length > MaxInlineBytes + 1024 || !_fetchers.TryGetValue(session, out var fetcher))
+                    {
+                        return;
+                    }
+
+                    using (var buffer = new MemoryStream((int)length))
+                    {
+                        await using var remote = new RemoteFileStream(fetcher, blobId, 0, length);
+                        await remote.CopyToAsync(buffer, RemoteFileStream.ChunkSize, _cts.Token).ConfigureAwait(false);
+                        await ApplyDataAsync(thread, session, buffer.ToArray()).ConfigureAwait(false);
+                    }
+
+                    break;
+
+                case ClipboardCodec.OfferMessage when _node.Settings.Clipboard.ShareFiles:
+                    var manifest = ClipboardCodec.TryDecodeOffer(message);
+                    if (manifest is null || !_fetchers.TryGetValue(session, out var source))
+                    {
+                        return;
+                    }
+
+                    var directLimit = Math.Max(0, _node.Settings.Clipboard.MaxDirectPasteMegabytes) * 1024L * 1024;
+                    var offerDrop = manifest.TotalSize <= directLimit && manifest.Entries.Count <= MaxDirectPasteEntries;
+                    var dataObject = new VirtualFileDataObject(manifest, source, offerDrop, _logger);
+                    dataObject.DownloadStarted += m => Report($"Вставка: загрузка {DescribeFiles(m)} с {m.SourceName}…");
+                    await thread.SetDataObjectAsync(dataObject).ConfigureAwait(false);
+                    Report($"Получено с {session.PeerName}: {DescribeFiles(manifest)}");
+                    break;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or System.Runtime.InteropServices.COMException or OperationCanceledException)
+        {
+            _logger.LogWarning("Clipboard from {Peer} not applied: {Message}", session.PeerName, ex.Message);
+        }
+    }
+
+    private async Task ApplyDataAsync(ClipboardThread thread, PeerSession session, byte[] message)
+    {
+        var items = ClipboardCodec.TryDecodeData(message, MaxInlineBytes);
+        if (items is not { Count: > 0 })
+        {
+            return;
+        }
+
+        await thread.WriteItemsAsync(items).ConfigureAwait(false);
+        Report($"Получено с {session.PeerName}: {DescribeItems(items)}");
+    }
+
+    private ValueTask OnFileFrameAsync(PeerSession session, ReadOnlyMemory<byte> payload, CancellationToken ct)
+    {
+        if (payload.IsEmpty)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        switch (payload.Span[0])
+        {
+            case FileCodec.RequestMessage:
+                var request = payload.ToArray();
+                _ = Task.Run(() => _server.HandleRequestAsync(session, request));
+                break;
+
+            case FileCodec.ResponseMessage when _fetchers.TryGetValue(session, out var fetcher):
+                fetcher.OnResponse(payload.Span);
+                break;
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
+    // ---- helpers -----------------------------------------------------------------------------------------
+
+    private void Report(string text)
+    {
+        LastActivity = $"{DateTime.Now:HH:mm} {text}";
+        Activity?.Invoke(LastActivity);
+    }
+
+    private static string DescribeItems(IReadOnlyList<ClipboardItem> items)
+    {
+        var size = FormatSize(items.Sum(i => (long)i.Data.Length));
+        if (items.Any(i => i.Kind is ClipboardItemKind.Png or ClipboardItemKind.Dib))
+        {
+            return $"изображение ({size})";
+        }
+
+        return items.Any(i => i.Kind == ClipboardItemKind.UnicodeText) ? $"текст ({size})" : $"данные ({size})";
+    }
+
+    private static string DescribeFiles(FileOfferManifest manifest)
+    {
+        var files = manifest.Entries.Count(e => !e.IsDirectory);
+        var folders = manifest.TopLevel.Count(e => e.IsDirectory);
+        var parts = new List<string>();
+        if (files > 0)
+        {
+            parts.Add($"файлов: {files}");
+        }
+
+        if (folders > 0)
+        {
+            parts.Add($"папок: {folders}");
+        }
+
+        return $"{string.Join(", ", parts)} ({FormatSize(manifest.TotalSize)})";
+    }
+
+    private static string FormatSize(long bytes) => bytes switch
+    {
+        < 1024 => $"{bytes} Б",
+        < 1024 * 1024 => string.Create(CultureInfo.CurrentCulture, $"{bytes / 1024.0:F0} КБ"),
+        < 1024L * 1024 * 1024 => string.Create(CultureInfo.CurrentCulture, $"{bytes / (1024.0 * 1024):F1} МБ"),
+        _ => string.Create(CultureInfo.CurrentCulture, $"{bytes / (1024.0 * 1024 * 1024):F2} ГБ"),
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        _node.Sessions.SessionReady -= OnSessionReady;
+        _node.Sessions.SessionClosed -= OnSessionClosed;
+        _outbox.Writer.TryComplete();
+        await _cts.CancelAsync().ConfigureAwait(false);
+        if (_publisher is not null)
+        {
+            try
+            {
+                await _publisher.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        foreach (var fetcher in _fetchers.Values)
+        {
+            fetcher.Close();
+        }
+
+        _thread?.Dispose();
+        _server.Dispose();
+        _cts.Dispose();
+    }
+}

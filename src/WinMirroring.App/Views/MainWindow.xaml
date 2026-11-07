@@ -114,6 +114,63 @@
         </DockPanel>
       </TabItem>
 
+      <!-- Clipboard and sound -->
+      <TabItem Header="Буфер и звук">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+          <Grid Margin="8">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="24" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0">
+              <TextBlock Style="{StaticResource SectionTitle}" Text="Общий буфер обмена" />
+              <CheckBox Content="Делиться буфером обмена со всеми сопряжёнными устройствами" IsChecked="{Binding ClipboardEnabled}" />
+              <CheckBox Content="Передавать скопированные файлы и папки" IsChecked="{Binding ClipboardShareFiles}" IsEnabled="{Binding ClipboardEnabled}" />
+              <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,8"
+                         Text="Файлы не пересылаются при копировании: на другом устройстве они появляются в буфере и скачиваются только при вставке. Explorer показывает свой прогресс копирования." />
+              <StackPanel Orientation="Horizontal" Margin="0,2">
+                <TextBlock VerticalAlignment="Center" Text="Текст и картинки до, МБ:" Width="250" />
+                <TextBox Width="60" Text="{Binding ClipboardMaxInline, UpdateSourceTrigger=LostFocus}" />
+              </StackPanel>
+              <StackPanel Orientation="Horizontal" Margin="0,2">
+                <TextBlock VerticalAlignment="Center" Text="Как обычные файлы для любых программ, до МБ:" Width="250" TextWrapping="Wrap" />
+                <TextBox Width="60" Text="{Binding ClipboardDirectPaste, UpdateSourceTrigger=LostFocus}" />
+              </StackPanel>
+              <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,8"
+                         Text="Наборы файлов до этого размера вставляются и в программы, которые понимают только настоящие пути (они скачиваются в кэш в момент вставки). Большие наборы вставляются только в Explorer." />
+              <TextBlock Style="{StaticResource Caption}" Text="Последнее действие:" />
+              <TextBlock Text="{Binding ClipboardActivity}" TextWrapping="Wrap" Foreground="{StaticResource AccentBrush}" />
+            </StackPanel>
+
+            <StackPanel Grid.Column="2">
+              <TextBlock Style="{StaticResource SectionTitle}" Text="Звук" />
+              <CheckBox Content="Передавать звук этого устройства на другие" IsChecked="{Binding AudioSendEnabled}" />
+              <CheckBox Content="Звук следует за вводом (играет там, откуда управляют этим устройством)" IsChecked="{Binding AudioFollowInput}" IsEnabled="{Binding AudioSendEnabled}" />
+              <StackPanel Orientation="Horizontal" Margin="0,4" IsEnabled="{Binding AudioSendEnabled}">
+                <TextBlock VerticalAlignment="Center" Text="Всегда передавать на:" Margin="0,0,6,0" />
+                <ComboBox Width="220" ItemsSource="{Binding DeviceChoices}" DisplayMemberPath="Name" SelectedItem="{Binding AudioPinnedTarget}" />
+              </StackPanel>
+              <CheckBox Content="Выключать здесь динамики, пока звук играет на другом устройстве" IsChecked="{Binding AudioMuteLocal}" IsEnabled="{Binding AudioSendEnabled}" />
+              <CheckBox Content="Воспроизводить звук, который присылают другие устройства" IsChecked="{Binding AudioReceiveEnabled}" Margin="0,8,0,4" />
+              <StackPanel Orientation="Horizontal" Margin="0,2">
+                <TextBlock VerticalAlignment="Center" Text="Битрейт Opus, кбит/с:" Width="200" />
+                <TextBox Width="60" Text="{Binding AudioBitrate, UpdateSourceTrigger=LostFocus}" />
+              </StackPanel>
+              <StackPanel Orientation="Horizontal" Margin="0,2">
+                <TextBlock VerticalAlignment="Center" Text="Буфер воспроизведения, мс:" Width="200" />
+                <TextBox Width="60" Text="{Binding AudioBuffer, UpdateSourceTrigger=LostFocus}" />
+              </StackPanel>
+              <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,8"
+                         Text="Меньше буфер — меньше задержка звука, но больше риск щелчков на нестабильном Wi-Fi. 30–60 мс обычно достаточно." />
+              <TextBlock Style="{StaticResource Caption}" Text="Состояние:" />
+              <TextBlock Text="{Binding AudioStatusText}" TextWrapping="Wrap" Foreground="{StaticResource AccentBrush}" />
+            </StackPanel>
+          </Grid>
+        </ScrollViewer>
+      </TabItem>
+
       <!-- Network -->
       <TabItem Header="Сеть">
         <Grid Margin="8">

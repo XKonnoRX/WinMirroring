@@ -13,6 +13,8 @@
   <ItemGroup>
     <ProjectReference Include="..\WinMirroring.Core\WinMirroring.Core.csproj" />
     <ProjectReference Include="..\WinMirroring.Input\WinMirroring.Input.csproj" />
+    <ProjectReference Include="..\WinMirroring.Clipboard\WinMirroring.Clipboard.csproj" />
+    <ProjectReference Include="..\WinMirroring.Audio\WinMirroring.Audio.csproj" />
   </ItemGroup>
 
   <ItemGroup>

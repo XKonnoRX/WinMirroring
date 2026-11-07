@@ -30,10 +30,17 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly DispatcherTimer _statsTimer;
     private readonly bool _initialized;
 
-    public MainViewModel(MirroringNode node, InputSharingService input, ILogger<MainViewModel> logger)
+    public MainViewModel(
+        MirroringNode node,
+        InputSharingService input,
+        WinMirroring.Clipboard.ClipboardSyncService clipboard,
+        WinMirroring.Audio.AudioService audio,
+        ILogger<MainViewModel> logger)
     {
         _node = node;
         _input = input;
+        _clipboard = clipboard;
+        _audio = audio;
         _logger = logger;
         _dispatcher = Application.Current.Dispatcher;
 
@@ -77,6 +84,8 @@ public sealed partial class MainViewModel : ObservableObject
 
         LoadInterfaces();
         UpdateStatus();
+
+        InitializeMedia();
 
         _statsTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => RefreshStats(), _dispatcher);
         _statsTimer.Start();

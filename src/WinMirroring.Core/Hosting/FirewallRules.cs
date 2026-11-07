@@ -21,7 +21,7 @@ public static class FirewallRules
             $"netsh advfirewall firewall delete rule name=\"{TcpRuleName}\"",
             $"netsh advfirewall firewall delete rule name=\"{UdpRuleName}\"",
             $"netsh advfirewall firewall add rule name=\"{TcpRuleName}\" dir=in action=allow protocol=TCP localport={tcpPort} program=\"{executablePath}\" profile=private,domain",
-            $"netsh advfirewall firewall add rule name=\"{UdpRuleName}\" dir=in action=allow protocol=UDP localport={udpPort} program=\"{executablePath}\" profile=private,domain");
+            $"netsh advfirewall firewall add rule name=\"{UdpRuleName}\" dir=in action=allow protocol=UDP localport={udpPort},{tcpPort} program=\"{executablePath}\" profile=private,domain");
 
         var startInfo = new ProcessStartInfo("cmd.exe", $"/c {script}")
         {

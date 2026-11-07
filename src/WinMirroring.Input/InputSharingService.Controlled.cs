@@ -83,6 +83,7 @@ public sealed partial class InputSharingService
         _player.Begin(session, entry);
         _ = KeepControlAliveAsync(session, state, generation);
         _logger.LogInformation("{Peer} took control, cursor at {Entry}", session.PeerName, evt.AtCenter ? "centre" : evt.Edge.ToString());
+        ControlledByChanged?.Invoke(session.PeerId);
     }
 
     private void ReleaseControl(PeerSession session, ControlledState state, string reason)
@@ -100,6 +101,10 @@ public sealed partial class InputSharingService
         }
 
         _logger.LogInformation("{Peer} no longer in control: {Reason}", session.PeerName, reason);
+        if (!_player.HasOwner)
+        {
+            ControlledByChanged?.Invoke(null);
+        }
     }
 
     /// <summary>
