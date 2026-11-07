@@ -27,6 +27,7 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly Dispatcher _dispatcher;
     private readonly Dictionary<string, DeviceChoice> _choicesById = new(StringComparer.Ordinal);
     private readonly DeviceChoice _noDevice = new(string.Empty, "—");
+    private readonly DispatcherTimer _statsTimer;
     private readonly bool _initialized;
 
     public MainViewModel(MirroringNode node, InputSharingService input, ILogger<MainViewModel> logger)
@@ -44,6 +45,8 @@ public sealed partial class MainViewModel : ObservableObject
         StartWithWindows = AutostartRegistration.IsEnabled();
         InputEnabled = node.Settings.Input.Enabled;
         EdgeResistance = node.Settings.Input.EdgeResistance;
+        SmoothingEnabled = node.Settings.Input.SmoothingEnabled;
+        MaxSmoothingDelay = node.Settings.Input.MaxSmoothingDelayMs;
 
         foreach (var address in node.Settings.ManualPeerAddresses)
         {
@@ -74,6 +77,9 @@ public sealed partial class MainViewModel : ObservableObject
 
         LoadInterfaces();
         UpdateStatus();
+
+        _statsTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => RefreshStats(), _dispatcher);
+        _statsTimer.Start();
         _initialized = true;
     }
 
@@ -134,6 +140,39 @@ public sealed partial class MainViewModel : ObservableObject
 
     [ObservableProperty]
     public partial int EdgeResistance { get; set; }
+
+    [ObservableProperty]
+    public partial bool SmoothingEnabled { get; set; }
+
+    [ObservableProperty]
+    public partial int MaxSmoothingDelay { get; set; }
+
+    [ObservableProperty]
+    public partial string SmoothingText { get; set; } = string.Empty;
+
+    partial void OnSmoothingEnabledChanged(bool value)
+    {
+        if (!_initialized)
+        {
+            return;
+        }
+
+        _node.Settings.Input.SmoothingEnabled = value;
+        _node.SaveSettings();
+        _input.ApplyInputSettings();
+    }
+
+    partial void OnMaxSmoothingDelayChanged(int value)
+    {
+        if (!_initialized || value is < 0 or > 200)
+        {
+            return;
+        }
+
+        _node.Settings.Input.MaxSmoothingDelayMs = value;
+        _node.SaveSettings();
+        _input.ApplyInputSettings();
+    }
 
     // ---- devices -------------------------------------------------------------------------------------------
 
@@ -456,8 +495,7 @@ public sealed partial class MainViewModel : ObservableObject
         }
 
         EnsureChoice(info.Id, info.Name);
-        PairCommand.NotifyCanExecuteChanged();
-        UnpairCommand.NotifyCanExecuteChanged();
+        RefreshPeerCommands();
     }
 
     private static int ClampPort(int requested, int fallback) =>

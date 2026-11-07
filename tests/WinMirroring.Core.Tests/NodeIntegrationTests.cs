@@ -67,6 +67,12 @@ public sealed class NodeIntegrationTests : IAsyncLifetime
         var pairedRecordOnB = Assert.Single(b.Settings.PairedPeers);
         Assert.Equal(a.Identity.Fingerprint, pairedRecordOnB.Fingerprint);
 
+        Assert.True(a.Sessions.TryGetSession(b.Identity.Id, out var live));
+        var rtt = await live.PingAsync(TimeSpan.FromSeconds(2), ct);
+        Assert.NotNull(rtt);
+        Assert.InRange(rtt.Value.TotalMilliseconds, 0, 1000);
+        Assert.True(Environment.TickCount64 - live.LastReceivedTicks < 2000);
+
         // Both sides are paired now, so a dropped link must come back on its own through discovery.
         Assert.True(a.Sessions.TryGetSession(b.Identity.Id, out var first));
         await first.CloseAsync("test");

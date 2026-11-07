@@ -25,4 +25,9 @@ public static class VirtualScreen
     }
 
     public static void SetCursor(Point point) => SetCursorPos(point.X, point.Y);
+
+    /// <summary>Centre of the primary monitor (which always starts at 0,0), a safe parking spot for the cursor.</summary>
+    public static Point PrimaryCenter => new(
+        Math.Max(1, GetSystemMetrics(SM_CXSCREEN)) / 2,
+        Math.Max(1, GetSystemMetrics(SM_CYSCREEN)) / 2);
 }

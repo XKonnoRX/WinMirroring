@@ -16,13 +16,13 @@ public enum MouseButton : byte
 
 public enum InputEventKind : byte
 {
-    /// <summary>Relative motion from the controller's mouse.</summary>
+    /// <summary>Pixel motion from the controller (its pointer speed and acceleration already applied), timestamped.</summary>
     MouseMove = 1,
     MouseButton = 2,
     MouseWheel = 3,
     Key = 4,
 
-    /// <summary>Controller → controlled: the cursor arrives at this edge of the controlled screen.</summary>
+    /// <summary>Controller → controlled: the cursor arrives at this edge (or the centre) of the controlled screen.</summary>
     Enter = 5,
 
     /// <summary>Controller → controlled: control left; release everything that is still pressed.</summary>
@@ -30,11 +30,15 @@ public enum InputEventKind : byte
 
     /// <summary>Controlled → controller: the cursor is being pushed out across this edge.</summary>
     EdgeReached = 7,
+
+    /// <summary>Both directions while control is active: proves the link is alive when nothing else is sent.</summary>
+    Alive = 8,
 }
 
 /// <summary>One decoded event. Fields that do not apply to <see cref="Kind"/> are zero.</summary>
 public readonly record struct InputEvent(
     InputEventKind Kind,
+    uint Timestamp,
     int Dx,
     int Dy,
     MouseButton Button,
@@ -46,24 +50,28 @@ public readonly record struct InputEvent(
     bool Up,
     bool Extended,
     Edge Edge,
-    float Relative);
+    float Relative,
+    bool AtCenter);
 
 /// <summary>
 /// Little-endian binary encoding for the Input channel. A frame holds one or more events back to back;
 /// each starts with its kind byte so the reader can walk them without a length prefix.
+/// Motion timestamps are the controller's monotonic clock in microseconds (wrapping uint32).
 /// </summary>
 public static class InputCodec
 {
     private const byte KeyFlagUp = 0x01;
     private const byte KeyFlagExtended = 0x02;
+    private const byte CenterMarker = 0xFF;
 
-    public static void WriteMouseMove(IBufferWriter<byte> writer, int dx, int dy)
+    public static void WriteMouseMove(IBufferWriter<byte> writer, uint timestamp, int dx, int dy)
     {
-        var span = writer.GetSpan(5);
+        var span = writer.GetSpan(9);
         span[0] = (byte)InputEventKind.MouseMove;
-        BinaryPrimitives.WriteInt16LittleEndian(span[1..], (short)Math.Clamp(dx, short.MinValue, short.MaxValue));
-        BinaryPrimitives.WriteInt16LittleEndian(span[3..], (short)Math.Clamp(dy, short.MinValue, short.MaxValue));
-        writer.Advance(5);
+        BinaryPrimitives.WriteUInt32LittleEndian(span[1..], timestamp);
+        BinaryPrimitives.WriteInt16LittleEndian(span[5..], (short)Math.Clamp(dx, short.MinValue, short.MaxValue));
+        BinaryPrimitives.WriteInt16LittleEndian(span[7..], (short)Math.Clamp(dy, short.MinValue, short.MaxValue));
+        writer.Advance(9);
     }
 
     public static void WriteMouseButton(IBufferWriter<byte> writer, MouseButton button, bool down)
@@ -95,23 +103,30 @@ public static class InputCodec
     }
 
     public static void WriteEnter(IBufferWriter<byte> writer, Edge edge, float relative) =>
-        WriteEdge(writer, InputEventKind.Enter, edge, relative);
+        WriteEdge(writer, InputEventKind.Enter, (byte)edge, relative);
+
+    public static void WriteEnterAtCenter(IBufferWriter<byte> writer) =>
+        WriteEdge(writer, InputEventKind.Enter, CenterMarker, 0.5f);
 
     public static void WriteEdgeReached(IBufferWriter<byte> writer, Edge edge, float relative) =>
-        WriteEdge(writer, InputEventKind.EdgeReached, edge, relative);
+        WriteEdge(writer, InputEventKind.EdgeReached, (byte)edge, relative);
 
-    public static void WriteLeave(IBufferWriter<byte> writer)
+    public static void WriteLeave(IBufferWriter<byte> writer) => WriteKind(writer, InputEventKind.Leave);
+
+    public static void WriteAlive(IBufferWriter<byte> writer) => WriteKind(writer, InputEventKind.Alive);
+
+    private static void WriteKind(IBufferWriter<byte> writer, InputEventKind kind)
     {
         var span = writer.GetSpan(1);
-        span[0] = (byte)InputEventKind.Leave;
+        span[0] = (byte)kind;
         writer.Advance(1);
     }
 
-    private static void WriteEdge(IBufferWriter<byte> writer, InputEventKind kind, Edge edge, float relative)
+    private static void WriteEdge(IBufferWriter<byte> writer, InputEventKind kind, byte edge, float relative)
     {
         var span = writer.GetSpan(6);
         span[0] = (byte)kind;
-        span[1] = (byte)edge;
+        span[1] = edge;
         BinaryPrimitives.WriteSingleLittleEndian(span[2..], relative);
         writer.Advance(6);
     }
@@ -129,36 +144,42 @@ public static class InputCodec
         var kind = (InputEventKind)data[0];
         switch (kind)
         {
-            case InputEventKind.MouseMove when data.Length >= 5:
-                evt = new InputEvent(kind, BinaryPrimitives.ReadInt16LittleEndian(data[1..]), BinaryPrimitives.ReadInt16LittleEndian(data[3..]), MouseButton.None, false, 0, false, 0, 0, false, false, Edge.Left, 0f);
-                consumed = 5;
+            case InputEventKind.MouseMove when data.Length >= 9:
+                evt = new InputEvent { Kind = kind, Timestamp = BinaryPrimitives.ReadUInt32LittleEndian(data[1..]), Dx = BinaryPrimitives.ReadInt16LittleEndian(data[5..]), Dy = BinaryPrimitives.ReadInt16LittleEndian(data[7..]) };
+                consumed = 9;
                 return true;
 
             case InputEventKind.MouseButton when data.Length >= 3:
-                evt = new InputEvent(kind, 0, 0, (MouseButton)data[1], data[2] != 0, 0, false, 0, 0, false, false, Edge.Left, 0f);
+                evt = new InputEvent { Kind = kind, Button = (MouseButton)data[1], Down = data[2] != 0 };
                 consumed = 3;
                 return true;
 
             case InputEventKind.MouseWheel when data.Length >= 4:
-                evt = new InputEvent(kind, 0, 0, MouseButton.None, false, BinaryPrimitives.ReadInt16LittleEndian(data[1..]), data[3] != 0, 0, 0, false, false, Edge.Left, 0f);
+                evt = new InputEvent { Kind = kind, WheelDelta = BinaryPrimitives.ReadInt16LittleEndian(data[1..]), Horizontal = data[3] != 0 };
                 consumed = 4;
                 return true;
 
             case InputEventKind.Key when data.Length >= 6:
-                evt = new InputEvent(kind, 0, 0, MouseButton.None, false, 0, false,
-                    BinaryPrimitives.ReadUInt16LittleEndian(data[1..]), BinaryPrimitives.ReadUInt16LittleEndian(data[3..]),
-                    (data[5] & KeyFlagUp) != 0, (data[5] & KeyFlagExtended) != 0, Edge.Left, 0f);
+                evt = new InputEvent
+                {
+                    Kind = kind,
+                    VirtualKey = BinaryPrimitives.ReadUInt16LittleEndian(data[1..]),
+                    ScanCode = BinaryPrimitives.ReadUInt16LittleEndian(data[3..]),
+                    Up = (data[5] & KeyFlagUp) != 0,
+                    Extended = (data[5] & KeyFlagExtended) != 0,
+                };
                 consumed = 6;
                 return true;
 
             case InputEventKind.Enter or InputEventKind.EdgeReached when data.Length >= 6:
+                var atCenter = kind == InputEventKind.Enter && data[1] == CenterMarker;
                 var edge = data[1] <= (byte)Edge.Bottom ? (Edge)data[1] : Edge.Left;
-                evt = new InputEvent(kind, 0, 0, MouseButton.None, false, 0, false, 0, 0, false, false, edge, BinaryPrimitives.ReadSingleLittleEndian(data[2..]));
+                evt = new InputEvent { Kind = kind, Edge = edge, Relative = BinaryPrimitives.ReadSingleLittleEndian(data[2..]), AtCenter = atCenter };
                 consumed = 6;
                 return true;
 
-            case InputEventKind.Leave:
-                evt = new InputEvent(kind, 0, 0, MouseButton.None, false, 0, false, 0, 0, false, false, Edge.Left, 0f);
+            case InputEventKind.Leave or InputEventKind.Alive:
+                evt = new InputEvent { Kind = kind };
                 consumed = 1;
                 return true;
 
@@ -170,7 +191,7 @@ public static class InputCodec
     /// <summary>Convenience for single-event frames.</summary>
     public static byte[] Single(Action<ArrayBufferWriter<byte>> write)
     {
-        var writer = new ArrayBufferWriter<byte>(8);
+        var writer = new ArrayBufferWriter<byte>(16);
         write(writer);
         return writer.WrittenSpan.ToArray();
     }

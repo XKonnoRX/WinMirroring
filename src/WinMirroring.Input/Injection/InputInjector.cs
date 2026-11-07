@@ -20,11 +20,12 @@ public sealed class InputInjector
 
     public void MoveAbsolute(int x, int y)
     {
+        // ceil(p * 65536 / size): Windows maps back with floor(n * size / 65536), which then lands exactly on p.
         var screen = VirtualScreen.Current;
-        var width = Math.Max(1, screen.Width - 1);
-        var height = Math.Max(1, screen.Height - 1);
-        var nx = (int)(((long)(x - screen.Left) * 65535 + width / 2) / width);
-        var ny = (int)(((long)(y - screen.Top) * 65535 + height / 2) / height);
+        var width = Math.Max(1, screen.Width);
+        var height = Math.Max(1, screen.Height);
+        var nx = (int)Math.Clamp(((long)(x - screen.Left) * 65536 + width - 1) / width, 0, 65535);
+        var ny = (int)Math.Clamp(((long)(y - screen.Top) * 65536 + height - 1) / height, 0, 65535);
 
         Send(new INPUT
         {

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Extensions.Logging;
@@ -45,6 +46,7 @@ public sealed class PeerSession : IAsyncDisposable
     private Task? _run;
     private long _lastReceivedTicks = Environment.TickCount64;
     private int _closeSignaled;
+    private readonly ConcurrentDictionary<long, TaskCompletionSource<TimeSpan>> _pingWaiters = new();
 
     public PeerSession(
         PeerConnection connection,
@@ -97,6 +99,9 @@ public sealed class PeerSession : IAsyncDisposable
 
     public TimeSpan? LastRoundTrip { get; private set; }
 
+    /// <summary>Environment.TickCount64 when the last frame of any channel arrived from the peer.</summary>
+    public long LastReceivedTicks => Volatile.Read(ref _lastReceivedTicks);
+
     /// <summary>Fixed PIN for automated tests; null means a random PIN is generated and the UI is asked.</summary>
     public string? PinOverride { get; init; }
 
@@ -140,6 +145,27 @@ public sealed class PeerSession : IAsyncDisposable
 
     public ValueTask SendControlAsync(ControlMessage message, CancellationToken ct = default) =>
         SendAsync(ChannelId.Control, ControlMessageCodec.Encode(message), ct);
+
+    /// <summary>One application-level round trip over the session (works where ICMP is blocked). Null on timeout.</summary>
+    public async Task<TimeSpan?> PingAsync(TimeSpan timeout, CancellationToken ct = default)
+    {
+        var token = Stopwatch.GetTimestamp();
+        var waiter = new TaskCompletionSource<TimeSpan>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pingWaiters[token] = waiter;
+        try
+        {
+            await SendControlAsync(new PingMessage(token), ct).ConfigureAwait(false);
+            return await waiter.Task.WaitAsync(timeout, ct).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            return null;
+        }
+        finally
+        {
+            _pingWaiters.TryRemove(token, out _);
+        }
+    }
 
     public async Task CloseAsync(string? reason = null)
     {
@@ -398,7 +424,7 @@ public sealed class PeerSession : IAsyncDisposable
                 return;
             }
 
-            _lastReceivedTicks = Environment.TickCount64;
+            Volatile.Write(ref _lastReceivedTicks, Environment.TickCount64);
             var (channel, payload) = frame.Value;
 
             if (channel == ChannelId.Control)
@@ -444,7 +470,17 @@ public sealed class PeerSession : IAsyncDisposable
                 return false;
 
             case PongMessage pong:
-                LastRoundTrip = TimeSpan.FromMilliseconds(Math.Max(0, Environment.TickCount64 - pong.Timestamp));
+                // Ping tokens are Stopwatch timestamps from this process, so the echo gives a sub-millisecond RTT.
+                var rtt = Stopwatch.GetElapsedTime(pong.Timestamp);
+                if (rtt >= TimeSpan.Zero && rtt < TimeSpan.FromMinutes(1))
+                {
+                    LastRoundTrip = rtt;
+                    if (_pingWaiters.TryRemove(pong.Timestamp, out var waiter))
+                    {
+                        waiter.TrySetResult(rtt);
+                    }
+                }
+
                 return false;
 
             case ByeMessage bye:
@@ -517,13 +553,13 @@ public sealed class PeerSession : IAsyncDisposable
         using var timer = new PeriodicTimer(ProtocolConstants.HeartbeatInterval);
         while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
         {
-            var silence = Environment.TickCount64 - _lastReceivedTicks;
+            var silence = Environment.TickCount64 - LastReceivedTicks;
             if (silence > ProtocolConstants.IdleTimeout.TotalMilliseconds)
             {
                 throw new TimeoutException($"No data from {PeerName} for {silence / 1000} s.");
             }
 
-            await SendControlAsync(new PingMessage(Environment.TickCount64), ct).ConfigureAwait(false);
+            await SendControlAsync(new PingMessage(Stopwatch.GetTimestamp()), ct).ConfigureAwait(false);
         }
     }
 

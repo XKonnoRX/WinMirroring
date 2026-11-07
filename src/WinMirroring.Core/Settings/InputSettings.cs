@@ -11,6 +11,12 @@ public sealed class InputSettings
     /// <summary>How far (in raw mouse counts) the cursor must be pushed against an edge before it crosses.</summary>
     public int EdgeResistance { get; set; } = 8;
 
+    /// <summary>Re-time incoming mouse motion with an adaptive jitter buffer (applies on the controlled device).</summary>
+    public bool SmoothingEnabled { get; set; } = true;
+
+    /// <summary>Upper bound for the jitter buffer; the buffer adapts below it to the measured jitter.</summary>
+    public int MaxSmoothingDelayMs { get; set; } = 30;
+
     /// <summary>Unix milliseconds of the last layout change; peers adopt the newest layout they see.</summary>
     public long LayoutVersion { get; set; }
 

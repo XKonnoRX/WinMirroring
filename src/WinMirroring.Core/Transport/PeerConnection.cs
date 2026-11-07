@@ -44,7 +44,8 @@ public sealed class PeerConnection : IAsyncDisposable
         Func<X509Certificate2, bool> acceptServerCertificate,
         CancellationToken ct)
     {
-        var client = new TcpClient(AddressFamily.InterNetwork) { NoDelay = true };
+        var client = new TcpClient(AddressFamily.InterNetwork);
+        ConfigureSocket(client.Client);
         SslStream? ssl = null;
         try
         {
@@ -89,7 +90,7 @@ public sealed class PeerConnection : IAsyncDisposable
     public static async Task<PeerConnection> AcceptAsync(TcpClient client, X509Certificate2 serverCertificate, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(client);
-        client.NoDelay = true;
+        ConfigureSocket(client.Client);
         var ssl = new SslStream(client.GetStream(), leaveInnerStreamOpen: false);
         try
         {
@@ -113,6 +114,36 @@ public sealed class PeerConnection : IAsyncDisposable
             ssl.Dispose();
             client.Dispose();
             throw;
+        }
+    }
+
+    // ws2ipdef.h: TCP_MAXRT, seconds of unacknowledged retransmission before the connection is reset.
+    private const SocketOptionName TcpMaxRetransmitTime = (SocketOptionName)5;
+
+    /// <summary>
+    /// No Nagle, plus fast dead-link detection: keepalive probes when idle and a cap on retransmission time when
+    /// data is in flight. Without these a silently dropped Wi-Fi link is noticed only after minutes.
+    /// </summary>
+    private static void ConfigureSocket(Socket socket)
+    {
+        socket.NoDelay = true;
+        try
+        {
+            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 5);
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 1);
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 5);
+        }
+        catch (SocketException)
+        {
+        }
+
+        try
+        {
+            socket.SetSocketOption(SocketOptionLevel.Tcp, TcpMaxRetransmitTime, 10);
+        }
+        catch (SocketException)
+        {
         }
     }
 

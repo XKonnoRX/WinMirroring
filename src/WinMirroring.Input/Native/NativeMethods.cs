@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 namespace WinMirroring.Input.Native;
 
 /// <summary>Win32 surface used by input sharing: low-level hooks, Raw Input, SendInput, cursor and screen metrics.</summary>
-internal static class NativeMethods
+internal static partial class NativeMethods
 {
     /// <summary>Marker placed in dwExtraInfo of everything we inject, so our own hooks can tell it from physical input.</summary>
     public static readonly nuint InjectionMarker = 0x574D4952; // "WMIR"

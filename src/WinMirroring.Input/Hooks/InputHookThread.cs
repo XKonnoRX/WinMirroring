@@ -14,6 +14,10 @@ namespace WinMirroring.Input.Hooks;
 internal sealed class InputHookThread : IDisposable
 {
     private const string WindowClassName = "WinMirroring.InputSink";
+    private const string ShieldClassName = "WinMirroring.CursorShield";
+    private const uint WmShieldShow = WM_APP + 1;
+    private const uint WmShieldHide = WM_APP + 2;
+    private const int ShieldSize = 64;
 
     private readonly ILogger _logger;
     private readonly Thread _thread;
@@ -21,6 +25,15 @@ internal sealed class InputHookThread : IDisposable
     private readonly HookProc _mouseProc;
     private readonly HookProc _keyboardProc;
     private readonly WndProc _windowProc;
+    private readonly WndProc _shieldProc;
+
+    private nint _shield;
+    private bool _shieldClassRegistered;
+
+    // Where and when the shield last warped the cursor; the hook lets that synthetic move through untouched.
+    private int _warpX;
+    private int _warpY;
+    private long _warpTicks;
 
     private uint _threadId;
     private nint _instance;
@@ -37,6 +50,7 @@ internal sealed class InputHookThread : IDisposable
         _mouseProc = MouseHookProc;
         _keyboardProc = KeyboardHookProc;
         _windowProc = WindowProc;
+        _shieldProc = ShieldProc;
         _thread = new Thread(Run)
         {
             IsBackground = true,
@@ -52,6 +66,26 @@ internal sealed class InputHookThread : IDisposable
 
     /// <summary>Relative mouse motion straight from the device, unaffected by cursor clamping or acceleration.</summary>
     public Action<int, int>? RawMouseMoved { get; set; }
+
+    /// <summary>
+    /// Parks the cursor at <paramref name="at"/> under a nearly transparent topmost window whose cursor is empty,
+    /// so the local pointer disappears while input goes to another device.
+    /// </summary>
+    public void ShowCursorShield(System.Drawing.Point at)
+    {
+        if (_shield != 0)
+        {
+            PostMessageW(_shield, WmShieldShow, at.X, at.Y);
+        }
+    }
+
+    public void HideCursorShield()
+    {
+        if (_shield != 0)
+        {
+            PostMessageW(_shield, WmShieldHide, 0, 0);
+        }
+    }
 
     public void Start()
     {
@@ -115,6 +149,8 @@ internal sealed class InputHookThread : IDisposable
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "RegisterRawInputDevices failed");
             }
 
+            CreateShield();
+
             _mouseHook = SetWindowsHookExW(WH_MOUSE_LL, _mouseProc, _instance, 0);
             if (_mouseHook == 0)
             {
@@ -148,8 +184,84 @@ internal sealed class InputHookThread : IDisposable
         _logger.LogInformation("Input hooks removed");
     }
 
+    private void CreateShield()
+    {
+        var shieldClass = new WNDCLASSEXW
+        {
+            cbSize = (uint)Marshal.SizeOf<WNDCLASSEXW>(),
+            lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_shieldProc),
+            hInstance = _instance,
+            hCursor = 0,
+            lpszClassName = ShieldClassName,
+        };
+
+        if (RegisterClassExW(ref shieldClass) != 0)
+        {
+            _shieldClassRegistered = true;
+        }
+        else if (Marshal.GetLastWin32Error() != ERROR_CLASS_ALREADY_EXISTS)
+        {
+            _logger.LogWarning("Cursor shield class not registered; the local cursor stays visible while controlling");
+            return;
+        }
+
+        _shield = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            ShieldClassName, string.Empty, WS_POPUP, 0, 0, ShieldSize, ShieldSize, 0, 0, _instance, 0);
+
+        if (_shield == 0)
+        {
+            _logger.LogWarning("Cursor shield window not created; the local cursor stays visible while controlling");
+            return;
+        }
+
+        // Alpha 1/255: invisible, yet still hit-testable so WM_SETCURSOR reaches it.
+        SetLayeredWindowAttributes(_shield, 0, 1, LWA_ALPHA);
+    }
+
+    private nint ShieldProc(nint hWnd, uint msg, nint wParam, nint lParam)
+    {
+        switch (msg)
+        {
+            case WM_SETCURSOR:
+                SetCursor(0);
+                return 1;
+
+            case WM_MOUSEACTIVATE:
+                return MA_NOACTIVATE;
+
+            case WmShieldShow:
+                var x = (int)wParam;
+                var y = (int)lParam;
+                SetWindowPos(hWnd, HWND_TOPMOST, x - ShieldSize / 2, y - ShieldSize / 2, ShieldSize, ShieldSize, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                _warpX = x;
+                _warpY = y;
+                _warpTicks = Environment.TickCount64;
+                SetCursorPos(x, y);
+                return 0;
+
+            case WmShieldHide:
+                ShowWindow(hWnd, SW_HIDE);
+                return 0;
+        }
+
+        return DefWindowProcW(hWnd, msg, wParam, lParam);
+    }
+
     private void Cleanup()
     {
+        if (_shield != 0)
+        {
+            DestroyWindow(_shield);
+            _shield = 0;
+        }
+
+        if (_shieldClassRegistered)
+        {
+            UnregisterClassW(ShieldClassName, _instance);
+            _shieldClassRegistered = false;
+        }
+
         if (_keyboardHook != 0)
         {
             UnhookWindowsHookEx(_keyboardHook);
@@ -191,6 +303,13 @@ internal sealed class InputHookThread : IDisposable
         if (nCode >= 0 && MouseFilter is { } filter)
         {
             var data = (MSLLHOOKSTRUCT*)(void*)lParam;
+            if ((uint)wParam == WM_MOUSEMOVE && data->pt.X == _warpX && data->pt.Y == _warpY
+                && Environment.TickCount64 - _warpTicks < 100)
+            {
+                // The shield's own SetCursorPos, if the system reports it here at all: never swallow or forward it.
+                return CallNextHookEx(0, nCode, wParam, lParam);
+            }
+
             var evt = new MouseHookEvent(
                 (uint)wParam,
                 data->pt.X,
@@ -278,12 +397,13 @@ internal sealed class InputHookThread : IDisposable
         }
 
         var header = (RAWINPUTHEADER*)buffer;
-        if (header->dwType != RIM_TYPEMOUSE || header->hDevice == 0)
+        if (header->dwType != RIM_TYPEMOUSE)
         {
-            // hDevice is null for injected input (SendInput from any process, including the replay of a
-            // controller's motion on this device). Only real devices may push the cursor across an edge.
             return;
         }
+
+        // hDevice can be null for precision touchpads as well as for injected input, so it is not a filter here.
+        // Our own replay is absolute (skipped below) and the service ignores raw motion while it is being controlled.
 
         var mouse = (RAWMOUSE*)(buffer + sizeof(RAWINPUTHEADER));
         if ((mouse->usFlags & MOUSE_MOVE_ABSOLUTE) != 0)

@@ -25,6 +25,7 @@
         </StackPanel>
         <StackPanel Grid.Column="1" VerticalAlignment="Bottom" HorizontalAlignment="Right">
           <TextBlock FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}" HorizontalAlignment="Right" Text="{Binding InputFocusText}" />
+          <TextBlock Style="{StaticResource Caption}" HorizontalAlignment="Right" Text="{Binding SmoothingText}" />
           <TextBlock Style="{StaticResource Caption}" HorizontalAlignment="Right" Text="{Binding DeviceId}" FontFamily="Consolas" />
         </StackPanel>
       </Grid>
@@ -47,10 +48,26 @@
                        Text="Сопряжение запрашивается с этого устройства; PIN показывается на другом." />
           </StackPanel>
           <ListView ItemsSource="{Binding Peers}" SelectedItem="{Binding SelectedPeer}">
+            <ListView.ContextMenu>
+              <ContextMenu>
+                <MenuItem Header="Управлять этим устройством" FontWeight="SemiBold" Command="{Binding ControlPeerCommand}" />
+                <Separator />
+                <MenuItem Header="Проверить задержку" Command="{Binding MeasureLatencyCommand}" />
+                <MenuItem Header="Ping в консоли" Command="{Binding IcmpPingCommand}" />
+                <MenuItem Header="Удалённый рабочий стол (RDP)" Command="{Binding RemoteDesktopCommand}" />
+                <MenuItem Header="Открыть сетевую папку" Command="{Binding OpenShareCommand}" />
+                <MenuItem Header="Копировать IP-адрес" Command="{Binding CopyAddressCommand}" />
+                <Separator />
+                <MenuItem Header="Переподключить" Command="{Binding ReconnectCommand}" />
+                <MenuItem Header="Сопрячь…" Command="{Binding PairCommand}" />
+                <MenuItem Header="Разорвать сопряжение" Command="{Binding UnpairCommand}" />
+              </ContextMenu>
+            </ListView.ContextMenu>
             <ListView.View>
               <GridView>
-                <GridViewColumn Header="Имя" Width="200" DisplayMemberBinding="{Binding Name}" />
-                <GridViewColumn Header="Состояние" Width="190" DisplayMemberBinding="{Binding StateText}" />
+                <GridViewColumn Header="Имя" Width="190" DisplayMemberBinding="{Binding Name}" />
+                <GridViewColumn Header="Состояние" Width="180" DisplayMemberBinding="{Binding StateText}" />
+                <GridViewColumn Header="Задержка" Width="80" DisplayMemberBinding="{Binding RttText}" />
                 <GridViewColumn Header="Адрес" Width="160" DisplayMemberBinding="{Binding Address}" />
                 <GridViewColumn Header="Сопряжено" Width="80" DisplayMemberBinding="{Binding PairedText}" />
                 <GridViewColumn Header="Отпечаток" Width="170" DisplayMemberBinding="{Binding FingerprintDisplay}" />
@@ -170,6 +187,13 @@
             <TextBlock VerticalAlignment="Center" Text="Сопротивление края, пикселей:" Margin="0,0,6,0" />
             <TextBox Width="60" Text="{Binding EdgeResistance, UpdateSourceTrigger=LostFocus}" />
           </StackPanel>
+          <CheckBox Content="Сглаживать движение мыши при нестабильной сети" IsChecked="{Binding SmoothingEnabled}" Margin="0,8,0,4" />
+          <StackPanel Orientation="Horizontal" Margin="0,0,0,4" IsEnabled="{Binding SmoothingEnabled}">
+            <TextBlock VerticalAlignment="Center" Text="Максимальная задержка буфера, мс:" Margin="0,0,6,0" />
+            <TextBox Width="60" Text="{Binding MaxSmoothingDelay, UpdateSourceTrigger=LostFocus}" />
+          </StackPanel>
+          <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                     Text="Работает на том устройстве, которым управляют: пакеты, пришедшие пачкой, проигрываются с исходными интервалами. Буфер сам подстраивается под разброс задержки и не превышает указанный предел. Саму задержку сети это не убирает." />
           <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,16"
                      Text="Окна с правами администратора и UAC не принимают ввод от обычного приложения: пока курсор над ними, управление с другого устройства не работает. Это ограничение Windows, служба для обхода запланирована." />
 
