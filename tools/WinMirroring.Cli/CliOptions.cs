@@ -28,6 +28,8 @@ internal sealed class CliOptions
 
     public bool Verbose { get; private set; }
 
+    public bool Input { get; private set; }
+
     public static CliOptions? Parse(string[] args)
     {
         var options = new CliOptions();
@@ -59,6 +61,7 @@ internal sealed class CliOptions
                     case "--exit-when-ready": options.ExitWhenReady = true; break;
                     case "--timeout": options.TimeoutSeconds = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                     case "--verbose": options.Verbose = true; break;
+                    case "--input": options.Input = true; break;
                     case "-h" or "--help": return null;
                     default:
                         Console.Error.WriteLine($"Unknown argument: {args[i]}");
@@ -92,6 +95,7 @@ internal sealed class CliOptions
               --exit-when-ready         exit with code 0 after the first paired session is ready
               --timeout <seconds>       exit with code 2 when nothing is ready in time
               --verbose                 debug logging
+              --input                   take part in mouse/keyboard sharing (hooks + injection)
             """);
     }
 }

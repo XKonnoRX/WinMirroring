@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\WinMirroring.Core\WinMirroring.Core.csproj" />
+    <ProjectReference Include="..\..\src\WinMirroring.Input\WinMirroring.Input.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\WinMirroring.Core\WinMirroring.Core.csproj" />
+    <ProjectReference Include="..\WinMirroring.Input\WinMirroring.Input.csproj" />
   </ItemGroup>
 
   <ItemGroup>

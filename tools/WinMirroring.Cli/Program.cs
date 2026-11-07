@@ -82,6 +82,18 @@ node.Peers.Changed += peer =>
 await node.StartAsync().ConfigureAwait(false);
 Console.WriteLine($"LISTENING {string.Join(", ", node.ListeningEndPoints)} discovery udp/{node.Settings.DiscoveryPort}");
 
+WinMirroring.Input.InputSharingService? input = null;
+if (options.Input)
+{
+    input = new WinMirroring.Input.InputSharingService(node, loggerFactory.CreateLogger<WinMirroring.Input.InputSharingService>());
+    input.FocusChanged += peerId => Console.WriteLine(peerId is null ? "INPUT home" : $"INPUT on {peerId}");
+    input.LayoutChanged += () => Console.WriteLine($"LAYOUT {string.Join("; ", input.Layout.Cells.Select(c => $"{c.DeviceId[..Math.Min(8, c.DeviceId.Length)]}@{c.Column},{c.Row}"))}");
+    input.Start();
+    Console.WriteLine($"INPUT sharing {(input.IsEnabled ? "enabled" : "disabled in settings")}");
+}
+
+await using var inputDisposer = input;
+
 using var shutdown = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
 {

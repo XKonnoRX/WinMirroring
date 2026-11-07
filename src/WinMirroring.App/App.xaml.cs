@@ -15,6 +15,7 @@ using WinMirroring.App.Views;
 using WinMirroring.Core;
 using WinMirroring.Core.Pairing;
 using WinMirroring.Core.Settings;
+using WinMirroring.Input;
 
 namespace WinMirroring.App;
 
@@ -61,6 +62,16 @@ public partial class App : Application
             MessageBox.Show($"Не удалось запустить сетевую часть: {ex.Message}", "WinMirroring", MessageBoxButton.OK, MessageBoxImage.Error);
         }
 
+        try
+        {
+            _services.GetRequiredService<InputSharingService>().Start();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Input sharing failed to start");
+            MessageBox.Show($"Не удалось включить общий ввод: {ex.Message}", "WinMirroring", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+
         CreateTrayIcon();
         _services.GetRequiredService<DialogPairingUi>().Notify = ShowNotification;
 
@@ -99,6 +110,7 @@ public partial class App : Application
             new NodeOptions(),
             sp.GetRequiredService<IPairingUserInterface>(),
             sp.GetRequiredService<ILoggerFactory>()));
+        services.AddSingleton<InputSharingService>();
         services.AddSingleton<MainViewModel>();
         return services.BuildServiceProvider();
     }
@@ -163,6 +175,15 @@ public partial class App : Application
 
         if (_services is not null)
         {
+            try
+            {
+                await _services.GetRequiredService<InputSharingService>().DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Input sharing shutdown failed");
+            }
+
             try
             {
                 await _services.GetRequiredService<MirroringNode>().DisposeAsync();
