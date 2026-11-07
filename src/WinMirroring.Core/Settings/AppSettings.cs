@@ -32,6 +32,8 @@ public sealed class AppSettings
 
     public AudioSettings Audio { get; set; } = new();
 
+    public ScreenSettings Screen { get; set; } = new();
+
     public PairedPeer? FindPairedById(string peerId) =>
         PairedPeers.FirstOrDefault(p => string.Equals(p.Id, peerId, StringComparison.Ordinal));
 

@@ -51,6 +51,8 @@
             <ListView.ContextMenu>
               <ContextMenu>
                 <MenuItem Header="Управлять этим устройством" FontWeight="SemiBold" Command="{Binding ControlPeerCommand}" />
+                <MenuItem Header="Показать экран" Command="{Binding ShowScreenCommand}" />
+                <MenuItem Header="Отправить окно на это устройство…" Command="{Binding SendWindowCommand}" />
                 <Separator />
                 <MenuItem Header="Проверить задержку" Command="{Binding MeasureLatencyCommand}" />
                 <MenuItem Header="Ping в консоли" Command="{Binding IcmpPingCommand}" />
@@ -172,6 +174,56 @@
             </StackPanel>
           </Grid>
         </ScrollViewer>
+      </TabItem>
+
+      <!-- Screen -->
+      <TabItem Header="Экран">
+        <Grid Margin="8">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="24" />
+            <ColumnDefinition Width="*" />
+          </Grid.ColumnDefinitions>
+
+          <StackPanel Grid.Column="0">
+            <TextBlock Style="{StaticResource SectionTitle}" Text="Доступ к этому устройству" />
+            <CheckBox Content="Разрешить сопряжённым устройствам смотреть экран и окна" IsChecked="{Binding ScreenAllowViewing}" />
+            <CheckBox Content="Разрешить управлять из окна просмотра (мышь, касания, клавиатура)" IsChecked="{Binding ScreenAllowControl}" IsEnabled="{Binding ScreenAllowViewing}" />
+            <CheckBox Content="Перетаскивать окна за заголовок через край экрана на другое устройство" IsChecked="{Binding ScreenWindowDrag}" IsEnabled="{Binding ScreenAllowViewing}" />
+            <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,10"
+                       Text="Потяните окно за заголовок и уведите курсор на соседнее устройство: там откроется окно с его изображением и управлением, а здесь окно вернётся на место. Отправить окно можно и из меню устройства." />
+            <StackPanel Orientation="Horizontal" Margin="0,2">
+              <TextBlock VerticalAlignment="Center" Text="Кадров в секунду, не больше:" Width="210" />
+              <TextBox Width="60" Text="{Binding ScreenMaxFps, UpdateSourceTrigger=LostFocus}" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,2">
+              <TextBlock VerticalAlignment="Center" Text="Качество JPEG, 30–95:" Width="210" />
+              <TextBox Width="60" Text="{Binding ScreenQuality, UpdateSourceTrigger=LostFocus}" />
+            </StackPanel>
+            <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,8"
+                       Text="Передаются только изменившиеся участки экрана, частота кадров сама подстраивается под сеть. Посмотреть экран другого устройства: правая кнопка по нему на вкладке «Устройства» → «Показать экран». В окне просмотра можно выделить часть изображения." />
+          </StackPanel>
+
+          <DockPanel Grid.Column="2">
+            <TextBlock DockPanel.Dock="Top" Style="{StaticResource SectionTitle}" Text="Что сейчас показывается другим" />
+            <ListBox ItemsSource="{Binding ScreenSources}" HorizontalContentAlignment="Stretch">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <DockPanel>
+                    <Button DockPanel.Dock="Right" Content="Остановить" Margin="8,0,0,0"
+                            Command="{Binding DataContext.StopScreenSourceCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                            CommandParameter="{Binding}" />
+                    <TextBlock VerticalAlignment="Center" TextTrimming="CharacterEllipsis">
+                      <Run Text="{Binding Title, Mode=OneWay}" FontWeight="SemiBold" />
+                      <Run Text="→" />
+                      <Run Text="{Binding PeerName, Mode=OneWay}" />
+                    </TextBlock>
+                  </DockPanel>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </DockPanel>
+        </Grid>
       </TabItem>
 
       <!-- Network -->

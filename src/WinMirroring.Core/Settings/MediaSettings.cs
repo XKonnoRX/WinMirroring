@@ -17,6 +17,23 @@ public sealed class ClipboardSettings
     public bool DragDropEnabled { get; set; } = true;
 }
 
+public sealed class ScreenSettings
+{
+    /// <summary>Paired devices may view this device's monitors and windows.</summary>
+    public bool AllowViewing { get; set; } = true;
+
+    /// <summary>Viewers may also control this device with pointer and keyboard.</summary>
+    public bool AllowControl { get; set; } = true;
+
+    public int MaxFps { get; set; } = 30;
+
+    /// <summary>JPEG quality of streamed tiles, 30–95.</summary>
+    public int Quality { get; set; } = 70;
+
+    /// <summary>Dragging a window by its title bar across a screen edge sends it to that device.</summary>
+    public bool WindowDragEnabled { get; set; } = true;
+}
+
 public sealed class AudioSettings
 {
     /// <summary>Let this device's sound be sent to another device.</summary>

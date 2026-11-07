@@ -1,0 +1,257 @@
+using System.Buffers.Binary;
+using System.Drawing;
+using WinMirroring.Screen.Encoding;
+
+namespace WinMirroring.Screen.Protocol;
+
+public enum PointerAction : byte
+{
+    Move = 1,
+    Down = 2,
+    Up = 3,
+    Wheel = 4,
+    HorizontalWheel = 5,
+}
+
+public enum ScreenMessageType : byte
+{
+    /// <summary>Source → viewer: changed tiles.</summary>
+    Frame = 1,
+
+    /// <summary>Viewer → source: a frame has been shown; the source may send another.</summary>
+    Ack = 2,
+
+    /// <summary>Viewer → source: pointer at normalized coordinates of the streamed image.</summary>
+    Pointer = 3,
+
+    /// <summary>Viewer → source: key by virtual key and scan code.</summary>
+    Key = 4,
+
+    /// <summary>Viewer → source: stream only this normalized part of the captured image.</summary>
+    Crop = 5,
+}
+
+public sealed record ScreenFrame(uint StreamId, uint FrameNo, int Width, int Height, IReadOnlyList<EncodedTile> Tiles);
+
+/// <summary>
+/// Screen channel, little-endian, first byte <see cref="ScreenMessageType"/>, then u32 stream id.
+/// Frame: u32 frame no, u16 width, u16 height, u16 tile count, tiles (u16 x, y, w, h, i32 length, JPEG).
+/// Ack: u32 frame no. Pointer: u8 action, u8 button, f32 x, f32 y, i16 wheel. Key: u16 vk, u16 scan, u8 flags.
+/// Crop: f32 x, y, w, h.
+/// </summary>
+public static class ScreenCodec
+{
+    private const int FrameHeader = 15;
+    private const int TileHeader = 12;
+
+    public static byte[] EncodeFrame(uint streamId, uint frameNo, int width, int height, IReadOnlyList<EncodedTile> tiles)
+    {
+        var size = FrameHeader + tiles.Sum(t => TileHeader + t.Jpeg.Length);
+        var message = new byte[size];
+        var span = message.AsSpan();
+        span[0] = (byte)ScreenMessageType.Frame;
+        BinaryPrimitives.WriteUInt32LittleEndian(span[1..], streamId);
+        BinaryPrimitives.WriteUInt32LittleEndian(span[5..], frameNo);
+        BinaryPrimitives.WriteUInt16LittleEndian(span[9..], (ushort)width);
+        BinaryPrimitives.WriteUInt16LittleEndian(span[11..], (ushort)height);
+        BinaryPrimitives.WriteUInt16LittleEndian(span[13..], (ushort)tiles.Count);
+        var offset = FrameHeader;
+        foreach (var tile in tiles)
+        {
+            var t = span[offset..];
+            BinaryPrimitives.WriteUInt16LittleEndian(t, (ushort)tile.X);
+            BinaryPrimitives.WriteUInt16LittleEndian(t[2..], (ushort)tile.Y);
+            BinaryPrimitives.WriteUInt16LittleEndian(t[4..], (ushort)tile.Width);
+            BinaryPrimitives.WriteUInt16LittleEndian(t[6..], (ushort)tile.Height);
+            BinaryPrimitives.WriteInt32LittleEndian(t[8..], tile.Jpeg.Length);
+            tile.Jpeg.CopyTo(t[TileHeader..]);
+            offset += TileHeader + tile.Jpeg.Length;
+        }
+
+        return message;
+    }
+
+    public static ScreenFrame? TryDecodeFrame(ReadOnlySpan<byte> message)
+    {
+        if (message.Length < FrameHeader || message[0] != (byte)ScreenMessageType.Frame)
+        {
+            return null;
+        }
+
+        var streamId = BinaryPrimitives.ReadUInt32LittleEndian(message[1..]);
+        var frameNo = BinaryPrimitives.ReadUInt32LittleEndian(message[5..]);
+        int width = BinaryPrimitives.ReadUInt16LittleEndian(message[9..]);
+        int height = BinaryPrimitives.ReadUInt16LittleEndian(message[11..]);
+        int count = BinaryPrimitives.ReadUInt16LittleEndian(message[13..]);
+        var tiles = new List<EncodedTile>(count);
+        var span = message[FrameHeader..];
+        for (var i = 0; i < count; i++)
+        {
+            if (span.Length < TileHeader)
+            {
+                return null;
+            }
+
+            int x = BinaryPrimitives.ReadUInt16LittleEndian(span);
+            int y = BinaryPrimitives.ReadUInt16LittleEndian(span[2..]);
+            int w = BinaryPrimitives.ReadUInt16LittleEndian(span[4..]);
+            int h = BinaryPrimitives.ReadUInt16LittleEndian(span[6..]);
+            var length = BinaryPrimitives.ReadInt32LittleEndian(span[8..]);
+            if (length < 0 || length > span.Length - TileHeader || w == 0 || h == 0 || x + w > width || y + h > height)
+            {
+                return null;
+            }
+
+            tiles.Add(new EncodedTile(x, y, w, h, span.Slice(TileHeader, length).ToArray()));
+            span = span[(TileHeader + length)..];
+        }
+
+        return new ScreenFrame(streamId, frameNo, width, height, tiles);
+    }
+
+    public static byte[] EncodeAck(uint streamId, uint frameNo)
+    {
+        var message = new byte[9];
+        message[0] = (byte)ScreenMessageType.Ack;
+        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(1), streamId);
+        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(5), frameNo);
+        return message;
+    }
+
+    public static byte[] EncodePointer(uint streamId, PointerAction action, Input.Protocol.MouseButton button, float x, float y, int wheel)
+    {
+        var message = new byte[17];
+        message[0] = (byte)ScreenMessageType.Pointer;
+        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(1), streamId);
+        message[5] = (byte)action;
+        message[6] = (byte)button;
+        BinaryPrimitives.WriteSingleLittleEndian(message.AsSpan(7), x);
+        BinaryPrimitives.WriteSingleLittleEndian(message.AsSpan(11), y);
+        BinaryPrimitives.WriteInt16LittleEndian(message.AsSpan(15), (short)Math.Clamp(wheel, short.MinValue, short.MaxValue));
+        return message;
+    }
+
+    public static byte[] EncodeKey(uint streamId, ushort virtualKey, ushort scanCode, bool up, bool extended)
+    {
+        var message = new byte[10];
+        message[0] = (byte)ScreenMessageType.Key;
+        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(1), streamId);
+        BinaryPrimitives.WriteUInt16LittleEndian(message.AsSpan(5), virtualKey);
+        BinaryPrimitives.WriteUInt16LittleEndian(message.AsSpan(7), scanCode);
+        message[9] = (byte)((up ? 1 : 0) | (extended ? 2 : 0));
+        return message;
+    }
+
+    public static byte[] EncodeCrop(uint streamId, RectangleF crop)
+    {
+        var message = new byte[21];
+        message[0] = (byte)ScreenMessageType.Crop;
+        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(1), streamId);
+        BinaryPrimitives.WriteSingleLittleEndian(message.AsSpan(5), crop.X);
+        BinaryPrimitives.WriteSingleLittleEndian(message.AsSpan(9), crop.Y);
+        BinaryPrimitives.WriteSingleLittleEndian(message.AsSpan(13), crop.Width);
+        BinaryPrimitives.WriteSingleLittleEndian(message.AsSpan(17), crop.Height);
+        return message;
+    }
+
+    public static bool TryReadHeader(ReadOnlySpan<byte> message, out ScreenMessageType type, out uint streamId)
+    {
+        type = 0;
+        streamId = 0;
+        if (message.Length < 5)
+        {
+            return false;
+        }
+
+        type = (ScreenMessageType)message[0];
+        streamId = BinaryPrimitives.ReadUInt32LittleEndian(message[1..]);
+        return true;
+    }
+
+    public static bool TryDecodeAck(ReadOnlySpan<byte> message, out uint frameNo)
+    {
+        frameNo = message.Length >= 9 ? BinaryPrimitives.ReadUInt32LittleEndian(message[5..]) : 0;
+        return message.Length >= 9 && message[0] == (byte)ScreenMessageType.Ack;
+    }
+
+    public static bool TryDecodePointer(ReadOnlySpan<byte> message, out PointerAction action, out Input.Protocol.MouseButton button, out float x, out float y, out int wheel)
+    {
+        action = 0;
+        button = 0;
+        x = y = 0;
+        wheel = 0;
+        if (message.Length < 17 || message[0] != (byte)ScreenMessageType.Pointer)
+        {
+            return false;
+        }
+
+        action = (PointerAction)message[5];
+        button = (Input.Protocol.MouseButton)message[6];
+        x = Math.Clamp(BinaryPrimitives.ReadSingleLittleEndian(message[7..]), 0f, 1f);
+        y = Math.Clamp(BinaryPrimitives.ReadSingleLittleEndian(message[11..]), 0f, 1f);
+        wheel = BinaryPrimitives.ReadInt16LittleEndian(message[15..]);
+        return float.IsFinite(x) && float.IsFinite(y);
+    }
+
+    public static bool TryDecodeKey(ReadOnlySpan<byte> message, out ushort virtualKey, out ushort scanCode, out bool up, out bool extended)
+    {
+        virtualKey = scanCode = 0;
+        up = extended = false;
+        if (message.Length < 10 || message[0] != (byte)ScreenMessageType.Key)
+        {
+            return false;
+        }
+
+        virtualKey = BinaryPrimitives.ReadUInt16LittleEndian(message[5..]);
+        scanCode = BinaryPrimitives.ReadUInt16LittleEndian(message[7..]);
+        up = (message[9] & 1) != 0;
+        extended = (message[9] & 2) != 0;
+        return true;
+    }
+
+    public static bool TryDecodeCrop(ReadOnlySpan<byte> message, out RectangleF crop)
+    {
+        crop = default;
+        if (message.Length < 21 || message[0] != (byte)ScreenMessageType.Crop)
+        {
+            return false;
+        }
+
+        crop = Normalize(new RectangleF(
+            BinaryPrimitives.ReadSingleLittleEndian(message[5..]),
+            BinaryPrimitives.ReadSingleLittleEndian(message[9..]),
+            BinaryPrimitives.ReadSingleLittleEndian(message[13..]),
+            BinaryPrimitives.ReadSingleLittleEndian(message[17..])));
+        return true;
+    }
+
+    /// <summary>Clamps a normalized rectangle into [0,1] with a minimum size; garbage becomes the full image.</summary>
+    public static RectangleF Normalize(RectangleF crop)
+    {
+        if (!float.IsFinite(crop.X) || !float.IsFinite(crop.Y) || !float.IsFinite(crop.Width) || !float.IsFinite(crop.Height))
+        {
+            return new RectangleF(0, 0, 1, 1);
+        }
+
+        var left = Math.Clamp(crop.Left, 0f, 1f);
+        var top = Math.Clamp(crop.Top, 0f, 1f);
+        var right = Math.Clamp(crop.Right, 0f, 1f);
+        var bottom = Math.Clamp(crop.Bottom, 0f, 1f);
+        if (right - left < 0.02f || bottom - top < 0.02f)
+        {
+            return new RectangleF(0, 0, 1, 1);
+        }
+
+        return RectangleF.FromLTRB(left, top, right, bottom);
+    }
+
+    /// <summary>Normalized crop → pixels of a <paramref name="width"/>×<paramref name="height"/> frame.</summary>
+    public static Rectangle ToPixels(RectangleF crop, int width, int height)
+    {
+        var left = (int)Math.Round(crop.Left * width);
+        var top = (int)Math.Round(crop.Top * height);
+        var right = (int)Math.Round(crop.Right * width);
+        var bottom = (int)Math.Round(crop.Bottom * height);
+        return Rectangle.FromLTRB(Math.Clamp(left, 0, width), Math.Clamp(top, 0, height), Math.Clamp(right, 0, width), Math.Clamp(bottom, 0, height));
+    }
+}

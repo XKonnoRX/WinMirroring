@@ -18,6 +18,7 @@ using WinMirroring.Core.Settings;
 using WinMirroring.Audio;
 using WinMirroring.Clipboard;
 using WinMirroring.Input;
+using WinMirroring.Screen;
 
 namespace WinMirroring.App;
 
@@ -95,6 +96,18 @@ public partial class App : Application
             Log.Error(ex, "Sound forwarding failed to start");
         }
 
+        try
+        {
+            var screen = _services.GetRequiredService<ScreenStreamingService>();
+            screen.ViewerOpened += viewer => Dispatcher.BeginInvoke(() => new ScreenViewerWindow(viewer).Show());
+            screen.Start();
+            screen.AttachWindowDrag(_services.GetRequiredService<InputSharingService>());
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Screen streaming failed to start");
+        }
+
         CreateTrayIcon();
         _services.GetRequiredService<DialogPairingUi>().Notify = ShowNotification;
 
@@ -137,6 +150,7 @@ public partial class App : Application
         services.AddSingleton<ClipboardSyncService>();
         services.AddSingleton<AudioService>();
         services.AddSingleton<DragDropCoordinator>();
+        services.AddSingleton<ScreenStreamingService>();
         services.AddSingleton<MainViewModel>();
         return services.BuildServiceProvider();
     }
@@ -202,6 +216,15 @@ public partial class App : Application
         if (_services is not null)
         {
             _services.GetRequiredService<DragDropCoordinator>().Dispose();
+
+            try
+            {
+                await _services.GetRequiredService<ScreenStreamingService>().DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Screen streaming shutdown failed");
+            }
 
             try
             {

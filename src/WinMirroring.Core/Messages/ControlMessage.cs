@@ -19,6 +19,9 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(LayoutMessage), "layout")]
 [JsonDerivedType(typeof(AudioStartMessage), "audio-start")]
 [JsonDerivedType(typeof(AudioStopMessage), "audio-stop")]
+[JsonDerivedType(typeof(ScreenRequestMessage), "screen-request")]
+[JsonDerivedType(typeof(ScreenStreamMessage), "screen-stream")]
+[JsonDerivedType(typeof(ScreenStopMessage), "screen-stop")]
 public abstract record ControlMessage;
 
 /// <summary>First message in each direction. The server adds a challenge the client must sign.</summary>
@@ -62,3 +65,12 @@ public sealed record LayoutMessage(long Version, List<LayoutCell> Cells) : Contr
 public sealed record AudioStartMessage(uint StreamId, string Key, string Codec, int SampleRate, int Channels, int FrameMs) : ControlMessage;
 
 public sealed record AudioStopMessage(uint StreamId) : ControlMessage;
+
+/// <summary>Viewer → source: stream monitor <see cref="MonitorIndex"/> as <see cref="StreamId"/> (again with a new index to switch).</summary>
+public sealed record ScreenRequestMessage(uint StreamId, int MonitorIndex) : ControlMessage;
+
+/// <summary>Source → viewer: a stream starts or changes. Kind is "monitor" or "window".</summary>
+public sealed record ScreenStreamMessage(uint StreamId, string Kind, string Title, int MonitorIndex, int MonitorCount, bool ControlAllowed) : ControlMessage;
+
+/// <summary>Either side: the stream ends.</summary>
+public sealed record ScreenStopMessage(uint StreamId, string? Reason) : ControlMessage;

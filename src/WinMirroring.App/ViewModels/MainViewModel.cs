@@ -35,12 +35,14 @@ public sealed partial class MainViewModel : ObservableObject
         InputSharingService input,
         WinMirroring.Clipboard.ClipboardSyncService clipboard,
         WinMirroring.Audio.AudioService audio,
+        WinMirroring.Screen.ScreenStreamingService screen,
         ILogger<MainViewModel> logger)
     {
         _node = node;
         _input = input;
         _clipboard = clipboard;
         _audio = audio;
+        _screen = screen;
         _logger = logger;
         _dispatcher = Application.Current.Dispatcher;
 
@@ -86,6 +88,7 @@ public sealed partial class MainViewModel : ObservableObject
         UpdateStatus();
 
         InitializeMedia();
+        InitializeScreen();
 
         _statsTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => RefreshStats(), _dispatcher);
         _statsTimer.Start();

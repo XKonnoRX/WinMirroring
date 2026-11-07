@@ -24,6 +24,8 @@ public sealed partial class MainViewModel
         PairCommand.NotifyCanExecuteChanged();
         UnpairCommand.NotifyCanExecuteChanged();
         ControlPeerCommand.NotifyCanExecuteChanged();
+        ShowScreenCommand.NotifyCanExecuteChanged();
+        SendWindowCommand.NotifyCanExecuteChanged();
         MeasureLatencyCommand.NotifyCanExecuteChanged();
         IcmpPingCommand.NotifyCanExecuteChanged();
         RemoteDesktopCommand.NotifyCanExecuteChanged();

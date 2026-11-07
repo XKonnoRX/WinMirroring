@@ -1,0 +1,17 @@
+<Window x:Class="WinMirroring.App.Views.WindowPickerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="WinMirroring — отправить окно"
+        Width="520" Height="480" WindowStartupLocation="CenterOwner"
+        Icon="pack://application:,,,/Assets/app.ico">
+  <DockPanel Margin="12">
+    <TextBlock x:Name="HeaderText" DockPanel.Dock="Top" Style="{StaticResource SectionTitle}" TextWrapping="Wrap" />
+    <TextBlock DockPanel.Dock="Top" Style="{StaticResource Caption}" Margin="0,0,0,8"
+               Text="Окно откроется на другом устройстве отдельным окном, им можно управлять оттуда. В окне просмотра можно выделить только нужную часть." />
+    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+      <Button Content="Отправить" IsDefault="True" Click="OnSend" MinWidth="100" />
+      <Button Content="Отмена" IsCancel="True" MinWidth="100" Margin="0" />
+    </StackPanel>
+    <ListBox x:Name="WindowList" DisplayMemberPath="Title" MouseDoubleClick="OnSend" />
+  </DockPanel>
+</Window>
