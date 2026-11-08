@@ -1,0 +1,35 @@
+name: Release
+
+# Publishes a self-contained Windows build as a GitHub Release whenever a vX.Y.Z tag is pushed.
+# The app's auto-updater reads the latest release and installs the WinMirroring-win-x64.zip asset.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish (self-contained win-x64)
+        run: dotnet publish src/WinMirroring.App/WinMirroring.App.csproj -c Release -r win-x64 --self-contained -o publish
+
+      - name: Zip the build
+        shell: pwsh
+        run: Compress-Archive -Path publish\* -DestinationPath WinMirroring-win-x64.zip -Force
+
+      - name: Create the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" "WinMirroring-win-x64.zip" --title "${{ github.ref_name }}" --generate-notes
