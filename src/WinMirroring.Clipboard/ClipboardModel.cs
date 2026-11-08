@@ -44,3 +44,6 @@ public sealed record FileOfferManifest(long OfferId, string SourceName, List<Fil
     /// <summary>Entries without a backslash: what the user actually selected.</summary>
     public IEnumerable<FileOfferEntry> TopLevel => Entries.Where(e => !e.Path.Contains('\\'));
 }
+
+/// <summary>Progress of materialising a received file offer locally, for a progress indicator.</summary>
+public sealed record FileTransferProgress(long OfferId, string What, long Done, long Total, bool Finished, bool Ok);

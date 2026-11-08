@@ -136,6 +136,7 @@ public partial class App : Application
             .ToList();
         health.Set("Раскладка клавиатуры", true, layoutNames.Count == 0 ? "не удалось прочитать список раскладок" : "здесь: " + string.Join(", ", layoutNames));
         health.Start("Буфер обмена", clipboard.Start);
+        clipboard.TransferProgress += p => Dispatcher.BeginInvoke(() => ShowFileTransfer(p));
         health.Start("Перетаскивание файлов", () =>
         {
             // Started regardless: it also hands dragged windows over. Only the file part needs the OLE surface.
@@ -435,6 +436,24 @@ public partial class App : Application
         }
     }
 
+    private Views.FileTransferWindow? _fileTransfer;
+
+    private void ShowFileTransfer(WinMirroring.Clipboard.FileTransferProgress p)
+    {
+        if (_exiting)
+        {
+            return;
+        }
+
+        if (_fileTransfer is null)
+        {
+            _fileTransfer = new Views.FileTransferWindow();
+            _fileTransfer.Closed += (_, _) => _fileTransfer = null;
+        }
+
+        _fileTransfer.Update(p);
+    }
+
     public async Task ExitAsync()
     {
         if (_exiting)
@@ -445,6 +464,7 @@ public partial class App : Application
         _exiting = true;
         _mainWindow?.AllowClose();
         _mainWindow?.Close();
+        _fileTransfer?.Close();
         _trayIcon?.Dispose();
 
         if (_services is not null)

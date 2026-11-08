@@ -66,6 +66,12 @@ internal sealed class VirtualFileDataObject : ComTypes.IDataObject
     /// <summary>Raised when a paste starts pulling the files into the cache (CF_HDROP path).</summary>
     public event Action<FileOfferManifest>? DownloadStarted;
 
+    /// <summary>Bytes copied so far and the whole size, while a download runs (for a progress indicator).</summary>
+    public event Action<FileOfferManifest, long, long>? DownloadProgress;
+
+    /// <summary>A download ended; the flag says whether it succeeded.</summary>
+    public event Action<FileOfferManifest, bool>? DownloadFinished;
+
     public void GetData(ref ComTypes.FORMATETC format, out ComTypes.STGMEDIUM medium)
     {
         var id = (ushort)format.cfFormat;
@@ -214,13 +220,18 @@ internal sealed class VirtualFileDataObject : ComTypes.IDataObject
             DownloadStarted?.Invoke(_manifest);
             try
             {
-                _downloaded = OfferDownloader.DownloadAsync(_manifest, _source, CancellationToken.None).GetAwaiter().GetResult();
+                _downloaded = OfferDownloader.DownloadAsync(
+                    _manifest, _source,
+                    (done, total) => DownloadProgress?.Invoke(_manifest, done, total),
+                    CancellationToken.None).GetAwaiter().GetResult();
                 _logger.LogInformation("Downloaded {Count} clipboard item(s) from {Source}", _downloaded.Count, _manifest.SourceName);
+                DownloadFinished?.Invoke(_manifest, true);
                 return _downloaded;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 _logger.LogWarning("Pasting files from {Source} failed: {Message}", _manifest.SourceName, ex.Message);
+                DownloadFinished?.Invoke(_manifest, false);
                 throw new COMException(ex.Message, E_FAIL);
             }
         }

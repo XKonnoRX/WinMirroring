@@ -46,6 +46,9 @@ public sealed class ClipboardSyncService : IAsyncDisposable
 
     public event Action<string>? Activity;
 
+    /// <summary>Progress of a received file offer being materialised locally (for a progress indicator).</summary>
+    public event Action<FileTransferProgress>? TransferProgress;
+
     /// <summary>Another device asks this one to start a drag of its files under the cursor (we are controlled).</summary>
     public event Action<PeerSession, DragPayload>? DragStartReceived;
 
@@ -369,7 +372,15 @@ public sealed class ClipboardSyncService : IAsyncDisposable
                     }
 
                     var dataObject = new VirtualFileDataObject(manifest, source, AllowsDirectPaste(manifest), session.PeerId, _logger);
-                    dataObject.DownloadStarted += m => Report($"Вставка: загрузка {DescribeFiles(m)} с {m.SourceName}…");
+                    dataObject.DownloadStarted += m =>
+                    {
+                        Report($"Вставка: загрузка {DescribeFiles(m)} с {m.SourceName}…");
+                        TransferProgress?.Invoke(new FileTransferProgress(m.OfferId, DescribeFiles(m), 0, m.TotalSize, false, false));
+                    };
+                    dataObject.DownloadProgress += (m, done, total) =>
+                        TransferProgress?.Invoke(new FileTransferProgress(m.OfferId, DescribeFiles(m), done, total, false, false));
+                    dataObject.DownloadFinished += (m, ok) =>
+                        TransferProgress?.Invoke(new FileTransferProgress(m.OfferId, DescribeFiles(m), ok ? m.TotalSize : 0, m.TotalSize, true, ok));
                     await thread.SetDataObjectAsync(dataObject).ConfigureAwait(false);
                     _logger.LogInformation("Files from {Peer} put on the clipboard: {What}", session.PeerName, DescribeFiles(manifest));
                     Report($"Получено с {session.PeerName}: {DescribeFiles(manifest)}");

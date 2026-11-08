@@ -169,12 +169,18 @@ public sealed class FilesTests : IDisposable
             new FileOfferEntry("pack\\data.bin", content.Length, false, new DateTime(2024, 5, 1, 0, 0, 0, DateTimeKind.Utc).Ticks),
         ]);
 
-        var top = await OfferDownloader.DownloadAsync(manifest, new MemorySource(content), TestContext.Current.CancellationToken);
+        var progress = new List<(long Done, long Total)>();
+        var top = await OfferDownloader.DownloadAsync(manifest, new MemorySource(content), (done, total) => progress.Add((done, total)), TestContext.Current.CancellationToken);
         try
         {
             var folder = Assert.Single(top);
             var file = Path.Combine(folder, "data.bin");
             Assert.Equal(content, await File.ReadAllBytesAsync(file, TestContext.Current.CancellationToken));
+
+            // Progress is reported and reaches the whole size.
+            Assert.NotEmpty(progress);
+            Assert.All(progress, p => Assert.Equal(content.Length, p.Total));
+            Assert.Equal(content.Length, progress[^1].Done);
             Assert.Equal(2024, File.GetLastWriteTimeUtc(file).Year);
         }
         finally
