@@ -38,6 +38,12 @@ public sealed class ScreenSettings
     /// (empty: none). Transferring a window to that peer then moves the real window onto the virtual monitor.
     /// </summary>
     public string SecondMonitorPeerId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// While a window is shown as a copy on another device, move the real window off this device's screens so the
+    /// same window is not visible in two places. It comes back when the other device stops showing it.
+    /// </summary>
+    public bool HideSentWindow { get; set; } = true;
 }
 
 public sealed class AudioSettings

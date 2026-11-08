@@ -25,6 +25,9 @@ public sealed partial class MainViewModel
     public partial bool ScreenWindowDrag { get; set; }
 
     [ObservableProperty]
+    public partial bool ScreenHideSentWindow { get; set; }
+
+    [ObservableProperty]
     public partial int ScreenMaxFps { get; set; }
 
     [ObservableProperty]
@@ -36,6 +39,7 @@ public sealed partial class MainViewModel
         ScreenAllowViewing = settings.AllowViewing;
         ScreenAllowControl = settings.AllowControl;
         ScreenWindowDrag = settings.WindowDragEnabled;
+        ScreenHideSentWindow = settings.HideSentWindow;
         ScreenMaxFps = settings.MaxFps;
         ScreenQuality = settings.Quality;
         _screen.SourcesChanged += () => _dispatcher.InvokeAsync(ReloadScreenSources);
@@ -80,19 +84,22 @@ public sealed partial class MainViewModel
         }
 
         var onSecondMonitor = _screen.IsExtendedTo(peer.Id);
+        var hidesHere = _node.Settings.Screen.HideSentWindow;
         StatusText = await _screen.TransferWindowAsync(peer.Id, window.Handle)
             ? onSecondMonitor
                 ? $"Окно «{window.Title}» перенесено на {peer.Name} (второй монитор)."
-                : $"Окно «{window.Title}» показывается на {peer.Name}."
+                : hidesHere
+                    ? $"Окно «{window.Title}» показывается на {peer.Name}, с этого экрана скрыто."
+                    : $"Окно «{window.Title}» показывается на {peer.Name}."
             : $"Не удалось отправить окно на {peer.Name}.";
     }
 
-    /// <summary>Returns windows parked on the virtual monitor back to this device.</summary>
+    /// <summary>Returns windows that were hidden off-screen or parked on the virtual monitor back to this device.</summary>
     public string ReturnWindows()
     {
         var count = _screen.MovedWindowCount;
         _screen.RestoreMovedWindows();
-        var text = count > 0 ? $"Окон возвращено с второго монитора: {count}." : "На втором мониторе нет перенесённых окон.";
+        var text = count > 0 ? $"Окон возвращено на место: {count}." : "Нет скрытых или перенесённых окон.";
         StatusText = text;
         return text;
     }
@@ -182,6 +189,8 @@ public sealed partial class MainViewModel
     partial void OnScreenAllowControlChanged(bool value) => SaveScreen(s => s.AllowControl = value);
 
     partial void OnScreenWindowDragChanged(bool value) => SaveScreen(s => s.WindowDragEnabled = value);
+
+    partial void OnScreenHideSentWindowChanged(bool value) => SaveScreen(s => s.HideSentWindow = value);
 
     partial void OnScreenMaxFpsChanged(int value)
     {

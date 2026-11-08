@@ -288,9 +288,16 @@ public sealed partial class ScreenStreamingService
         }
     }
 
-    /// <summary>Called whenever a source goes away: the virtual monitor leaves the desktop with its last stream.</summary>
+    /// <summary>Called whenever a source goes away: a hidden window comes back, the virtual monitor leaves the desktop.</summary>
     private void OnSourceRemoved(ScreenSource source)
     {
+        if (source.Kind == StreamKind.Window)
+        {
+            // A window that was moved off-screen while it was shown elsewhere comes back where it was.
+            RestoreWindow(source.Window);
+            return;
+        }
+
         if (source.Kind != StreamKind.Display)
         {
             return;

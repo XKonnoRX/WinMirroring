@@ -153,8 +153,12 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
         }
     }
 
-    /// <summary>Streams a local window to <paramref name="peerId"/>, which opens it in a window of its own.</summary>
-    public async Task<bool> SendWindowAsync(string peerId, nint window)
+    /// <summary>
+    /// Streams a local window to <paramref name="peerId"/>, which opens it in a window of its own. When
+    /// <paramref name="hideSource"/> is set and the setting allows it, the real window is moved off this device's
+    /// screens for as long as it is shown there, so the same window is not visible in two places.
+    /// </summary>
+    public async Task<bool> SendWindowAsync(string peerId, nint window, bool hideSource = false)
     {
         if (!_node.Settings.Screen.AllowViewing || !TryGetReady(peerId, out var session) || !Native.ScreenNative.IsWindow(window))
         {
@@ -183,7 +187,13 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
                 return false;
             }
 
-            return await StartSourceAsync(session, source).ConfigureAwait(false);
+            var started = await StartSourceAsync(session, source).ConfigureAwait(false);
+            if (started && hideSource && _node.Settings.Screen.HideSentWindow)
+            {
+                HideWindowOffscreen(window);
+            }
+
+            return started;
         }
         finally
         {

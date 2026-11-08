@@ -315,7 +315,7 @@ public partial class App : Application
         if (_services?.GetService<MainViewModel>() is { } vm)
         {
             menu.Items.Add(new MenuItem { Header = "Вернуть курсор", Command = new RelayCommand(() => ShowNotification("WinMirroring", vm.ReturnCursor())) });
-            menu.Items.Add(new MenuItem { Header = "Вернуть окна со второго монитора", Command = new RelayCommand(() => ShowNotification("WinMirroring", vm.ReturnWindows())) });
+            menu.Items.Add(new MenuItem { Header = "Вернуть окна на место", Command = new RelayCommand(() => ShowNotification("WinMirroring", vm.ReturnWindows())) });
             menu.Items.Add(new Separator());
 
             var peers = vm.ReadyPeers;
