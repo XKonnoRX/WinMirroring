@@ -70,6 +70,7 @@ public partial class ScreenViewerWindow : Window
     private WindowState _stateBeforeFullScreen;
     private WindowStyle _styleBeforeFullScreen;
     private bool _windowMode;
+    private bool _externalControl;
     private bool _stripPressed;
     private bool _stripMoved;
     private Point _stripDownInWindow;
@@ -939,7 +940,51 @@ public partial class ScreenViewerWindow : Window
 
         FullScreenToggle.IsChecked = IsFullScreen;
         QuickPanel.Visibility = Visibility.Collapsed;
+        if (_externalControl)
+        {
+            FullScreenHandle.Visibility = Visibility.Collapsed;
+        }
     }
+
+    // ---- driven from the main control panel --------------------------------------------------------------
+
+    /// <summary>The stream this window shows (so the panel can list and switch between open views).</summary>
+    public ScreenViewer Viewer => _viewer;
+
+    /// <summary>
+    /// Shows the view full screen and hands all control to the main panel: no toolbar, no in-view menu. The window
+    /// is not topmost, so the floating button and the panel stay reachable above it.
+    /// </summary>
+    public void OpenFullScreenExternal()
+    {
+        _externalControl = true;
+        Toolbar.Visibility = Visibility.Collapsed;
+        if (!IsFullScreen && !_windowMode)
+        {
+            ToggleFullScreen();
+        }
+
+        FullScreenHandle.Visibility = Visibility.Collapsed;
+        Topmost = false;
+    }
+
+    /// <summary>Brings this view to the front (switching to it from the panel).</summary>
+    public void BringToFront()
+    {
+        if (WindowState == WindowState.Minimized)
+        {
+            WindowState = _externalControl && !_windowMode ? WindowState.Maximized : WindowState.Normal;
+        }
+
+        Show();
+        Activate();
+    }
+
+    public void CloseView() => Close();
+
+    public void SwitchToMonitor(int index) => _viewer.SwitchMonitor(index);
+
+    public void ToggleOnScreenKeyboard() => OnToggleKeyboard(this, new RoutedEventArgs());
 
     // ---- quick panel -------------------------------------------------------------------------------------
 

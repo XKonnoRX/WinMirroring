@@ -154,7 +154,7 @@ public partial class App : Application
         });
         health.Start("Экран и окна", () =>
         {
-            screen.ViewerOpened += viewer => Dispatcher.BeginInvoke(() => new ScreenViewerWindow(viewer, _services!).Show());
+            screen.ViewerOpened += viewer => Dispatcher.BeginInvoke(() => OpenViewerWindow(viewer));
             screen.Start();
             screen.AttachWindowDrag(input);
         });
@@ -638,7 +638,7 @@ public partial class App : Application
         }
 
         _controlPanel ??= new Views.ControlPanelWindow();
-        _controlPanel.Toggle(vm, _services.GetRequiredService<ScreenStreamingService>(), ShowMainWindow, HideFloatingMenu);
+        _controlPanel.Toggle(vm, _services.GetRequiredService<ScreenStreamingService>(), this, ShowMainWindow, HideFloatingMenu);
     }
 
     public async Task ExitAsync()
@@ -654,6 +654,11 @@ public partial class App : Application
         _fileTransfer?.Close();
         _controlPanel?.Close();
         _floatingMenu?.Close();
+        foreach (var viewer in _openViewers.ToList())
+        {
+            viewer.Close();
+        }
+
         _trayIcon?.Dispose();
 
         if (_services is not null)

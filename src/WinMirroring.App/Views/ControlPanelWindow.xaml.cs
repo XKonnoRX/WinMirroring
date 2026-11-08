@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using WinMirroring.App.Services;
 using WinMirroring.App.ViewModels;
 using WinMirroring.Screen;
 
@@ -19,7 +20,7 @@ public partial class ControlPanelWindow : Window
     public bool IsShown { get; private set; }
 
     /// <summary>Opens the panel (rebuilt from current state) or closes it if already open; returns whether it is now shown.</summary>
-    public bool Toggle(MainViewModel vm, ScreenStreamingService screen, Action openSettings, Action hideButton)
+    public bool Toggle(MainViewModel vm, ScreenStreamingService screen, IViewerControl viewers, Action openSettings, Action hideButton)
     {
         if (IsShown)
         {
@@ -27,7 +28,7 @@ public partial class ControlPanelWindow : Window
             return false;
         }
 
-        Populate(vm, screen, openSettings, hideButton);
+        Populate(vm, screen, viewers, openSettings, hideButton);
         var work = SystemParameters.WorkArea;
         Height = work.Height;
         Top = work.Top;
@@ -46,11 +47,45 @@ public partial class ControlPanelWindow : Window
 
     private void OnClose(object sender, RoutedEventArgs e) => HidePanel();
 
-    private void Populate(MainViewModel vm, ScreenStreamingService screen, Action openSettings, Action hideButton)
+    private Action? _repopulate;
+
+    private void Populate(MainViewModel vm, ScreenStreamingService screen, IViewerControl viewers, Action openSettings, Action hideButton)
     {
+        _repopulate = () => Populate(vm, screen, viewers, openSettings, hideButton);
         Sections.Children.Clear();
         var peers = vm.ReadyPeers;
         var hasLocalDriver = ScreenStreamingService.IsVirtualDisplayAvailable;
+
+        // ---- Open views: pick which one is on screen and control the active one ----
+        var open = viewers.OpenViews;
+        if (open.Count > 0)
+        {
+            Sections.Children.Add(MakeHeader("ОТКРЫТЫЕ ТРАНСЛЯЦИИ"));
+            foreach (var view in open)
+            {
+                Sections.Children.Add(MakeButton((view.IsActive ? "● " : "    ") + view.Title, () =>
+                {
+                    viewers.SwitchTo(view.StreamId);
+                    _repopulate?.Invoke();
+                }));
+
+                if (view.IsActive)
+                {
+                    if (view.Kind == "monitor" && view.MonitorCount > 1)
+                    {
+                        Sections.Children.Add(MakeButton($"Следующий монитор ({view.MonitorIndex + 1}/{view.MonitorCount})",
+                            () => viewers.SwitchMonitor(view.StreamId, (view.MonitorIndex + 1) % view.MonitorCount)));
+                    }
+
+                    Sections.Children.Add(MakeButton("Экранная клавиатура", () => viewers.ToggleKeyboard(view.StreamId)));
+                    Sections.Children.Add(MakeButton("Закрыть трансляцию", () =>
+                    {
+                        viewers.CloseView(view.StreamId);
+                        _repopulate?.Invoke();
+                    }));
+                }
+            }
+        }
 
         // ---- Screens / devices ----
         Sections.Children.Add(MakeHeader("ЭКРАНЫ УСТРОЙСТВ"));
@@ -62,7 +97,11 @@ public partial class ControlPanelWindow : Window
         foreach (var peer in peers)
         {
             Sections.Children.Add(MakeDeviceHeader(peer.Name));
-            Sections.Children.Add(MakeButton("Показать экран", () => _ = screen.RequestScreenAsync(peer.Id)));
+            Sections.Children.Add(MakeButton(viewers.IsScreenOpen(peer.Id) ? "Переключиться на экран" : "Показать экран", () =>
+            {
+                viewers.ShowOrSwitchScreen(peer.Id);
+                _repopulate?.Invoke();
+            }));
             Sections.Children.Add(MakeButton("Отправить окно", () => _ = vm.SendWindowToPeerAsync(peer.Id, peer.Name)));
             Sections.Children.Add(MakeButton("Управлять вводом", () => vm.ControlPeerById(peer.Id, peer.Name)));
             if (hasLocalDriver)
