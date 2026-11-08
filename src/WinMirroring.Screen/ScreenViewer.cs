@@ -90,6 +90,9 @@ public sealed class ScreenViewer : IAsyncDisposable
 
     public void SwitchMonitor(int index) => _ = SendControlAsync(new ScreenRequestMessage(StreamId, index));
 
+    /// <summary>Asks the source to act on its real window (restore it from minimised).</summary>
+    public void SendWindowCommand(WindowCommand command) => _outbox.Writer.TryWrite(ScreenCodec.EncodeWindowCommand(StreamId, command));
+
     public void Close() => _ = CloseAsync(notifySource: true, reason: null);
 
     internal void OnInfo(ScreenStreamMessage info)

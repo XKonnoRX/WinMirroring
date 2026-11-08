@@ -35,6 +35,15 @@ public enum ScreenMessageType : byte
 
     /// <summary>Viewer → source: characters without a key (touch keyboard, IME), typed as Unicode.</summary>
     Text = 7,
+
+    /// <summary>Viewer → source: a command for the captured window (restore it from minimised).</summary>
+    Window = 8,
+}
+
+/// <summary>What a <see cref="ScreenMessageType.Window"/> message asks the captured window to do.</summary>
+public enum WindowCommand : byte
+{
+    Restore = 1,
 }
 
 public sealed record ScreenFrame(uint StreamId, uint FrameNo, int Width, int Height, IReadOnlyList<EncodedTile> Tiles);
@@ -220,6 +229,27 @@ public static class ScreenCodec
         }
 
         text = new string(chars);
+        return true;
+    }
+
+    public static byte[] EncodeWindowCommand(uint streamId, WindowCommand command)
+    {
+        var message = new byte[6];
+        message[0] = (byte)ScreenMessageType.Window;
+        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(1), streamId);
+        message[5] = (byte)command;
+        return message;
+    }
+
+    public static bool TryDecodeWindowCommand(ReadOnlySpan<byte> message, out WindowCommand command)
+    {
+        command = 0;
+        if (message.Length < 6 || message[0] != (byte)ScreenMessageType.Window)
+        {
+            return false;
+        }
+
+        command = (WindowCommand)message[5];
         return true;
     }
 

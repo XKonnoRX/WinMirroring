@@ -69,6 +69,12 @@ public partial class ScreenViewerWindow : Window
     private int _framesSinceTick;
     private WindowState _stateBeforeFullScreen;
     private WindowStyle _styleBeforeFullScreen;
+    private bool _windowMode;
+    private bool _stripPressed;
+    private bool _stripMoved;
+    private Point _stripDownInWindow;
+    private Point _stripDownOnImage;
+    private bool _followingRemoteMinimize;
 
     public ScreenViewerWindow(ScreenViewer viewer, IServiceProvider services)
     {
@@ -101,6 +107,7 @@ public partial class ScreenViewerWindow : Window
         PreviewTextInput += OnPreviewTextInput;
         Deactivated += (_, _) => ReleaseRemoteInput();
         Activated += (_, _) => ScheduleLayoutPush();
+        StateChanged += OnViewerStateChanged;
         InputLanguageManager.Current.InputLanguageChanged += OnInputLanguageChanged;
 
         _layoutTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(300), DispatcherPriority.Background, (_, _) =>
@@ -130,6 +137,7 @@ public partial class ScreenViewerWindow : Window
         if (viewer.Info.Kind == "window")
         {
             PlaceAtCursor();
+            PrepareWindowMode();
         }
 
         if (IsDisplayMode)
@@ -169,11 +177,78 @@ public partial class ScreenViewerWindow : Window
         ControlToggle.IsChecked = true;
     }
 
+    /// <summary>
+    /// A streamed window already carries its own frame, so the viewer drops its chrome and toolbar and shows only the
+    /// picture. An invisible strip over the top drags the viewer; the small button opens the menu.
+    /// </summary>
+    private void PrepareWindowMode()
+    {
+        _windowMode = true;
+        WindowStyle = WindowStyle.None;
+        ResizeMode = ResizeMode.NoResize;
+        MinWidth = 100;
+        MinHeight = 80;
+        Toolbar.Visibility = Visibility.Collapsed;
+        DragStrip.Visibility = Visibility.Visible;
+        WindowMenuButton.Visibility = Visibility.Visible;
+        FullScreenToggle.Visibility = Visibility.Collapsed;
+    }
+
     private void OnMinimize(object sender, RoutedEventArgs e)
     {
         CloseQuickPanel();
         ReleaseRemoteInput();
         WindowState = WindowState.Minimized;
+    }
+
+    // ---- borderless window: drag strip -------------------------------------------------------------------
+
+    private void OnDragStripDown(object sender, MouseButtonEventArgs e)
+    {
+        CloseQuickPanel();
+        _stripPressed = true;
+        _stripMoved = false;
+        _stripDownInWindow = e.GetPosition(this);
+        _stripDownOnImage = e.GetPosition(ScreenImage);
+    }
+
+    private void OnDragStripMove(object sender, MouseEventArgs e)
+    {
+        if (!_stripPressed || _stripMoved || e.LeftButton != MouseButtonState.Pressed)
+        {
+            return;
+        }
+
+        if ((e.GetPosition(this) - _stripDownInWindow).Length <= 4)
+        {
+            return;
+        }
+
+        _stripMoved = true;
+        try
+        {
+            DragMove();
+        }
+        catch (InvalidOperationException)
+        {
+        }
+        finally
+        {
+            _stripPressed = false;
+        }
+    }
+
+    private void OnDragStripUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_stripPressed && !_stripMoved && ControlEnabled && TryNormalize(_stripDownOnImage, out var x, out var y, out _))
+        {
+            // A click on the strip (not a drag) goes through to the window's own title bar — its close/minimise/
+            // maximise buttons work as usual.
+            _viewer.SendPointer(PointerAction.Down, InputButton.Left, x, y);
+            _viewer.SendPointer(PointerAction.Up, InputButton.Left, x, y);
+        }
+
+        _stripPressed = false;
     }
 
     private bool ControlEnabled => ControlToggle.IsChecked == true && _viewer.Info.ControlAllowed && CropToggle.IsChecked != true;
@@ -198,6 +273,38 @@ public partial class ScreenViewerWindow : Window
         {
             ControlToggle.IsChecked = false;
             ControlToggle.ToolTip = "Управление запрещено на том устройстве";
+        }
+
+        FollowRemoteWindowState();
+    }
+
+    /// <summary>Borderless window view: minimise the viewer when the source window is minimised, restore it back.</summary>
+    private void FollowRemoteWindowState()
+    {
+        if (!_windowMode)
+        {
+            return;
+        }
+
+        if (_viewer.Info.Minimized && WindowState != WindowState.Minimized)
+        {
+            _followingRemoteMinimize = true;
+            WindowState = WindowState.Minimized;
+        }
+        else if (!_viewer.Info.Minimized && _followingRemoteMinimize && WindowState == WindowState.Minimized)
+        {
+            _followingRemoteMinimize = false;
+            WindowState = WindowState.Normal;
+        }
+    }
+
+    private void OnViewerStateChanged(object? sender, EventArgs e)
+    {
+        // The user brought the viewer back from the taskbar while the source window is still minimised: restore it too.
+        if (_windowMode && WindowState == WindowState.Normal && _followingRemoteMinimize)
+        {
+            _followingRemoteMinimize = false;
+            _viewer.SendWindowCommand(WindowCommand.Restore);
         }
     }
 
@@ -254,16 +361,19 @@ public partial class ScreenViewerWindow : Window
 
         var dpi = VisualTreeHelper.GetDpi(this);
         var work = SystemParameters.WorkArea;
-        var chrome = ActualHeight - Surface.ActualHeight;
-        if (double.IsNaN(chrome) || chrome <= 0)
+
+        // Borderless window view has no chrome, so it sizes exactly to the picture (the window brings its own frame).
+        var chrome = _windowMode ? 0 : ActualHeight - Surface.ActualHeight;
+        if (!_windowMode && (double.IsNaN(chrome) || chrome <= 0))
         {
             chrome = Toolbar.ActualHeight + SystemParameters.WindowCaptionHeight + 16;
         }
 
+        var pad = _windowMode ? 0.0 : 16.0;
         var contentWidth = width / dpi.DpiScaleX;
         var contentHeight = height / dpi.DpiScaleY;
         var scale = Math.Min(1.0, Math.Min(work.Width * 0.92 / contentWidth, (work.Height * 0.92 - chrome) / contentHeight));
-        Width = Math.Max(MinWidth, contentWidth * scale + 16);
+        Width = Math.Max(MinWidth, contentWidth * scale + pad);
         Height = Math.Max(MinHeight, contentHeight * scale + chrome);
         Left = Math.Clamp(Left, work.Left, Math.Max(work.Left, work.Right - Width));
         Top = Math.Clamp(Top, work.Top, Math.Max(work.Top, work.Bottom - Height));
@@ -512,7 +622,7 @@ public partial class ScreenViewerWindow : Window
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
         if (key == Key.F11)
         {
-            if (e.IsDown)
+            if (e.IsDown && !_windowMode)
             {
                 ToggleFullScreen();
             }

@@ -442,6 +442,10 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             case ScreenMessageType.Text when ScreenCodec.TryDecodeText(span, out var text):
                 source.OnText(text);
                 break;
+
+            case ScreenMessageType.Window when ScreenCodec.TryDecodeWindowCommand(span, out var command):
+                source.OnWindowCommand(command);
+                break;
         }
 
         return ValueTask.CompletedTask;

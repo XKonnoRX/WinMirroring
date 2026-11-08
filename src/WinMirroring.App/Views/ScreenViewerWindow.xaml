@@ -81,6 +81,15 @@
             Background="#CC1F2937" Foreground="White" BorderBrush="#4B5563" Focusable="False"
             Click="OnToggleQuickPanel" ToolTip="Быстрые параметры и выход из полноэкранного режима" />
 
+    <!-- Borderless window view: an invisible strip over the top of the window to drag it (a plain click passes
+         through to the window below), and a small menu button since there is no toolbar. -->
+    <Border x:Name="DragStrip" Grid.Row="1" VerticalAlignment="Top" Height="34" Background="Transparent" Visibility="Collapsed"
+            PreviewMouseLeftButtonDown="OnDragStripDown" PreviewMouseMove="OnDragStripMove" PreviewMouseLeftButtonUp="OnDragStripUp" />
+    <Button x:Name="WindowMenuButton" Grid.Row="1" VerticalAlignment="Top" HorizontalAlignment="Left" Margin="6,3,0,0"
+            Content="☰" FontSize="13" Padding="8,2" MinHeight="26" Opacity="0.5" Visibility="Collapsed"
+            Background="#CC1F2937" Foreground="White" BorderBrush="#4B5563" Focusable="False"
+            Click="OnToggleQuickPanel" ToolTip="Меню" />
+
     <Border x:Name="QuickPanel" Grid.Row="1" HorizontalAlignment="Right" Width="320" Background="#F21F2937"
             BorderBrush="#374151" BorderThickness="1,0,0,0" Visibility="Collapsed">
       <ScrollViewer VerticalScrollBarVisibility="Auto" PanningMode="VerticalOnly">

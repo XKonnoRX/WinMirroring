@@ -78,7 +78,7 @@ public sealed record AudioRouteRequestMessage(bool Listen) : ControlMessage;
 public sealed record ScreenRequestMessage(uint StreamId, int MonitorIndex) : ControlMessage;
 
 /// <summary>Source → viewer: a stream starts or changes. Kind is "monitor" or "window".</summary>
-public sealed record ScreenStreamMessage(uint StreamId, string Kind, string Title, int MonitorIndex, int MonitorCount, bool ControlAllowed) : ControlMessage;
+public sealed record ScreenStreamMessage(uint StreamId, string Kind, string Title, int MonitorIndex, int MonitorCount, bool ControlAllowed, bool Minimized = false) : ControlMessage;
 
 /// <summary>Either side: the stream ends.</summary>
 public sealed record ScreenStopMessage(uint StreamId, string? Reason) : ControlMessage;

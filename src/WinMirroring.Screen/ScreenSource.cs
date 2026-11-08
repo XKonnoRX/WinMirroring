@@ -53,6 +53,7 @@ internal sealed class ScreenSource : IAsyncDisposable
     private int _outstanding;
     private Task? _loop;
     private int _ended;
+    private bool _reportedIconic;
 
     private ScreenSource(PeerSession session, uint streamId, StreamKind kind, WgcCapture capture, MonitorDescription? monitor, nint window, string title, ScreenSettings settings, ILogger logger)
     {
@@ -105,7 +106,39 @@ internal sealed class ScreenSource : IAsyncDisposable
         Title,
         Kind == StreamKind.Monitor ? MonitorIndex : 0,
         Kind switch { StreamKind.Monitor => DisplayCatalog.Monitors().Count, StreamKind.Display => 1, _ => 0 },
-        _settings.AllowControl);
+        _settings.AllowControl,
+        Kind == StreamKind.Window && IsIconic(Window));
+
+    /// <summary>Viewer side runs a copy of the window: carry out a command on this device's real window.</summary>
+    public void OnWindowCommand(WindowCommand command)
+    {
+        if (Kind != StreamKind.Window)
+        {
+            return;
+        }
+
+        if (command == WindowCommand.Restore && IsIconic(Window))
+        {
+            ShowWindow(Window, SW_RESTORE);
+            SetForegroundWindow(Window);
+        }
+    }
+
+    /// <summary>Tells the viewer when the captured window is minimised or restored, so its window can follow.</summary>
+    private void ReportWindowStateIfChanged()
+    {
+        if (Kind != StreamKind.Window)
+        {
+            return;
+        }
+
+        var iconic = IsIconic(Window);
+        if (iconic != _reportedIconic)
+        {
+            _reportedIconic = iconic;
+            _ = Session.SendControlAsync(Describe());
+        }
+    }
 
     public void Start()
     {
@@ -351,6 +384,8 @@ internal sealed class ScreenSource : IAsyncDisposable
                     lastCapture = capture;
                     seen = 0;
                 }
+
+                ReportWindowStateIfChanged();
 
                 var fresh = await capture.WaitForFrameAsync(seen, IdleWait, ct).ConfigureAwait(false);
                 if (!fresh && (Volatile.Read(ref _forceAll) == 0 || seen == 0))
