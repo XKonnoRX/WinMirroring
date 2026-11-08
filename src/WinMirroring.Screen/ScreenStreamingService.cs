@@ -76,7 +76,8 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
         _watcher.MarkSent(moving);
         _logger.LogInformation("Window dragged out to {Peer}", peerId);
 
-        // Setting up a capture can take a second; the cursor hand-off must not wait for it.
+        // Edge-drag is the input-sharing hand-off (crossing is suppressed for the second-monitor peer), so this is
+        // always the copy path; a real window move onto the virtual monitor goes through TransferWindowAsync.
         _ = SendWindowAsync(peerId, moving);
         await Task.CompletedTask.ConfigureAwait(false);
         return true;
@@ -242,6 +243,16 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
     {
         session.RegisterHandler(ChannelId.Screen, OnScreenFrameAsync);
         session.ControlMessageReceived += OnControlMessage;
+
+        // The second monitor stays attached the whole time its device is connected: re-extend when it comes back.
+        if (string.Equals(_node.Settings.Screen.SecondMonitorPeerId, session.PeerId, StringComparison.Ordinal) && ExtendedTo != session.PeerId)
+        {
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(1000).ConfigureAwait(false);
+                await InviteAsDisplayAsync(session.PeerId).ConfigureAwait(false);
+            });
+        }
     }
 
     private void OnSessionClosed(PeerSession session)
@@ -446,9 +457,10 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             await StopSourceAsync(id, "shutdown").ConfigureAwait(false);
         }
 
-        // Do not leave an empty monitor on the desktop when the app exits.
+        // Do not leave an empty monitor on the desktop when the app exits; bring parked windows home first.
         if (_displayDevice is { } device)
         {
+            RestoreMovedWindows();
             Display.VirtualDisplay.Detach(device);
         }
 

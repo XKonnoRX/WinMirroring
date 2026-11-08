@@ -12,6 +12,7 @@ internal static class ScreenNative
     public const uint SWP_NOSIZE = 0x0001;
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOACTIVATE = 0x0010;
+    public const int SW_MAXIMIZE = 3;
     public const int SW_RESTORE = 9;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -101,6 +102,10 @@ internal static class ScreenNative
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsZoomed(nint hwnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool EnumWindows(EnumWindowsProc callback, nint lParam);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -142,6 +147,13 @@ internal static class ScreenNative
         }
 
         return GetWindowRect(hwnd, out rect) ? rect.ToRectangle() : null;
+    }
+
+    /// <summary>Work area (monitor minus taskbar) of a monitor handle, or null when it cannot be read.</summary>
+    public static System.Drawing.Rectangle? MonitorWorkArea(nint monitor)
+    {
+        var info = new MONITORINFOEXW { cbSize = Marshal.SizeOf<MONITORINFOEXW>() };
+        return GetMonitorInfoW(monitor, ref info) ? info.rcWork.ToRectangle() : null;
     }
 
     public static string GetTitle(nint hwnd)

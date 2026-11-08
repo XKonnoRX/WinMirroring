@@ -32,6 +32,12 @@ public sealed class ScreenSettings
 
     /// <summary>Dragging a window by its title bar across a screen edge sends it to that device.</summary>
     public bool WindowDragEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Keep this device's desktop extended onto this peer as a second monitor the whole time it is connected
+    /// (empty: none). Transferring a window to that peer then moves the real window onto the virtual monitor.
+    /// </summary>
+    public string SecondMonitorPeerId { get; set; } = string.Empty;
 }
 
 public sealed class AudioSettings

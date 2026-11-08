@@ -79,22 +79,37 @@ public sealed partial class MainViewModel
             return;
         }
 
-        StatusText = await _screen.SendWindowAsync(peer.Id, window.Handle)
-            ? $"Окно «{window.Title}» показывается на {peer.Name}."
+        var onSecondMonitor = _screen.IsExtendedTo(peer.Id);
+        StatusText = await _screen.TransferWindowAsync(peer.Id, window.Handle)
+            ? onSecondMonitor
+                ? $"Окно «{window.Title}» перенесено на {peer.Name} (второй монитор)."
+                : $"Окно «{window.Title}» показывается на {peer.Name}."
             : $"Не удалось отправить окно на {peer.Name}.";
+    }
+
+    /// <summary>Returns windows parked on the virtual monitor back to this device.</summary>
+    public string ReturnWindows()
+    {
+        var count = _screen.MovedWindowCount;
+        _screen.RestoreMovedWindows();
+        var text = count > 0 ? $"Окон возвращено с второго монитора: {count}." : "На втором мониторе нет перенесённых окон.";
+        StatusText = text;
+        return text;
     }
 
     public string VirtualDisplayStatus => ScreenStreamingService.IsVirtualDisplayAvailable
         ? "Драйвер виртуального монитора установлен: экран этого устройства можно расширить на другое (правая кнопка по нему → «Использовать как второй монитор»)."
         : "Драйвер виртуального монитора не установлен. Он нужен только устройству, чей экран расширяется (например, ноутбуку). Установка: winget install --id=VirtualDrivers.Virtual-Display-Driver -e, или приложение Virtual Driver Control с github.com/VirtualDrivers. После установки перезапустите WinMirroring.";
 
-    /// <summary>Turns the device into this device's second monitor, or stops that.</summary>
+    /// <summary>Turns the device into this device's second monitor (kept attached while it is connected), or stops that.</summary>
     public async Task<string> ToggleSecondMonitorAsync(string peerId, string peerName)
     {
         string text;
-        if (_screen.IsExtendedTo(peerId))
+        if (IsSecondMonitor(peerId))
         {
+            SaveScreen(s => s.SecondMonitorPeerId = string.Empty);
             await _screen.StopExtendingAsync();
+            _screen.RestoreMovedWindows();
             text = $"{peerName} больше не второй монитор.";
         }
         else if (!ScreenStreamingService.IsVirtualDisplayAvailable)
@@ -103,8 +118,9 @@ public sealed partial class MainViewModel
         }
         else
         {
+            SaveScreen(s => s.SecondMonitorPeerId = peerId);
             text = await _screen.InviteAsDisplayAsync(peerId)
-                ? $"Подключаю {peerName} как второй монитор…"
+                ? $"Подключаю {peerName} как второй монитор (останется, пока устройство на связи)…"
                 : $"Не удалось связаться с {peerName}.";
         }
 
@@ -122,7 +138,8 @@ public sealed partial class MainViewModel
         return text;
     }
 
-    public bool IsSecondMonitor(string peerId) => _screen.IsExtendedTo(peerId);
+    public bool IsSecondMonitor(string peerId) =>
+        string.Equals(_node.Settings.Screen.SecondMonitorPeerId, peerId, StringComparison.Ordinal) || _screen.IsExtendedTo(peerId);
 
     [RelayCommand(CanExecute = nameof(SelectedIsReady))]
     private async Task ToggleSecondMonitorForSelectedAsync()

@@ -173,7 +173,7 @@ public partial class App : Application
                 if (peerId is not null && _services?.GetService<MainViewModel>() is { } vm)
                 {
                     var name = vm.ReadyPeers.FirstOrDefault(p => p.Id == peerId)?.Name ?? peerId;
-                    ShowNotification("WinMirroring: второй монитор", $"Рабочий стол расширен на {name}: перетаскивайте окна за край экрана в его сторону, как на обычный второй монитор.");
+                    ShowNotification("WinMirroring: второй монитор", $"Рабочий стол расширен на {name} и останется, пока устройство на связи. Перенести окно на него: правой кнопкой по устройству → «Отправить окно» (окно переедет по-настоящему). Вернуть — «Вернуть окна со второго монитора».");
                 }
             });
             screen.DetachLeftoverDisplay();
@@ -315,6 +315,7 @@ public partial class App : Application
         if (_services?.GetService<MainViewModel>() is { } vm)
         {
             menu.Items.Add(new MenuItem { Header = "Вернуть курсор", Command = new RelayCommand(() => ShowNotification("WinMirroring", vm.ReturnCursor())) });
+            menu.Items.Add(new MenuItem { Header = "Вернуть окна со второго монитора", Command = new RelayCommand(() => ShowNotification("WinMirroring", vm.ReturnWindows())) });
             menu.Items.Add(new Separator());
 
             var peers = vm.ReadyPeers;

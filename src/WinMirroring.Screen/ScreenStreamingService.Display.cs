@@ -303,6 +303,8 @@ public sealed partial class ScreenStreamingService
             {
                 if (ExtendedTo is null && (_displayDevice ?? VirtualDisplay.FindDeviceName()) is { } device)
                 {
+                    // Bring any windows parked on the virtual monitor home before it leaves the desktop.
+                    RestoreMovedWindows();
                     _logger.LogInformation("Second monitor on {Peer} ended; detaching {Device}: {Result}", source.Session.PeerName, device, VirtualDisplay.Detach(device));
                 }
             }
