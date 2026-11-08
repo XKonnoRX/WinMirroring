@@ -157,14 +157,14 @@ public partial class ControlPanelWindow : Window
             }
             else
             {
-                Sections.Children.Add(MakeButton("Рабочий стол этого устройства", viewers.ShowLocalDesktop));
+                Sections.Children.Add(MakeButton("Рабочий стол этого устройства", viewers.ShowLocalDesktop, choosesScreen: true));
             }
 
             foreach (var view in open)
             {
                 if (!view.IsActive)
                 {
-                    Sections.Children.Add(MakeButton(view.Title, () => viewers.SwitchTo(view.StreamId)));
+                    Sections.Children.Add(MakeButton(view.Title, () => viewers.SwitchTo(view.StreamId), choosesScreen: true));
                     continue;
                 }
 
@@ -197,7 +197,7 @@ public partial class ControlPanelWindow : Window
                 }
                 else
                 {
-                    Sections.Children.Add(MakeButton(screenView is null ? "Показать экран" : "Переключиться на экран", () => viewers.ShowOrSwitchScreen(peer.Id, index)));
+                    Sections.Children.Add(MakeButton(screenView is null ? "Показать экран" : "Переключиться на экран", () => viewers.ShowOrSwitchScreen(peer.Id, index), choosesScreen: true));
                 }
             }
             else
@@ -213,7 +213,7 @@ public partial class ControlPanelWindow : Window
                     }
                     else
                     {
-                        Sections.Children.Add(MakeButton(shown ? label + " — открыт" : label, () => viewers.ShowOrSwitchScreen(peer.Id, monitor.Index)));
+                        Sections.Children.Add(MakeButton(shown ? label + " — открыт" : label, () => viewers.ShowOrSwitchScreen(peer.Id, monitor.Index), choosesScreen: true));
                     }
                 }
             }
@@ -246,6 +246,7 @@ public partial class ControlPanelWindow : Window
                     if (on)
                     {
                         _ = vm.BecomeSecondMonitorAsync(peer.Id, peer.Name);
+                        HidePanel();
                     }
                 }));
             }
@@ -288,13 +289,21 @@ public partial class ControlPanelWindow : Window
     private static TextBlock MakeNote(string text) =>
         new() { Text = text, Foreground = Brushes.Gray, FontSize = 13, Margin = new Thickness(2, 4, 0, 4), TextWrapping = TextWrapping.Wrap };
 
-    private Button MakeButton(string text, Action onClick)
+    /// <param name="choosesScreen">Picking what is on screen: the panel closes right after, out of the way.</param>
+    private Button MakeButton(string text, Action onClick, bool choosesScreen = false)
     {
         var button = new Button { Content = text, Style = (Style)FindResource("QuickButton") };
         button.Click += (_, _) =>
         {
             onClick();
-            _resyncAt = Environment.TickCount64 + ResyncAfterClickMs;
+            if (choosesScreen)
+            {
+                HidePanel();
+            }
+            else
+            {
+                _resyncAt = Environment.TickCount64 + ResyncAfterClickMs;
+            }
         };
         return button;
     }
