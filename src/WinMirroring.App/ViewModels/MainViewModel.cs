@@ -63,6 +63,9 @@ public sealed partial class MainViewModel : ObservableObject
         MaxSmoothingDelay = node.Settings.Input.MaxSmoothingDelayMs;
         SyncKeyboardLayout = node.Settings.Input.SyncKeyboardLayout;
         AdminWindowControl = node.Settings.Input.ElevatedInjector;
+        _autoUpdateReady = false;
+        AutoUpdate = node.Settings.AutoUpdate;
+        _autoUpdateReady = true;
 
         foreach (var address in node.Settings.ManualPeerAddresses)
         {

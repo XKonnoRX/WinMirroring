@@ -8,6 +8,8 @@
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Description>WinMirroring tray application: devices, pairing and network settings.</Description>
+    <!-- The auto-updater compares this to the latest GitHub release tag (vX.Y.Z). Bump it with every release. -->
+    <Version>1.0.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

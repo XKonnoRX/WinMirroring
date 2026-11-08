@@ -26,6 +26,9 @@ public sealed class AppSettings
 
     public bool StartWithWindows { get; set; }
 
+    /// <summary>Check GitHub Releases and install new versions automatically (when the app is idle).</summary>
+    public bool AutoUpdate { get; set; } = true;
+
     public InputSettings Input { get; set; } = new();
 
     public ClipboardSettings Clipboard { get; set; } = new();

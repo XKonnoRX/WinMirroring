@@ -45,6 +45,9 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
     /// <summary>True while a window is being moved by its title bar on this device.</summary>
     public bool IsMovingWindow => _watcher is { } watcher && watcher.Moving != 0;
 
+    /// <summary>True while this device is streaming to, or viewing, any other device (used to defer auto-updates).</summary>
+    public bool HasActivity => !_sources.IsEmpty || !_viewers.IsEmpty;
+
     private void RaiseSourcesChanged()
     {
         SourcesChanged?.Invoke();

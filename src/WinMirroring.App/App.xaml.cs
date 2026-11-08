@@ -220,6 +220,103 @@ public partial class App : Application
         {
             ShowMainWindow();
         }
+
+        StartUpdateChecks(node);
+    }
+
+    private GithubUpdater? _updater;
+    private System.Windows.Threading.DispatcherTimer? _updateTimer;
+    private bool _updating;
+    private string? _pendingUpdateZip;
+    private string? _pendingUpdateTag;
+
+    private void StartUpdateChecks(MirroringNode node)
+    {
+        _updater = _services!.GetRequiredService<GithubUpdater>();
+        if (!node.Settings.AutoUpdate)
+        {
+            return;
+        }
+
+        // One check shortly after launch (the app is idle then, so an update installs at once), then every few hours.
+        _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(8));
+            await RunUpdateFlowAsync(manual: false);
+        });
+
+        _updateTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromHours(6) };
+        _updateTimer.Tick += async (_, _) => await RunUpdateFlowAsync(manual: false);
+        _updateTimer.Start();
+    }
+
+    public async Task CheckForUpdatesNowAsync() => await RunUpdateFlowAsync(manual: true);
+
+    private async Task RunUpdateFlowAsync(bool manual)
+    {
+        if (_updater is null || _updating || _exiting)
+        {
+            return;
+        }
+
+        _updating = true;
+        try
+        {
+            // A previously downloaded update that was waiting for the app to become idle: install it now.
+            if (_pendingUpdateZip is { } pending && File.Exists(pending) && (manual || IsIdleForUpdate()))
+            {
+                ShowNotification("WinMirroring: обновление", $"Устанавливаю {_pendingUpdateTag}. Приложение перезапустится.");
+                _updater.Apply(pending);
+                return;
+            }
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(12));
+            var update = await _updater.CheckAsync(cts.Token);
+            if (update is null)
+            {
+                if (manual)
+                {
+                    ShowNotification("WinMirroring", $"Установлена последняя версия ({GithubUpdater.CurrentVersion}).");
+                }
+
+                return;
+            }
+
+            ShowNotification("WinMirroring: обновление", $"Скачиваю версию {update.Tag}…");
+            var zip = await _updater.DownloadAsync(update, cts.Token);
+            if (zip is null)
+            {
+                ShowNotification("WinMirroring: обновление", "Не удалось скачать обновление, попробую позже.");
+                return;
+            }
+
+            if (!manual && !IsIdleForUpdate())
+            {
+                _pendingUpdateZip = zip;
+                _pendingUpdateTag = update.Tag;
+                ShowNotification("WinMirroring: обновление", $"Версия {update.Tag} готова — установится, когда устройство освободится или при следующем запуске.");
+                return;
+            }
+
+            ShowNotification("WinMirroring: обновление", $"Устанавливаю {update.Tag}. Приложение перезапустится.");
+            _updater.Apply(zip);
+        }
+        finally
+        {
+            _updating = false;
+        }
+    }
+
+    private bool IsIdleForUpdate()
+    {
+        if (_services is null)
+        {
+            return true;
+        }
+
+        var screen = _services.GetService<ScreenStreamingService>();
+        var input = _services.GetService<InputSharingService>();
+        return (screen is null || !screen.HasActivity) && (input is null || !input.IsBeingControlled);
     }
 
     /// <summary>The update script sets the event: exit the normal way (speakers unmuted, virtual monitor detached).</summary>
@@ -287,6 +384,7 @@ public partial class App : Application
         services.AddSingleton<AudioService>();
         services.AddSingleton<DragDropCoordinator>();
         services.AddSingleton<ScreenStreamingService>();
+        services.AddSingleton<GithubUpdater>();
         services.AddSingleton<MainViewModel>();
         return services.BuildServiceProvider();
     }
