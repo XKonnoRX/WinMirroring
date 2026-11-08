@@ -370,8 +370,13 @@ public partial class ScreenViewerWindow : Window
         }
 
         var pad = _windowMode ? 0.0 : 16.0;
-        var contentWidth = width / dpi.DpiScaleX;
-        var contentHeight = height / dpi.DpiScaleY;
+
+        // A window stream carries its source's scale, so show it at the logical size it has there (125% laptop vs a
+        // 100% tablet would otherwise differ by 1.25). Monitor streams keep sizing by the viewer's own DPI.
+        var divX = _windowMode ? Math.Max(0.5, _viewer.Info.ScalePercent / 100.0) : dpi.DpiScaleX;
+        var divY = _windowMode ? Math.Max(0.5, _viewer.Info.ScalePercent / 100.0) : dpi.DpiScaleY;
+        var contentWidth = width / divX;
+        var contentHeight = height / divY;
         var scale = Math.Min(1.0, Math.Min(work.Width * 0.92 / contentWidth, (work.Height * 0.92 - chrome) / contentHeight));
         Width = Math.Max(MinWidth, contentWidth * scale + pad);
         Height = Math.Max(MinHeight, contentHeight * scale + chrome);

@@ -81,6 +81,21 @@ internal static class ScreenNative
     [DllImport("user32.dll")]
     public static extern nint MonitorFromPoint(POINT pt, uint flags);
 
+    [DllImport("user32.dll")]
+    public static extern nint MonitorFromWindow(nint hwnd, uint flags);
+
+    [DllImport("shcore.dll")]
+    public static extern int GetDpiForMonitor(nint monitor, int dpiType, out uint dpiX, out uint dpiY);
+
+    /// <summary>Scale (in percent) of the monitor a window is on, e.g. 125 at 125%. Falls back to 100.</summary>
+    public static int WindowScalePercent(nint hwnd)
+    {
+        var monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        return monitor != 0 && GetDpiForMonitor(monitor, 0, out var dpiX, out _) == 0 && dpiX > 0
+            ? (int)Math.Round(dpiX * 100.0 / 96)
+            : 100;
+    }
+
     [DllImport("dwmapi.dll")]
     public static extern int DwmGetWindowAttribute(nint hwnd, int attribute, out RECT value, int size);
 

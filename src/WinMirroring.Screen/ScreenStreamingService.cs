@@ -76,11 +76,17 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             return false;
         }
 
-        _watcher.MarkSent(moving);
-        _logger.LogInformation("Window dragged out to {Peer}", peerId);
+        // Hide the real window (park it on the virtual monitor) once the drag ends, else put it back where it started.
+        if (ShouldHideDraggedWindow(peerId))
+        {
+            _watcher.MarkParkOnRelease(moving);
+        }
+        else
+        {
+            _watcher.MarkSent(moving);
+        }
 
-        // Edge-drag is the input-sharing hand-off (crossing is suppressed for the second-monitor peer), so this is
-        // always the copy path; a real window move onto the virtual monitor goes through TransferWindowAsync.
+        _logger.LogInformation("Window dragged out to {Peer}", peerId);
         _ = SendWindowAsync(peerId, moving);
         await Task.CompletedTask.ConfigureAwait(false);
         return true;
@@ -107,9 +113,19 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
     {
         _input = input;
         _watcher = new WindowDragWatcher(_logger);
+        _watcher.ReleasedForPark += window => _ = ParkOnVirtualMonitorAsync(window);
         _watcher.Start();
         input.FocusChanged += OnFocusChanged;
     }
+
+    /// <summary>
+    /// A window dragged to <paramref name="peerId"/> should be hidden from this device (parked on the virtual
+    /// monitor) when the setting is on, there is a driver, and that peer is not already this device's second monitor.
+    /// </summary>
+    private bool ShouldHideDraggedWindow(string peerId) =>
+        _node.Settings.Screen.HideSentWindow
+        && !IsExtendedTo(peerId)
+        && Display.VirtualDisplay.FindDeviceName() is not null;
 
     public static IReadOnlyList<WindowDescription> ShareableWindows() => DisplayCatalog.Windows();
 
@@ -245,7 +261,15 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             return;
         }
 
-        _watcher.MarkSent(moving);
+        if (ShouldHideDraggedWindow(peerId))
+        {
+            _watcher.MarkParkOnRelease(moving);
+        }
+        else
+        {
+            _watcher.MarkSent(moving);
+        }
+
         _logger.LogInformation("Window dragged to {Peer}", peerId);
         _ = SendWindowAsync(peerId, moving);
     }

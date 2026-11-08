@@ -30,6 +30,7 @@ internal sealed class WindowDragWatcher : IDisposable
     private nint _moving;
     private Rectangle _startRect;
     private bool _sent;
+    private bool _park;
 
     public WindowDragWatcher(ILogger logger)
     {
@@ -50,6 +51,9 @@ internal sealed class WindowDragWatcher : IDisposable
         }
     }
 
+    /// <summary>A window marked to be parked (hidden) was released; the handler moves it onto the virtual monitor.</summary>
+    public event Action<nint>? ReleasedForPark;
+
     public void Start() => _thread.Start();
 
     /// <summary>Remember to put <paramref name="hwnd"/> back when its move ends.</summary>
@@ -60,6 +64,19 @@ internal sealed class WindowDragWatcher : IDisposable
             if (_moving == hwnd)
             {
                 _sent = true;
+            }
+        }
+    }
+
+    /// <summary>Park <paramref name="hwnd"/> on the virtual monitor (hide it) once its move ends, instead of putting it back.</summary>
+    public void MarkParkOnRelease(nint hwnd)
+    {
+        lock (_gate)
+        {
+            if (_moving == hwnd)
+            {
+                _park = true;
+                _sent = false;
             }
         }
     }
@@ -95,6 +112,7 @@ internal sealed class WindowDragWatcher : IDisposable
             {
                 _moving = hwnd;
                 _sent = false;
+                _park = false;
                 _startRect = GetWindowRect(hwnd, out var rect) ? rect.ToRectangle() : Rectangle.Empty;
             }
 
@@ -102,16 +120,23 @@ internal sealed class WindowDragWatcher : IDisposable
         }
 
         bool restore;
+        bool park;
         Rectangle start;
         lock (_gate)
         {
+            park = _park && _moving == hwnd;
             restore = _sent && _moving == hwnd && !_startRect.IsEmpty;
             start = _startRect;
             _moving = 0;
             _sent = false;
+            _park = false;
         }
 
-        if (restore)
+        if (park)
+        {
+            ReleasedForPark?.Invoke(hwnd);
+        }
+        else if (restore)
         {
             SetWindowPos(hwnd, 0, start.X, start.Y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         }

@@ -107,7 +107,8 @@ internal sealed class ScreenSource : IAsyncDisposable
         Kind == StreamKind.Monitor ? MonitorIndex : 0,
         Kind switch { StreamKind.Monitor => DisplayCatalog.Monitors().Count, StreamKind.Display => 1, _ => 0 },
         _settings.AllowControl,
-        Kind == StreamKind.Window && IsIconic(Window));
+        Kind == StreamKind.Window && IsIconic(Window),
+        Kind == StreamKind.Window ? WindowScalePercent(Window) : 100);
 
     /// <summary>Viewer side runs a copy of the window: carry out a command on this device's real window.</summary>
     public void OnWindowCommand(WindowCommand command)
@@ -129,6 +130,13 @@ internal sealed class ScreenSource : IAsyncDisposable
     {
         if (Kind != StreamKind.Window)
         {
+            return;
+        }
+
+        // The window closed: WGC does not always raise its Closed event, so end the stream here too.
+        if (!IsWindow(Window))
+        {
+            End("window closed");
             return;
         }
 
