@@ -31,6 +31,7 @@ public sealed class AudioService : IAsyncDisposable
     private readonly ConcurrentDictionary<uint, IncomingAudioStream> _incoming = new();
     private readonly SemaphoreSlim _routeGate = new(1, 1);
     private readonly CancellationTokenSource _cts = new();
+    private int _disposed;
     private readonly object _focusGate = new();
 
     private readonly ConcurrentDictionary<string, byte> _listeners = new(StringComparer.Ordinal);
@@ -376,14 +377,21 @@ public sealed class AudioService : IAsyncDisposable
         }
     }
 
+    /// <summary>Safe to call more than once: the app disposes it itself, then its service container does again.</summary>
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _node.Sessions.SessionReady -= OnSessionReady;
         _node.Sessions.SessionClosed -= OnSessionClosed;
         _node.MediaPacketReceived -= OnMediaPacket;
         await _cts.CancelAsync().ConfigureAwait(false);
 
-        await _routeGate.WaitAsync().ConfigureAwait(false);
+        // A sender that is still starting holds the gate; do not wait for it forever on the way out.
+        var gated = await _routeGate.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
         try
         {
             if (_sender is { } sender)
@@ -396,7 +404,10 @@ public sealed class AudioService : IAsyncDisposable
         }
         finally
         {
-            _routeGate.Release();
+            if (gated)
+            {
+                _routeGate.Release();
+            }
         }
 
         foreach (var id in _incoming.Keys.ToList())

@@ -22,6 +22,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
     private readonly MirroringNode _node;
     private readonly ILogger _logger;
     private readonly ConcurrentDictionary<uint, ScreenSource> _sources = new();
+    private int _disposed;
     private readonly ConcurrentDictionary<uint, ScreenViewer> _viewers = new();
     private readonly ConcurrentDictionary<uint, string> _requested = new();
     private readonly ConcurrentDictionary<(nint Window, string PeerId), byte> _windowsStarting = new();
@@ -520,8 +521,14 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
 
     private static uint NewStreamId() => (uint)Random.Shared.Next(1, int.MaxValue);
 
+    /// <summary>Safe to call more than once: the app disposes it itself, then its service container does again.</summary>
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _node.Sessions.SessionReady -= OnSessionReady;
         _node.Sessions.SessionClosed -= OnSessionClosed;
         if (_input is not null)

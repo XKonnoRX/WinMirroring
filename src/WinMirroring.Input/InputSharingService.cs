@@ -42,6 +42,7 @@ public sealed partial class InputSharingService : IAsyncDisposable
     private readonly RemoteCursorPlayer _player;
     private readonly ConcurrentDictionary<string, ControlledState> _controllers = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _cts = new();
+    private int _disposed;
 
     private InputHookThread? _hooks;
     private Task? _worker;
@@ -365,8 +366,14 @@ public sealed partial class InputSharingService : IAsyncDisposable
         session.State == SessionState.Ready
         && Environment.TickCount64 - session.LastReceivedTicks < UsableSilenceMs;
 
+    /// <summary>Safe to call more than once: the app disposes it itself, then its service container does again.</summary>
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _node.Sessions.SessionReady -= OnSessionReady;
         _node.Sessions.SessionClosed -= OnSessionClosed;
 

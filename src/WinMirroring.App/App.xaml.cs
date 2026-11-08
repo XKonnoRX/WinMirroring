@@ -30,6 +30,11 @@ public partial class App : Application
     /// <summary>Set by the update script (or "WinMirroring.exe --exit") to make the running instance exit cleanly.</summary>
     private const string ExitEventName = @"Local\WinMirroring.App.Exit";
 
+    /// <summary>How long one shutdown step may take, and the whole shutdown before the process ends itself.</summary>
+    private static readonly TimeSpan StepTimeout = TimeSpan.FromSeconds(4);
+    private static readonly TimeSpan ExitBudget = TimeSpan.FromSeconds(12);
+
+    private readonly ManualResetEventSlim _exitFinished = new(false);
     private EventWaitHandle? _exitSignal;
 
     private Mutex? _singleInstance;
@@ -679,84 +684,130 @@ public partial class App : Application
         }
 
         _exiting = true;
-        _mainWindow?.AllowClose();
-        _mainWindow?.Close();
-        _fileTransfer?.Close();
-        _controlPanel?.Close();
-        _floatingMenu?.Close();
-        foreach (var viewer in _openViewers.ToList())
+        Log.Information("Shutting down");
+        StartExitWatchdog();
+        try
         {
-            viewer.Close();
+            CloseWindows();
+
+            if (_services is { } services)
+            {
+                // In this order: the screen brings parked windows home and detaches the virtual monitor while the
+                // sessions are still up, sound unmutes the speakers, and the node goes last. Each step runs off the UI
+                // thread and is given a few seconds, so one that hangs cannot keep the app (and its lock) alive.
+                await StopStepAsync("drag and drop", () => services.GetRequiredService<DragDropCoordinator>().Dispose());
+                await StopStepAsync("screen streaming", () => services.GetRequiredService<ScreenStreamingService>().DisposeAsync());
+                await StopStepAsync("elevated input helper", () => services.GetRequiredService<WinMirroring.Input.Injection.ElevatedInjector>().Dispose());
+                await StopStepAsync("input sharing", () => services.GetRequiredService<InputSharingService>().DisposeAsync());
+                await StopStepAsync("sound", () => services.GetRequiredService<AudioService>().DisposeAsync());
+                await StopStepAsync("clipboard", () => services.GetRequiredService<ClipboardSyncService>().DisposeAsync());
+                await StopStepAsync("network", () => services.GetRequiredService<MirroringNode>().DisposeAsync());
+
+                // The container disposes everything it created once more; the services above ignore a second call.
+                await StopStepAsync("services", () => services.DisposeAsync());
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Shutdown failed");
+        }
+        finally
+        {
+            // Whatever failed above, the app must end: the update script waits for it, and a process left running
+            // would keep the single-instance lock, so the app could not be started again.
+            Log.Information("WinMirroring exiting");
+            await Log.CloseAndFlushAsync();
+            try
+            {
+                _singleInstance?.ReleaseMutex();
+            }
+            catch (ApplicationException)
+            {
+            }
+
+            _exitFinished.Set();
+            Shutdown();
+            _exitSignal?.Dispose();
+        }
+    }
+
+    private void CloseWindows()
+    {
+        var windows = new List<Window?> { _fileTransfer, _controlPanel, _floatingMenu };
+        windows.AddRange(_openViewers);
+        _mainWindow?.AllowClose();
+        windows.Add(_mainWindow);
+        foreach (var window in windows)
+        {
+            try
+            {
+                window?.Close();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Closing {Window} failed", window?.GetType().Name);
+            }
         }
 
         _trayIcon?.Dispose();
+    }
 
-        if (_services is not null)
+    private static Task StopStepAsync(string name, Action stop) => StopStepAsync(name, () =>
+    {
+        stop();
+        return ValueTask.CompletedTask;
+    });
+
+    /// <summary>Runs one shutdown step off the UI thread; logs how long it took, or that it failed or hung.</summary>
+    private static async Task StopStepAsync(string name, Func<ValueTask> stop)
+    {
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        var task = Task.Run(async () => await stop().ConfigureAwait(false));
+        var finished = await Task.WhenAny(task, Task.Delay(StepTimeout));
+        if (finished != task)
         {
-            _services.GetRequiredService<DragDropCoordinator>().Dispose();
-
-            try
-            {
-                await _services.GetRequiredService<ScreenStreamingService>().DisposeAsync();
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "Screen streaming shutdown failed");
-            }
-
-            try
-            {
-                _services.GetRequiredService<WinMirroring.Input.Injection.ElevatedInjector>().Dispose();
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "Elevated injector shutdown failed");
-            }
-
-            try
-            {
-                await _services.GetRequiredService<InputSharingService>().DisposeAsync();
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "Input sharing shutdown failed");
-            }
-
-            try
-            {
-                await _services.GetRequiredService<AudioService>().DisposeAsync();
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "Sound shutdown failed");
-            }
-
-            try
-            {
-                await _services.GetRequiredService<ClipboardSyncService>().DisposeAsync();
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "Clipboard shutdown failed");
-            }
-
-            try
-            {
-                await _services.GetRequiredService<MirroringNode>().DisposeAsync();
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "Node shutdown failed");
-            }
-
-            await _services.DisposeAsync();
+            Log.Warning("Shutdown: {Step} did not finish in {Seconds} s; going on without it", name, StepTimeout.TotalSeconds);
+            _ = task.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+            return;
         }
 
-        Log.Information("WinMirroring exiting");
-        await Log.CloseAndFlushAsync();
-        _singleInstance?.ReleaseMutex();
-        Shutdown();
-        _exitSignal?.Dispose();
+        try
+        {
+            await task;
+            Log.Information("Shutdown: {Step} stopped in {Ms:F0} ms", name, System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Shutdown: {Step} failed", name);
+        }
+    }
+
+    /// <summary>
+    /// The last resort: if the orderly shutdown has not ended the process in time (a step hung, or something keeps it
+    /// alive after <see cref="Application.Shutdown()"/>), the process ends itself, well before the update script's
+    /// own 20-second limit.
+    /// </summary>
+    private void StartExitWatchdog()
+    {
+        new Thread(() =>
+        {
+            if (!_exitFinished.Wait(ExitBudget))
+            {
+                Log.Warning("Shutdown took longer than {Seconds} s; ending the process", ExitBudget.TotalSeconds);
+                Log.CloseAndFlush();
+            }
+            else
+            {
+                // Shutdown() was called; the process should be gone in a moment.
+                Thread.Sleep(TimeSpan.FromSeconds(3));
+            }
+
+            System.Diagnostics.Process.GetCurrentProcess().Kill();
+        })
+        {
+            IsBackground = true,
+            Name = "WinMirroring.ExitWatchdog",
+        }.Start();
     }
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)

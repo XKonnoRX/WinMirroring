@@ -38,6 +38,7 @@ public sealed class MirroringNode : IAsyncDisposable
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _networkGate = new(1, 1);
+    private int _disposed;
 
     private DiscoveryService? _discovery;
     private PeerListener? _listener;
@@ -269,8 +270,14 @@ public sealed class MirroringNode : IAsyncDisposable
         }
     }
 
+    /// <summary>Safe to call more than once: the app disposes it itself, then its service container does again.</summary>
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         await StopAsync().ConfigureAwait(false);
         await Sessions.DisposeAsync().ConfigureAwait(false);
         _networkGate.Dispose();

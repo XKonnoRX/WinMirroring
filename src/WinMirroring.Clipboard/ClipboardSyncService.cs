@@ -30,6 +30,7 @@ public sealed class ClipboardSyncService : IAsyncDisposable
     private readonly Channel<ClipboardSnapshot> _outbox = Channel.CreateBounded<ClipboardSnapshot>(
         new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
     private readonly CancellationTokenSource _cts = new();
+    private int _disposed;
 
     private ClipboardThread? _thread;
     private Task? _publisher;
@@ -473,8 +474,14 @@ public sealed class ClipboardSyncService : IAsyncDisposable
         _ => string.Create(CultureInfo.CurrentCulture, $"{bytes / (1024.0 * 1024 * 1024):F2} ГБ"),
     };
 
+    /// <summary>Safe to call more than once: the app disposes it itself, then its service container does again.</summary>
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _node.Sessions.SessionReady -= OnSessionReady;
         _node.Sessions.SessionClosed -= OnSessionClosed;
         _outbox.Writer.TryComplete();

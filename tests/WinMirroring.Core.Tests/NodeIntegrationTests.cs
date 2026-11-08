@@ -111,6 +111,20 @@ public sealed class NodeIntegrationTests : IAsyncLifetime
         Assert.Equal(SessionState.Unpaired, session.State);
     }
 
+    /// <summary>
+    /// The app disposes its services in order and the service container disposes them again afterwards; a second
+    /// dispose that throws used to abort the exit before the app shut down, leaving it running with no windows.
+    /// </summary>
+    [Fact]
+    public async Task DisposingTwiceIsHarmless()
+    {
+        var node = CreateNode("Twice", FreeUdpPort(), FreeTcpPort(), "127.0.0.1:1");
+        await node.StartAsync();
+
+        await node.DisposeAsync();
+        await node.DisposeAsync();
+    }
+
     private static bool IsReady(MirroringNode from, MirroringNode to) =>
         from.Sessions.TryGetSession(to.Identity.Id, out var session) && session.State == SessionState.Ready;
 

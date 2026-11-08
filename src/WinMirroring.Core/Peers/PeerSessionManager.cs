@@ -31,6 +31,7 @@ public sealed class PeerSessionManager : IAsyncDisposable
     private readonly ConcurrentDictionary<string, byte> _connecting = new(StringComparer.Ordinal);
     private readonly object _sessionsGate = new();
     private readonly CancellationTokenSource _cts = new();
+    private int _disposed;
 
     public PeerSessionManager(
         DeviceIdentity identity,
@@ -483,6 +484,11 @@ public sealed class PeerSessionManager : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         await _cts.CancelAsync().ConfigureAwait(false);
         await CloseAllAsync("shutdown").ConfigureAwait(false);
         _cts.Dispose();
