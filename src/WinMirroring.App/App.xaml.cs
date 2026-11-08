@@ -253,6 +253,21 @@ public partial class App : Application
 
     public async Task CheckForUpdatesNowAsync() => await RunUpdateFlowAsync(manual: true);
 
+    /// <summary>Next automatic check: soon after a failure (GitHub unreachable), otherwise in a few hours.</summary>
+    private void ScheduleNextUpdateCheck(bool failed)
+    {
+        if (_updateTimer is null)
+        {
+            return;
+        }
+
+        var interval = failed ? TimeSpan.FromMinutes(30) : TimeSpan.FromHours(6);
+        if (_updateTimer.Interval != interval)
+        {
+            _updateTimer.Interval = interval;
+        }
+    }
+
     private async Task RunUpdateFlowAsync(bool manual)
     {
         if (_updater is null || _updating || _exiting)
@@ -272,8 +287,22 @@ public partial class App : Application
             }
 
             using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(12));
-            var update = await _updater.CheckAsync(cts.Token);
-            if (update is null)
+            var check = await _updater.CheckAsync(cts.Token);
+            if (check.Status == UpdateCheckStatus.Failed)
+            {
+                // Not known whether a newer version exists: say so, and ask again soon rather than in hours.
+                ScheduleNextUpdateCheck(failed: true);
+                if (manual)
+                {
+                    var retry = _updateTimer is null ? string.Empty : "; попробую ещё раз через 30 минут";
+                    ShowNotification("WinMirroring: обновление", $"Не удалось проверить обновления: {check.Error}. Сейчас установлена {GithubUpdater.CurrentVersion}{retry}.");
+                }
+
+                return;
+            }
+
+            ScheduleNextUpdateCheck(failed: false);
+            if (check.Update is not { } update)
             {
                 if (manual)
                 {
@@ -287,7 +316,8 @@ public partial class App : Application
             var zip = await _updater.DownloadAsync(update, cts.Token);
             if (zip is null)
             {
-                ShowNotification("WinMirroring: обновление", "Не удалось скачать обновление, попробую позже.");
+                ScheduleNextUpdateCheck(failed: true);
+                ShowNotification("WinMirroring: обновление", $"Не удалось скачать {update.Tag} с GitHub, попробую ещё раз через 30 минут.");
                 return;
             }
 
