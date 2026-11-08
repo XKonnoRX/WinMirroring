@@ -190,7 +190,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             var started = await StartSourceAsync(session, source).ConfigureAwait(false);
             if (started && hideSource && _node.Settings.Screen.HideSentWindow)
             {
-                HideWindowOffscreen(window);
+                await ParkOnVirtualMonitorAsync(window).ConfigureAwait(false);
             }
 
             return started;

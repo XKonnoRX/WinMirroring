@@ -293,8 +293,10 @@ public sealed partial class ScreenStreamingService
     {
         if (source.Kind == StreamKind.Window)
         {
-            // A window that was moved off-screen while it was shown elsewhere comes back where it was.
+            // A window parked on the virtual monitor while it was shown elsewhere comes back, and the monitor goes
+            // away once nothing is left on it.
             RestoreWindow(source.Window);
+            _ = DetachVirtualMonitorIfIdleAsync();
             return;
         }
 

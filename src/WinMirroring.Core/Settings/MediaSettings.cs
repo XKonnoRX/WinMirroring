@@ -40,8 +40,9 @@ public sealed class ScreenSettings
     public string SecondMonitorPeerId { get; set; } = string.Empty;
 
     /// <summary>
-    /// While a window is shown as a copy on another device, move the real window off this device's screens so the
-    /// same window is not visible in two places. It comes back when the other device stops showing it.
+    /// While a window is shown as a copy on another device, park the real window on the virtual monitor (needs the
+    /// Virtual Display Driver) so the same window is not visible on this device. It comes back when the other device
+    /// stops showing it. Without the driver the window stays where it is.
     /// </summary>
     public bool HideSentWindow { get; set; } = true;
 }
