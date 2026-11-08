@@ -34,12 +34,6 @@ public sealed class ScreenSettings
     public bool WindowDragEnabled { get; set; } = true;
 
     /// <summary>
-    /// Keep this device's desktop extended onto this peer as a second monitor the whole time it is connected
-    /// (empty: none). Transferring a window to that peer then moves the real window onto the virtual monitor.
-    /// </summary>
-    public string SecondMonitorPeerId { get; set; } = string.Empty;
-
-    /// <summary>
     /// While a window is shown as a copy on another device, park the real window on the virtual monitor (needs the
     /// Virtual Display Driver) so the same window is not visible on this device. It comes back when the other device
     /// stops showing it. Without the driver the window stays where it is.

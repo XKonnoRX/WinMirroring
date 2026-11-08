@@ -31,8 +31,24 @@ public partial class ControlPanelWindow : Window
     public ControlPanelWindow()
     {
         InitializeComponent();
+        CaptureExclusion.Apply(this);
         _refresh = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
         _refresh.Tick += (_, _) => RefreshIfChanged();
+
+        // A device viewing this screen cannot see the panel (it is kept out of capture): its presses do not count,
+        // and the panel steps aside so that device's next presses reach what it can see.
+        PreviewMouseDown += (_, e) => IgnoreRemotePress(e, e.GetPosition(this));
+        PreviewTouchDown += (_, e) => IgnoreRemotePress(e, e.GetTouchPoint(this).Position);
+    }
+
+    private void IgnoreRemotePress(RoutedEventArgs e, Point position)
+    {
+        var onScreen = PointToScreen(position);
+        if (RemoteInputTracker.IsRemote(onScreen.X, onScreen.Y))
+        {
+            e.Handled = true;
+            HidePanel();
+        }
     }
 
     public bool IsShown { get; private set; }

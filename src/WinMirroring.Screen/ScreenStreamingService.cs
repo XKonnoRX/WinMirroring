@@ -317,16 +317,6 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
         // Tell the peer what this device can offer. It answers with its own, so even if its first message arrived
         // before we subscribed (the session starts receiving before it is announced as ready), we still learn it.
         SendCapabilities(session, reply: false);
-
-        // The second monitor stays attached the whole time its device is connected: re-extend when it comes back.
-        if (string.Equals(_node.Settings.Screen.SecondMonitorPeerId, session.PeerId, StringComparison.Ordinal) && ExtendedTo != session.PeerId)
-        {
-            _ = Task.Run(async () =>
-            {
-                await Task.Delay(1000).ConfigureAwait(false);
-                await InviteAsDisplayAsync(session.PeerId).ConfigureAwait(false);
-            });
-        }
     }
 
     private void OnSessionClosed(PeerSession session)

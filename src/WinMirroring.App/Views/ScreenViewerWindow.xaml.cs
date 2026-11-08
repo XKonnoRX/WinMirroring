@@ -180,7 +180,7 @@ public partial class ScreenViewerWindow : Window
 
     /// <summary>
     /// A streamed window already carries its own frame, so the viewer drops its chrome and toolbar and shows only the
-    /// picture. An invisible strip over the top drags the viewer; the small button opens the menu.
+    /// picture. An invisible strip over the top drags the viewer; everything else is in the floating button's panel.
     /// </summary>
     private void PrepareWindowMode()
     {
@@ -191,7 +191,9 @@ public partial class ScreenViewerWindow : Window
         MinHeight = 80;
         Toolbar.Visibility = Visibility.Collapsed;
         DragStrip.Visibility = Visibility.Visible;
-        WindowMenuButton.Visibility = Visibility.Visible;
+
+        // No menu button inside the copy: the floating button's panel controls it (one menu, not two).
+        WindowMenuButton.Visibility = Visibility.Collapsed;
         FullScreenToggle.Visibility = Visibility.Collapsed;
     }
 

@@ -13,6 +13,7 @@ public partial class FileTransferWindow : Window
     public FileTransferWindow()
     {
         InitializeComponent();
+        Services.CaptureExclusion.Apply(this);
         _hideTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         _hideTimer.Tick += (_, _) =>
         {

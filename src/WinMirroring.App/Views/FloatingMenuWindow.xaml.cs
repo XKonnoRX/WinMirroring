@@ -16,7 +16,11 @@ public partial class FloatingMenuWindow : Window
     private bool _moved;
     private Point _down;
 
-    public FloatingMenuWindow() => InitializeComponent();
+    public FloatingMenuWindow()
+    {
+        InitializeComponent();
+        Services.CaptureExclusion.Apply(this);
+    }
 
     /// <summary>The button was clicked (not dragged); the app opens the control panel.</summary>
     public event Action? Clicked;
@@ -26,6 +30,15 @@ public partial class FloatingMenuWindow : Window
 
     private void OnButtonDown(object sender, MouseButtonEventArgs e)
     {
+        var onScreen = PointToScreen(e.GetPosition(this));
+        if (WinMirroring.Screen.RemoteInputTracker.IsRemote(onScreen.X, onScreen.Y))
+        {
+            // A press from a device viewing this screen: it cannot see this button (kept out of capture), so ignore it.
+            _pressed = false;
+            e.Handled = true;
+            return;
+        }
+
         _pressed = true;
         _moved = false;
         _down = e.GetPosition(this);

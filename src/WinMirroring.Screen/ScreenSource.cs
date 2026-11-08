@@ -223,6 +223,7 @@ internal sealed class ScreenSource : IAsyncDisposable
                     BringWindowForward();
                 }
 
+                RemoteInputTracker.NoteDown(point.X, point.Y);
                 _injector.MoveAbsolute(point.X, point.Y);
                 _injector.Button(button, down: true);
                 ReportIfBlocked();
@@ -249,9 +250,14 @@ internal sealed class ScreenSource : IAsyncDisposable
         }
 
         var touchAction = (Injection.TouchInjector.Action)action;
-        if (touchAction == Injection.TouchInjector.Action.Down && Kind == StreamKind.Window)
+        if (touchAction == Injection.TouchInjector.Action.Down)
         {
-            BringWindowForward();
+            if (Kind == StreamKind.Window)
+            {
+                BringWindowForward();
+            }
+
+            RemoteInputTracker.NoteDown(point.X, point.Y);
         }
 
         _touch.Apply(touchAction, contact, point);
