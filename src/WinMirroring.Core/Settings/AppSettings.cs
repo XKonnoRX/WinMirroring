@@ -29,6 +29,13 @@ public sealed class AppSettings
     /// <summary>Check GitHub Releases and install new versions automatically (when the app is idle).</summary>
     public bool AutoUpdate { get; set; } = true;
 
+    /// <summary>Floating menu button: its position (−1 means a default corner) and whether the user hid it.</summary>
+    public double MenuButtonX { get; set; } = -1;
+
+    public double MenuButtonY { get; set; } = -1;
+
+    public bool MenuButtonHidden { get; set; }
+
     public InputSettings Input { get; set; } = new();
 
     public ClipboardSettings Clipboard { get; set; } = new();

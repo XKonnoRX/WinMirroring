@@ -25,6 +25,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
     private readonly ConcurrentDictionary<uint, ScreenViewer> _viewers = new();
     private readonly ConcurrentDictionary<uint, string> _requested = new();
     private readonly ConcurrentDictionary<(nint Window, string PeerId), byte> _windowsStarting = new();
+    private readonly ConcurrentDictionary<string, bool> _peerHasDisplay = new(StringComparer.Ordinal);
     private WindowDragWatcher? _watcher;
     private InputSharingService? _input;
 
@@ -276,10 +277,16 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
 
     // ---- sessions and messages ---------------------------------------------------------------------------
 
+    /// <summary>True when the peer told us it has a virtual display driver (so it can extend its desktop onto us).</summary>
+    public bool PeerHasVirtualDisplay(string peerId) => _peerHasDisplay.TryGetValue(peerId, out var has) && has;
+
     private void OnSessionReady(PeerSession session)
     {
         session.RegisterHandler(ChannelId.Screen, OnScreenFrameAsync);
         session.ControlMessageReceived += OnControlMessage;
+
+        // Tell the peer what this device can offer (its virtual display driver), so its menu can show the option.
+        _ = session.SendControlAsync(new DeviceCapabilitiesMessage(IsVirtualDisplayAvailable));
 
         // The second monitor stays attached the whole time its device is connected: re-extend when it comes back.
         if (string.Equals(_node.Settings.Screen.SecondMonitorPeerId, session.PeerId, StringComparison.Ordinal) && ExtendedTo != session.PeerId)
@@ -325,6 +332,10 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
 
             case ScreenStreamMessage info:
                 HandleStreamInfo(session, info);
+                break;
+
+            case DeviceCapabilitiesMessage caps:
+                _peerHasDisplay[session.PeerId] = caps.HasVirtualDisplay;
                 break;
 
             case ScreenStopMessage stop:

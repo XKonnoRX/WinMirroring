@@ -94,6 +94,26 @@ public sealed partial class MainViewModel
             : $"Не удалось отправить окно на {peer.Name}.";
     }
 
+    /// <summary>Sends a window of this device to <paramref name="peerId"/> (picks it first), used from the floating menu.</summary>
+    public async Task SendWindowToPeerAsync(string peerId, string peerName)
+    {
+        var picker = new WindowPickerWindow(peerName) { Owner = Application.Current.MainWindow };
+        if (picker.ShowDialog() != true || picker.Selected is not { } window)
+        {
+            return;
+        }
+
+        var onSecondMonitor = _screen.IsExtendedTo(peerId);
+        var hidesHere = _node.Settings.Screen.HideSentWindow;
+        StatusText = await _screen.TransferWindowAsync(peerId, window.Handle)
+            ? onSecondMonitor
+                ? $"Окно «{window.Title}» перенесено на {peerName} (второй монитор)."
+                : hidesHere
+                    ? $"Окно «{window.Title}» показывается на {peerName}, с этого экрана скрыто."
+                    : $"Окно «{window.Title}» показывается на {peerName}."
+            : $"Не удалось отправить окно на {peerName}.";
+    }
+
     /// <summary>Returns windows that were hidden off-screen or parked on the virtual monitor back to this device.</summary>
     public string ReturnWindows()
     {

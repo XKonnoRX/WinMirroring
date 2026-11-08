@@ -29,7 +29,11 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(DisplayExtendRequestMessage), "display-extend")]
 [JsonDerivedType(typeof(DisplayExtendResultMessage), "display-result")]
 [JsonDerivedType(typeof(KeyboardLayoutMessage), "kbd-layout")]
+[JsonDerivedType(typeof(DeviceCapabilitiesMessage), "caps")]
 public abstract record ControlMessage;
+
+/// <summary>Sent after a session is ready: what this device can offer (e.g. a virtual display driver for extending).</summary>
+public sealed record DeviceCapabilitiesMessage(bool HasVirtualDisplay) : ControlMessage;
 
 /// <summary>First message in each direction. The server adds a challenge the client must sign.</summary>
 public sealed record HelloMessage(
