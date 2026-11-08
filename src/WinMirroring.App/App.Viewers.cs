@@ -11,17 +11,20 @@ namespace WinMirroring.App;
 public partial class App : IViewerControl
 {
     private readonly List<ScreenViewerWindow> _openViewers = [];
+
+    /// <summary>Stream of the view in front, or 0 when this device's own desktop is.</summary>
     private uint _activeView;
 
     private void OpenViewerWindow(ScreenViewer viewer)
     {
         var window = new ScreenViewerWindow(viewer, _services!);
+        window.Activated += (_, _) => _activeView = viewer.StreamId;
         window.Closed += (_, _) =>
         {
             _openViewers.Remove(window);
             if (_activeView == viewer.StreamId)
             {
-                _activeView = _openViewers.Count > 0 ? _openViewers[^1].Viewer.StreamId : 0;
+                _activeView = 0;
             }
         };
 
@@ -45,19 +48,25 @@ public partial class App : IViewerControl
 
     private ScreenViewerWindow? FindView(uint streamId) => _openViewers.FirstOrDefault(v => v.Viewer.StreamId == streamId);
 
-    public bool IsScreenOpen(string peerId) =>
-        _openViewers.Any(v => v.Viewer.Info.Kind == "monitor" && v.Viewer.Session.PeerId == peerId);
+    private ScreenViewerWindow? FindScreenView(string peerId) =>
+        _openViewers.FirstOrDefault(v => v.Viewer.Info.Kind == "monitor" && v.Viewer.Session.PeerId == peerId);
 
-    public void ShowOrSwitchScreen(string peerId)
+    public bool IsScreenOpen(string peerId) => FindScreenView(peerId) is not null;
+
+    public void ShowOrSwitchScreen(string peerId, int monitorIndex)
     {
-        var existing = _openViewers.FirstOrDefault(v => v.Viewer.Info.Kind == "monitor" && v.Viewer.Session.PeerId == peerId);
-        if (existing is not null)
+        if (FindScreenView(peerId) is { } existing)
         {
+            if (existing.Viewer.Info.MonitorIndex != monitorIndex)
+            {
+                existing.SwitchToMonitor(monitorIndex);
+            }
+
             SwitchTo(existing.Viewer.StreamId);
         }
         else if (_services?.GetService<ScreenStreamingService>() is { } screen)
         {
-            _ = screen.RequestScreenAsync(peerId);
+            _ = screen.RequestScreenAsync(peerId, monitorIndex);
         }
     }
 
@@ -70,6 +79,19 @@ public partial class App : IViewerControl
             v.Viewer.Info.MonitorIndex,
             v.Viewer.Info.MonitorCount,
             v.Viewer.StreamId == _activeView)).ToList();
+
+    public bool IsLocalDesktopActive => _activeView == 0 || FindView(_activeView) is null;
+
+    public void ShowLocalDesktop()
+    {
+        // Window copies behave like ordinary windows and stay; full-screen screens step aside.
+        foreach (var window in _openViewers.Where(v => v.Viewer.Info.Kind != "window"))
+        {
+            window.MinimizeView();
+        }
+
+        _activeView = 0;
+    }
 
     public void SwitchTo(uint streamId)
     {

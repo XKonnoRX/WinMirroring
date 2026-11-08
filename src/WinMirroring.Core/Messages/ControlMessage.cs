@@ -32,8 +32,15 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(DeviceCapabilitiesMessage), "caps")]
 public abstract record ControlMessage;
 
-/// <summary>Sent after a session is ready: what this device can offer (e.g. a virtual display driver for extending).</summary>
-public sealed record DeviceCapabilitiesMessage(bool HasVirtualDisplay) : ControlMessage;
+/// <summary>
+/// What this device can offer: a virtual display driver (so it can extend its desktop) and its monitors (so the
+/// other side can pick one to view). Sent when a session is ready; a message that is not itself a reply is answered
+/// with the receiver's own, because messages can arrive before the receiver has subscribed and be lost.
+/// </summary>
+public sealed record DeviceCapabilitiesMessage(bool HasVirtualDisplay, bool IsReply = false, List<RemoteMonitor>? Monitors = null) : ControlMessage;
+
+/// <summary>One monitor of a device, by the index a <see cref="ScreenRequestMessage"/> uses.</summary>
+public sealed record RemoteMonitor(int Index, string Label, bool Primary);
 
 /// <summary>First message in each direction. The server adds a challenge the client must sign.</summary>
 public sealed record HelloMessage(

@@ -25,7 +25,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
     private readonly ConcurrentDictionary<uint, ScreenViewer> _viewers = new();
     private readonly ConcurrentDictionary<uint, string> _requested = new();
     private readonly ConcurrentDictionary<(nint Window, string PeerId), byte> _windowsStarting = new();
-    private readonly ConcurrentDictionary<string, bool> _peerHasDisplay = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DeviceCapabilitiesMessage> _peerCaps = new(StringComparer.Ordinal);
     private WindowDragWatcher? _watcher;
     private InputSharingService? _input;
 
@@ -277,16 +277,46 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
 
     // ---- sessions and messages ---------------------------------------------------------------------------
 
-    /// <summary>True when the peer told us it has a virtual display driver (so it can extend its desktop onto us).</summary>
-    public bool PeerHasVirtualDisplay(string peerId) => _peerHasDisplay.TryGetValue(peerId, out var has) && has;
+    /// <summary>Whether the peer has a virtual display driver (so it can extend its desktop onto us); null until it told us.</summary>
+    public bool? PeerVirtualDisplay(string peerId) => _peerCaps.TryGetValue(peerId, out var caps) ? caps.HasVirtualDisplay : null;
+
+    public bool PeerHasVirtualDisplay(string peerId) => PeerVirtualDisplay(peerId) == true;
+
+    /// <summary>The peer's monitors (primary first), or empty until it told us.</summary>
+    public IReadOnlyList<RemoteMonitor> PeerMonitors(string peerId) =>
+        _peerCaps.TryGetValue(peerId, out var caps) && caps.Monitors is { } monitors ? monitors : [];
+
+    /// <summary>This device's offer: its driver and its real monitors (the virtual one is left out of the list).</summary>
+    private static DeviceCapabilitiesMessage DescribeCapabilities(bool reply)
+    {
+        var virtualDevice = Display.VirtualDisplay.FindDeviceName();
+        var monitors = DisplayCatalog.Monitors()
+            .Where(m => !string.Equals(m.DeviceName, virtualDevice, StringComparison.OrdinalIgnoreCase))
+            .Select(m => new RemoteMonitor(m.Index, $"{m.Bounds.Width}×{m.Bounds.Height}", m.IsPrimary))
+            .ToList();
+        return new DeviceCapabilitiesMessage(virtualDevice is not null, reply, monitors);
+    }
+
+    private void SendCapabilities(PeerSession session, bool reply)
+    {
+        try
+        {
+            _ = session.SendControlAsync(DescribeCapabilities(reply));
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+        {
+            _logger.LogDebug("Capabilities to {Peer} not sent: {Message}", session.PeerName, ex.Message);
+        }
+    }
 
     private void OnSessionReady(PeerSession session)
     {
         session.RegisterHandler(ChannelId.Screen, OnScreenFrameAsync);
         session.ControlMessageReceived += OnControlMessage;
 
-        // Tell the peer what this device can offer (its virtual display driver), so its menu can show the option.
-        _ = session.SendControlAsync(new DeviceCapabilitiesMessage(IsVirtualDisplayAvailable));
+        // Tell the peer what this device can offer. It answers with its own, so even if its first message arrived
+        // before we subscribed (the session starts receiving before it is announced as ready), we still learn it.
+        SendCapabilities(session, reply: false);
 
         // The second monitor stays attached the whole time its device is connected: re-extend when it comes back.
         if (string.Equals(_node.Settings.Screen.SecondMonitorPeerId, session.PeerId, StringComparison.Ordinal) && ExtendedTo != session.PeerId)
@@ -302,6 +332,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
     private void OnSessionClosed(PeerSession session)
     {
         session.ControlMessageReceived -= OnControlMessage;
+        _peerCaps.TryRemove(session.PeerId, out _);
         foreach (var source in _sources.Values.Where(s => ReferenceEquals(s.Session, session)).ToList())
         {
             if (_sources.TryRemove(source.StreamId, out _))
@@ -335,7 +366,12 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
                 break;
 
             case DeviceCapabilitiesMessage caps:
-                _peerHasDisplay[session.PeerId] = caps.HasVirtualDisplay;
+                _peerCaps[session.PeerId] = caps;
+                if (!caps.IsReply)
+                {
+                    SendCapabilities(session, reply: true);
+                }
+
                 break;
 
             case ScreenStopMessage stop:

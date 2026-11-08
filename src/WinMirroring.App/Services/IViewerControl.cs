@@ -6,17 +6,24 @@ namespace WinMirroring.App.Services;
 public sealed record OpenViewInfo(uint StreamId, string Title, string PeerId, string Kind, int MonitorIndex, int MonitorCount, bool IsActive);
 
 /// <summary>
-/// Lets the control panel be the single place to pick which view is on screen: it lists the open views, switches
-/// between them, opens a device's screen without opening a second window for one that is already open, and carries
-/// out the active view's own actions (switch monitor, on-screen keyboard, close).
+/// Lets the control panel be the single place to pick what is on screen: it lists the open views, switches between
+/// them and back to this device's own desktop, opens a device's screen (a chosen monitor) without opening a second
+/// window for one that is already open, and carries out the active view's own actions.
 /// </summary>
 public interface IViewerControl
 {
     bool IsScreenOpen(string peerId);
 
-    void ShowOrSwitchScreen(string peerId);
+    /// <summary>Shows <paramref name="monitorIndex"/> of the device: switches the open view to it, or opens one.</summary>
+    void ShowOrSwitchScreen(string peerId, int monitorIndex);
 
     IReadOnlyList<OpenViewInfo> OpenViews { get; }
+
+    /// <summary>True when no view is in front: this device's own desktop is what is on screen.</summary>
+    bool IsLocalDesktopActive { get; }
+
+    /// <summary>Moves the full-screen views out of the way (they keep running) to show this device's desktop.</summary>
+    void ShowLocalDesktop();
 
     void SwitchTo(uint streamId);
 

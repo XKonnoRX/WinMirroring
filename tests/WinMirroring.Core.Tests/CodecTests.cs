@@ -84,7 +84,24 @@ public class CodecTests
         new DisplayExtendRequestMessage(1920, 1280, 150),
         new DisplayExtendResultMessage(false, "нет драйвера"),
         new KeyboardLayoutMessage(unchecked((int)0xF0020409)),
+        new DeviceCapabilitiesMessage(true, IsReply: true),
     };
+
+    [Fact]
+    public void CapabilitiesCarryTheMonitorList()
+    {
+        var message = new DeviceCapabilitiesMessage(false, false,
+        [
+            new RemoteMonitor(0, "1920×1080", true),
+            new RemoteMonitor(2, "2560×1440", false),
+        ]);
+
+        var decoded = Assert.IsType<DeviceCapabilitiesMessage>(ControlMessageCodec.TryDecode(ControlMessageCodec.Encode(message)));
+
+        Assert.False(decoded.HasVirtualDisplay);
+        Assert.False(decoded.IsReply);
+        Assert.Equal(message.Monitors, decoded.Monitors);
+    }
 
     [Theory]
     [MemberData(nameof(Messages))]

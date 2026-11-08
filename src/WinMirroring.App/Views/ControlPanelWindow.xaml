@@ -23,6 +23,13 @@
       <Setter Property="FontWeight" Value="SemiBold" />
       <Setter Property="Margin" Value="2,16,0,3" />
     </Style>
+    <Style TargetType="TextBlock" x:Key="Current">
+      <Setter Property="Foreground" Value="#93C5FD" />
+      <Setter Property="FontSize" Value="14" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Margin" Value="4,8,0,4" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
     <Style TargetType="TextBlock" x:Key="DeviceHeader">
       <Setter Property="Foreground" Value="White" />
       <Setter Property="FontSize" Value="14" />
@@ -38,7 +45,7 @@
                 Background="#374151" Foreground="White" BorderThickness="0" FontSize="15" />
         <TextBlock Text="WinMirroring" Foreground="White" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" />
       </DockPanel>
-      <ScrollViewer VerticalScrollBarVisibility="Auto" PanningMode="VerticalOnly">
+      <ScrollViewer x:Name="Scroller" VerticalScrollBarVisibility="Auto" PanningMode="VerticalOnly">
         <StackPanel x:Name="Sections" Margin="14,2,14,18" />
       </ScrollViewer>
     </DockPanel>
