@@ -559,7 +559,7 @@ public partial class App : Application
     private void CreateFloatingMenu(MirroringNode node)
     {
         _floatingMenu = new Views.FloatingMenuWindow();
-        _floatingMenu.Menu.Opened += (_, _) => FillAppMenu(_floatingMenu.Menu);
+        _floatingMenu.Clicked += ToggleControlPanel;
         _floatingMenu.MovedTo += (x, y) =>
         {
             node.Settings.MenuButtonX = x;
@@ -620,80 +620,25 @@ public partial class App : Application
             return;
         }
 
+        _controlPanel?.HidePanel();
         _floatingMenu.Hide();
         var node = _services.GetRequiredService<MirroringNode>();
         node.Settings.MenuButtonHidden = true;
         node.SaveSettings();
     }
 
-    /// <summary>Builds the floating button's main menu, grouped by device.</summary>
-    private void FillAppMenu(ContextMenu menu)
+    private Views.ControlPanelWindow? _controlPanel;
+
+    /// <summary>The floating button opens (or closes) the main control panel.</summary>
+    private void ToggleControlPanel()
     {
-        menu.Items.Clear();
         if (_services?.GetService<MainViewModel>() is not { } vm)
         {
-            menu.Items.Add(new MenuItem { Header = "Открыть WinMirroring", Command = new RelayCommand(ShowMainWindow) });
             return;
         }
 
-        var screen = _services.GetRequiredService<ScreenStreamingService>();
-        var peers = vm.ReadyPeers;
-        var hasLocalDriver = ScreenStreamingService.IsVirtualDisplayAvailable;
-
-        // This device: send one of its windows to a chosen device.
-        var self = new MenuItem { Header = $"Это устройство ({Environment.MachineName})", FontWeight = FontWeights.SemiBold };
-        if (peers.Count == 0)
-        {
-            self.Items.Add(new MenuItem { Header = "Нет устройств на связи", IsEnabled = false });
-        }
-        else
-        {
-            var send = new MenuItem { Header = "Отправить окно на…" };
-            foreach (var peer in peers)
-            {
-                send.Items.Add(new MenuItem { Header = peer.Name, Command = new RelayCommand(() => _ = vm.SendWindowToPeerAsync(peer.Id, peer.Name)) });
-            }
-
-            self.Items.Add(send);
-        }
-
-        menu.Items.Add(self);
-        menu.Items.Add(new Separator());
-
-        if (peers.Count == 0)
-        {
-            menu.Items.Add(new MenuItem { Header = "Нет синхронизированных устройств на связи", IsEnabled = false });
-        }
-
-        // One group per connected device: its screen, sending a window to it, and virtual screens both ways.
-        foreach (var peer in peers)
-        {
-            var group = new MenuItem { Header = peer.Name, FontWeight = FontWeights.SemiBold };
-            group.Items.Add(new MenuItem { Header = "Показать экран", Command = new RelayCommand(() => _ = screen.RequestScreenAsync(peer.Id)) });
-            group.Items.Add(new MenuItem { Header = "Отправить окно сюда…", Command = new RelayCommand(() => _ = vm.SendWindowToPeerAsync(peer.Id, peer.Name)) });
-
-            var hasPeerDriver = screen.PeerHasVirtualDisplay(peer.Id);
-            if (hasLocalDriver)
-            {
-                group.Items.Add(CheckItem("Использовать как второй монитор", vm.IsSecondMonitor(peer.Id), () => _ = vm.ToggleSecondMonitorAsync(peer.Id, peer.Name)));
-            }
-
-            if (hasPeerDriver)
-            {
-                group.Items.Add(new MenuItem { Header = "Стать вторым монитором этого устройства", Command = new RelayCommand(() => _ = vm.BecomeSecondMonitorAsync(peer.Id, peer.Name)) });
-            }
-
-            if (!hasLocalDriver && !hasPeerDriver)
-            {
-                group.Items.Add(new MenuItem { Header = "Виртуальный экран недоступен (нет драйвера)", IsEnabled = false });
-            }
-
-            menu.Items.Add(group);
-        }
-
-        menu.Items.Add(new Separator());
-        menu.Items.Add(new MenuItem { Header = "Параметры и синхронизация", Command = new RelayCommand(ShowMainWindow) });
-        menu.Items.Add(new MenuItem { Header = "Скрыть кнопку меню", Command = new RelayCommand(HideFloatingMenu) });
+        _controlPanel ??= new Views.ControlPanelWindow();
+        _controlPanel.Toggle(vm, _services.GetRequiredService<ScreenStreamingService>(), ShowMainWindow, HideFloatingMenu);
     }
 
     public async Task ExitAsync()
@@ -707,6 +652,7 @@ public partial class App : Application
         _mainWindow?.AllowClose();
         _mainWindow?.Close();
         _fileTransfer?.Close();
+        _controlPanel?.Close();
         _floatingMenu?.Close();
         _trayIcon?.Dispose();
 

@@ -1,8 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 
@@ -20,8 +18,8 @@ public partial class FloatingMenuWindow : Window
 
     public FloatingMenuWindow() => InitializeComponent();
 
-    /// <summary>The menu shown on click; the app fills it (grouped by device) when it opens.</summary>
-    public ContextMenu Menu => AppMenu;
+    /// <summary>The button was clicked (not dragged); the app opens the control panel.</summary>
+    public event Action? Clicked;
 
     /// <summary>The user finished dragging the button; carries the new top-left for persistence.</summary>
     public event Action<double, double>? MovedTo;
@@ -64,9 +62,7 @@ public partial class FloatingMenuWindow : Window
     {
         if (_pressed && !_moved)
         {
-            AppMenu.PlacementTarget = Handle;
-            AppMenu.Placement = PlacementMode.Bottom;
-            AppMenu.IsOpen = true;
+            Clicked?.Invoke();
         }
 
         _pressed = false;

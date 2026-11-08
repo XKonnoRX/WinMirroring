@@ -105,4 +105,11 @@ public sealed partial class MainViewModel
         StatusText = result;
         return result;
     }
+
+    /// <summary>Hands this device's mouse and keyboard to a device, used from the control panel.</summary>
+    public void ControlPeerById(string peerId, string peerName)
+    {
+        _input.ControlPeer(peerId);
+        StatusText = $"Ввод передан на {peerName}. Вернуть: Ctrl+Alt+Home.";
+    }
 }
