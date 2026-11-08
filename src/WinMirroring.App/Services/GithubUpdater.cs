@@ -80,27 +80,54 @@ public sealed class GithubUpdater
         }
     }
 
-    /// <summary>Downloads the update's zip to a temporary file; null when it could not be fetched.</summary>
+    /// <summary>
+    /// Downloads the update's zip to a temporary file; null when it could not be fetched. GitHub's asset CDN
+    /// sometimes answers a 504 Gateway Timeout for a short while after a release, so transient failures are retried.
+    /// </summary>
     public async Task<string?> DownloadAsync(AvailableUpdate update, CancellationToken ct)
     {
-        try
+        var path = Path.Combine(Path.GetTempPath(), $"WinMirroring-{update.Tag}.zip");
+        const int attempts = 4;
+        for (var attempt = 1; attempt <= attempts; attempt++)
         {
-            var path = Path.Combine(Path.GetTempPath(), $"WinMirroring-{update.Tag}.zip");
-            using var response = await Http.GetAsync(update.ZipUrl, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            await using (var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None))
+            try
             {
-                await response.Content.CopyToAsync(file, ct).ConfigureAwait(false);
-            }
+                using var response = await Http.GetAsync(update.ZipUrl, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation("Update download got {Status} (attempt {Attempt}/{Total})", (int)response.StatusCode, attempt, attempts);
+                    if (attempt < attempts && IsTransient((int)response.StatusCode))
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(3 * attempt), ct).ConfigureAwait(false);
+                        continue;
+                    }
 
-            return path;
+                    return null;
+                }
+
+                await using (var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    await response.Content.CopyToAsync(file, ct).ConfigureAwait(false);
+                }
+
+                return path;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or IOException && attempt < attempts)
+            {
+                _logger.LogInformation("Update download attempt {Attempt}/{Total} failed: {Message}", attempt, attempts, ex.Message);
+                await Task.Delay(TimeSpan.FromSeconds(3 * attempt), ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
+            {
+                _logger.LogWarning("Downloading the update failed: {Message}", ex.Message);
+                return null;
+            }
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
-        {
-            _logger.LogWarning("Downloading the update failed: {Message}", ex.Message);
-            return null;
-        }
+
+        return null;
     }
+
+    private static bool IsTransient(int status) => status is 408 or 425 or 429 or 500 or 502 or 503 or 504;
 
     /// <summary>Hands the downloaded zip to update.ps1, which closes the app, swaps the build and restarts it.</summary>
     public bool Apply(string zipPath)
