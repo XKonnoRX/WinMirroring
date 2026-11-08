@@ -74,8 +74,9 @@
       <TextBlock x:Name="NoticeText" Foreground="#FBBF24" FontSize="14" TextWrapping="Wrap" MaxWidth="520" />
     </Border>
 
-    <!-- In full screen the toolbar is gone: this handle opens the quick panel (and the way out). -->
-    <Button x:Name="FullScreenHandle" Grid.Row="1" VerticalAlignment="Top" HorizontalAlignment="Center" Margin="0,2,0,0"
+    <!-- In full screen the toolbar is gone: this handle opens the quick panel (and the way out). It sits on the
+         right, where the panel slides out from. -->
+    <Button x:Name="FullScreenHandle" Grid.Row="1" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,2,8,0"
             Content="☰  Меню" FontSize="14" Padding="18,6" MinHeight="36" Opacity="0.55" Visibility="Collapsed"
             Background="#CC1F2937" Foreground="White" BorderBrush="#4B5563" Focusable="False"
             Click="OnToggleQuickPanel" ToolTip="Быстрые параметры и выход из полноэкранного режима" />
@@ -99,6 +100,8 @@
           <ToggleButton x:Name="ControlToggle" Style="{StaticResource QuickToggle}" Content="Мышь, касания и клавиатура управляют тем устройством" IsChecked="True"
                         Click="OnControlToggleClick" />
           <Button x:Name="QuickKeyboardButton" Style="{StaticResource QuickButton}" Content="Экранная клавиатура" Click="OnToggleKeyboard" />
+          <Button x:Name="AltTabButton" Style="{StaticResource QuickButton}" Content="Alt+Tab — переключить окно там" Click="OnAltTab"
+                  ToolTip="Переключает окно на том устройстве (локально Alt+Tab перехватывает Windows)" />
           <Button Style="{StaticResource QuickButton}" Content="Отпустить зажатые кнопки и клавиши там" Click="OnReleaseRemoteInput" />
           <Button Style="{StaticResource QuickButton}" Content="Вернуть курсор (общий ввод)" Click="OnReturnCursor"
                   ToolTip="Если курсор общего ввода застрял на другом устройстве, вернуть его на место" />

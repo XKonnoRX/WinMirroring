@@ -907,6 +907,23 @@ public partial class ScreenViewerWindow : Window
         ShowNotice($"Кнопки и клавиши на {_viewer.PeerName} отпущены");
     }
 
+    private void OnAltTab(object sender, RoutedEventArgs e)
+    {
+        if (!ControlEnabled)
+        {
+            ShowNotice("Включите управление, чтобы отправлять Alt+Tab");
+            return;
+        }
+
+        // Alt+Tab pressed here is caught by this device's Windows, so send it to the other device instead: hold Alt,
+        // tap Tab, release Alt. Scan codes (Alt 0x38, Tab 0x0F) are layout-independent. Repeated taps keep switching.
+        const ushort altVk = 0xA4, altScan = 0x38, tabVk = 0x09, tabScan = 0x0F;
+        _viewer.SendKey(altVk, altScan, up: false, extended: false);
+        _viewer.SendKey(tabVk, tabScan, up: false, extended: false);
+        _viewer.SendKey(tabVk, tabScan, up: true, extended: false);
+        _viewer.SendKey(altVk, altScan, up: true, extended: false);
+    }
+
     private void OnReturnCursor(object sender, RoutedEventArgs e)
     {
         if (_quick is not null)
