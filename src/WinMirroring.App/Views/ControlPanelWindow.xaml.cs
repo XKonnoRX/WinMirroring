@@ -9,6 +9,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using WinMirroring.App.Services;
 using WinMirroring.App.ViewModels;
+using WinMirroring.Audio;
 using WinMirroring.Screen;
 
 namespace WinMirroring.App.Views;
@@ -120,16 +121,19 @@ public partial class ControlPanelWindow : Window
 
         foreach (var view in viewers.OpenViews)
         {
-            text.Append("|v").Append(view.StreamId).Append(view.Title).Append(view.Kind).Append(view.MonitorIndex).Append(view.IsActive);
+            text.Append("|v").Append(view.StreamId).Append(view.Title).Append(view.Kind).Append(view.MonitorIndex).Append(view.IsActive)
+                .Append(view.InputAllowed).Append(view.InputOn);
         }
 
+        text.Append("|s").Append(vm.OwnSoundLine);
         foreach (var peer in vm.ReadyPeers)
         {
             text.Append("|p").Append(peer.Id).Append(peer.Name)
                 .Append(vm.IsSecondMonitor(peer.Id))
                 .Append(screen.PeerVirtualDisplay(peer.Id)?.ToString() ?? "?")
                 .Append(vm.IsSoundSentTo(peer.Id))
-                .Append(vm.IsListeningTo(peer.Id));
+                .Append(vm.IsSoundFrom(peer.Id))
+                .Append(vm.SoundHereChoice(peer.Id));
             foreach (var monitor in screen.PeerMonitors(peer.Id))
             {
                 text.Append('m').Append(monitor.Index).Append(monitor.Label).Append(monitor.Primary);
@@ -170,6 +174,18 @@ public partial class ControlPanelWindow : Window
 
                 // The view in front is a caption, not a button: clicking it would do nothing.
                 Sections.Children.Add(MakeCurrent("● " + view.Title));
+                if (view.InputAllowed)
+                {
+                    Sections.Children.Add(MakeChoices(
+                        closesPanel: true,
+                        ("Управлять", view.InputOn, () => viewers.SetViewInput(view.StreamId, true)),
+                        ("Только смотреть", !view.InputOn, () => viewers.SetViewInput(view.StreamId, false))));
+                }
+                else
+                {
+                    Sections.Children.Add(MakeNote("Только просмотр: управление запрещено на том устройстве"));
+                }
+
                 Sections.Children.Add(MakeButton("Экранная клавиатура", () => viewers.ToggleKeyboard(view.StreamId)));
                 Sections.Children.Add(MakeButton(view.Kind == "display" ? "Отключить второй монитор" : "Закрыть трансляцию", () => viewers.CloseView(view.StreamId)));
             }
@@ -256,14 +272,37 @@ public partial class ControlPanelWindow : Window
             }
         }
 
-        // ---- Sound ----
+        // ---- Sound: where this device's sound goes, and whether each device's sound plays here ----
+        // Choices, not on/off toggles: the current one is highlighted, and pressing it again changes nothing.
         Sections.Children.Add(MakeHeader("ЗВУК"));
-        Sections.Children.Add(MakeToggle("Автоматически: за вводом и просмотром", vm.SoundAutomatic, _ => vm.SendSoundTo(null)));
-        Sections.Children.Add(MakeToggle("Звук этого устройства — только здесь", vm.SoundKeptHere, _ => vm.KeepSoundHere()));
+        Sections.Children.Add(MakeDeviceHeader("Звук этого устройства"));
+        Sections.Children.Add(MakeNote(vm.OwnSoundLine));
+        Sections.Children.Add(MakeChoices(
+            closesPanel: false,
+            ("Автоматически", vm.SoundAutomatic, () => vm.SendSoundTo(null)),
+            ("Только здесь", vm.SoundKeptHere, vm.KeepSoundHere)));
         foreach (var peer in peers)
         {
-            Sections.Children.Add(MakeToggle($"Звук этого устройства — на {peer.Name}", vm.IsSoundSentTo(peer.Id), _ => vm.SendSoundTo(peer.Id, peer.Name)));
-            Sections.Children.Add(MakeToggle($"Слушать звук {peer.Name} здесь", vm.IsListeningTo(peer.Id), on => _ = vm.SetListenAsync(peer.Id, peer.Name, on)));
+            Sections.Children.Add(MakeChoice($"Всегда на {peer.Name}", vm.IsSoundSentTo(peer.Id), () => vm.SendSoundTo(peer.Id, peer.Name)));
+        }
+
+        foreach (var peer in peers)
+        {
+            Sections.Children.Add(MakeDeviceHeader($"Звук {peer.Name} здесь"));
+            var choice = vm.SoundHereChoice(peer.Id);
+            Sections.Children.Add(vm.IsSoundFrom(peer.Id)
+                ? MakeCurrent("● Сейчас играет здесь")
+                : MakeNote(choice switch
+                {
+                    IncomingSoundChoice.Never => "Выключен здесь",
+                    IncomingSoundChoice.Always => $"Запрошен, но пока не идёт: на {peer.Name} звук выключен или закреплён за другим устройством",
+                    _ => "Сейчас не играет. Авто: играет, пока открыт его экран или вы управляете им",
+                }));
+            Sections.Children.Add(MakeChoices(
+                closesPanel: false,
+                ("Авто", choice == IncomingSoundChoice.Automatic, () => _ = vm.SetSoundHereAsync(peer.Id, peer.Name, IncomingSoundChoice.Automatic)),
+                ("Всегда", choice == IncomingSoundChoice.Always, () => _ = vm.SetSoundHereAsync(peer.Id, peer.Name, IncomingSoundChoice.Always)),
+                ("Никогда", choice == IncomingSoundChoice.Never, () => _ = vm.SetSoundHereAsync(peer.Id, peer.Name, IncomingSoundChoice.Never))));
         }
 
         // ---- Input ----
@@ -306,6 +345,46 @@ public partial class ControlPanelWindow : Window
             }
         };
         return button;
+    }
+
+    /// <summary>One of several choices, full width; the current one is highlighted and marked.</summary>
+    private Button MakeChoice(string text, bool current, Action onClick, bool closesPanel = false)
+    {
+        var button = MakeButton(current ? "● " + text : text, current ? () => { } : onClick, closesPanel);
+        if (current)
+        {
+            button.Background = CurrentChoiceBrush;
+            button.Foreground = Brushes.White;
+            button.FontWeight = FontWeights.SemiBold;
+        }
+
+        return button;
+    }
+
+    /// <summary>Choices side by side (a segmented control), the current one highlighted.</summary>
+    private UniformGrid MakeChoices(bool closesPanel, params (string Text, bool Current, Action OnClick)[] choices)
+    {
+        var row = new UniformGrid { Rows = 1, Columns = choices.Length };
+        for (var i = 0; i < choices.Length; i++)
+        {
+            var (text, current, onClick) = choices[i];
+            var button = MakeChoice(text, current, onClick, closesPanel);
+            button.HorizontalContentAlignment = HorizontalAlignment.Center;
+            button.Padding = new Thickness(4, 6, 4, 6);
+            button.Margin = new Thickness(i == 0 ? 0 : 3, 3, i == choices.Length - 1 ? 0 : 3, 3);
+            row.Children.Add(button);
+        }
+
+        return row;
+    }
+
+    private static readonly SolidColorBrush CurrentChoiceBrush = CreateFrozen(Color.FromRgb(0x25, 0x63, 0xEB));
+
+    private static SolidColorBrush CreateFrozen(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
     }
 
     private ToggleButton MakeToggle(string text, bool isChecked, Action<bool> onToggled)

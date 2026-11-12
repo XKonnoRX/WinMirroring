@@ -28,6 +28,18 @@ internal sealed class LocalMuteGuard
         _logger = logger;
     }
 
+    /// <summary>True while this app holds the speakers muted.</summary>
+    public bool IsMuted
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _previous.Count > 0;
+            }
+        }
+    }
+
     public void Mute()
     {
         lock (_gate)

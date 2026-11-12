@@ -34,6 +34,16 @@ internal sealed class IncomingAudioStream : IDisposable
 
     public object Owner { get; }
 
+    public string PeerId { get; init; } = string.Empty;
+
+    /// <summary>The key as announced (base64): a repeated announcement with the same key is the same stream.</summary>
+    public string Key { get; init; } = string.Empty;
+
+    /// <summary>The sender sends it on its own (follows input or a view), not because a user chose it.</summary>
+    public bool Automatic { get; set; }
+
+    public long StartedTicks { get; } = Environment.TickCount64;
+
     public IPAddress ExpectedSource { get; }
 
     public string PeerName { get; }

@@ -22,6 +22,7 @@ internal sealed class AudioSender : IAsyncDisposable
     private readonly AudioCapture _capture;
     private readonly IOpusEncoder _encoder;
     private readonly MediaCipher _cipher;
+    private readonly string _key;
     private readonly ILogger _logger;
     private readonly Func<bool> _suspended;
     private readonly byte[] _plain = new byte[4 + AudioFormat.MaxOpusPacket];
@@ -32,7 +33,7 @@ internal sealed class AudioSender : IAsyncDisposable
     private int _silentFrames;
     private long _sentPackets;
 
-    private AudioSender(MirroringNode node, PeerSession target, AudioCapture capture, uint streamId, byte[] key, int bitrateKbps, Func<bool> suspended, ILogger logger)
+    private AudioSender(MirroringNode node, PeerSession target, AudioCapture capture, uint streamId, byte[] key, int bitrateKbps, AudioRouteReason reason, Func<bool> suspended, ILogger logger)
     {
         _node = node;
         _target = target;
@@ -40,6 +41,9 @@ internal sealed class AudioSender : IAsyncDisposable
         _suspended = suspended;
         _logger = logger;
         StreamId = streamId;
+        BitrateKbps = bitrateKbps;
+        Reason = reason;
+        _key = Convert.ToBase64String(key);
         _cipher = new MediaCipher(key);
         _encoder = OpusCodecFactory.CreateEncoder(AudioFormat.SampleRate, AudioFormat.Channels, OpusApplication.OPUS_APPLICATION_AUDIO);
         _encoder.Bitrate = Math.Clamp(bitrateKbps, 32, 510) * 1000;
@@ -53,6 +57,15 @@ internal sealed class AudioSender : IAsyncDisposable
 
     public PeerSession Target => _target;
 
+    public int BitrateKbps { get; }
+
+    /// <summary>Why the sound goes there; may change without restarting the stream (see <see cref="UpdateReasonAsync"/>).</summary>
+    public AudioRouteReason Reason { get; private set; }
+
+    public bool Automatic => new AudioRoute(_target.PeerId, Reason).Automatic;
+
+    public long StartedTicks { get; } = Environment.TickCount64;
+
     public long SentPackets => Interlocked.Read(ref _sentPackets);
 
     public string CaptureDescription => _capture.Description;
@@ -60,16 +73,15 @@ internal sealed class AudioSender : IAsyncDisposable
     /// <summary>True when capture also hears this app's own playback (fallback mode).</summary>
     public bool CaptureIncludesOwnPlayback => _capture.IncludesOwnPlayback;
 
-    public static async Task<AudioSender> StartAsync(MirroringNode node, PeerSession target, int bitrateKbps, Func<bool> suspended, ILogger logger)
+    public static async Task<AudioSender> StartAsync(MirroringNode node, PeerSession target, int bitrateKbps, AudioRouteReason reason, Func<bool> suspended, ILogger logger)
     {
         var capture = await AudioCapture.CreateAsync(logger).ConfigureAwait(false);
         var streamId = (uint)Random.Shared.Next(1, int.MaxValue);
         var key = MediaCipher.GenerateKey();
-        var sender = new AudioSender(node, target, capture, streamId, key, bitrateKbps, suspended, logger);
+        var sender = new AudioSender(node, target, capture, streamId, key, bitrateKbps, reason, suspended, logger);
         try
         {
-            await target.SendControlAsync(new AudioStartMessage(
-                streamId, Convert.ToBase64String(key), AudioFormat.Codec, AudioFormat.SampleRate, AudioFormat.Channels, AudioFormat.FrameMs)).ConfigureAwait(false);
+            await target.SendControlAsync(sender.StartMessage()).ConfigureAwait(false);
             capture.Start();
         }
         catch
@@ -78,9 +90,25 @@ internal sealed class AudioSender : IAsyncDisposable
             throw;
         }
 
-        logger.LogInformation("Sending sound to {Peer} (stream {Stream}, {Bitrate} kbps, {Capture})", target.PeerName, streamId, bitrateKbps, capture.Description);
+        logger.LogInformation("Sending sound to {Peer} ({Reason}; stream {Stream}, {Bitrate} kbps, {Capture})", target.PeerName, reason, streamId, bitrateKbps, capture.Description);
         return sender;
     }
+
+    /// <summary>The same stream goes on for another reason: the receiver only learns whether it is automatic now.</summary>
+    public async Task UpdateReasonAsync(AudioRouteReason reason)
+    {
+        if (reason == Reason)
+        {
+            return;
+        }
+
+        Reason = reason;
+        await _target.SendControlAsync(StartMessage()).ConfigureAwait(false);
+        _logger.LogInformation("Sound to {Peer} now goes there because: {Reason}", _target.PeerName, reason);
+    }
+
+    private AudioStartMessage StartMessage() =>
+        new(StreamId, _key, AudioFormat.Codec, AudioFormat.SampleRate, AudioFormat.Channels, AudioFormat.FrameMs, Automatic);
 
     /// <summary>Runs on the capture thread.</summary>
     private void OnFrame(ReadOnlySpan<float> frame)

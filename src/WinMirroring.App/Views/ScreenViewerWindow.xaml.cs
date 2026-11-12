@@ -8,6 +8,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Extensions.DependencyInjection;
 using WinMirroring.App.Services;
+using WinMirroring.Audio;
 using WinMirroring.Clipboard;
 using WinMirroring.Input;
 using WinMirroring.Screen;
@@ -991,6 +992,30 @@ public partial class ScreenViewerWindow : Window
 
     public void ToggleOnScreenKeyboard() => OnToggleKeyboard(this, new RoutedEventArgs());
 
+    /// <summary>The other device lets this one control it at all.</summary>
+    public bool InputAllowed => _viewer.Info.ControlAllowed;
+
+    /// <summary>Mouse, touch and keys here go to the other device (off: only watching).</summary>
+    public bool InputOn => ControlToggle.IsChecked == true;
+
+    /// <summary>Turns control of the other device on, or off to only watch; whatever is held there is let go.</summary>
+    public void SetInput(bool on)
+    {
+        if (!InputAllowed || on == InputOn)
+        {
+            return;
+        }
+
+        ControlToggle.IsChecked = on;
+        OnControlToggleClick(this, new RoutedEventArgs());
+        ShowNotice(on
+            ? $"Управление {_viewer.PeerName} включено"
+            : "Только просмотр: касания, мышь и клавиши остаются здесь");
+        InputChanged?.Invoke();
+    }
+
+    public event Action? InputChanged;
+
     // ---- quick panel -------------------------------------------------------------------------------------
 
     private void OnToggleQuickPanel(object sender, RoutedEventArgs e)
@@ -1034,7 +1059,7 @@ public partial class ScreenViewerWindow : Window
         }
 
         ListenToggle.Content = $"Звук {peerName} играет здесь";
-        ListenToggle.IsChecked = _quick.IsListeningTo(peerId);
+        ListenToggle.IsChecked = _quick.IsSoundFrom(peerId) || _quick.SoundHereChoice(peerId) == IncomingSoundChoice.Always;
         SendSoundToggle.Content = $"Звук этого устройства — на {peerName}";
         SendSoundToggle.IsChecked = _quick.IsSoundSentTo(peerId);
         KeepSoundToggle.IsChecked = _quick.SoundKeptHere;
@@ -1107,8 +1132,8 @@ public partial class ScreenViewerWindow : Window
         }
 
         var listen = ListenToggle.IsChecked == true;
-        var ok = await _quick.SetListenAsync(_viewer.Session.PeerId, _viewer.PeerName, listen);
-        ShowNotice(!ok ? $"Нет связи с {_viewer.PeerName}" : listen ? $"Звук {_viewer.PeerName} играет здесь" : $"Звук {_viewer.PeerName} больше не запрашивается");
+        var ok = await _quick.SetSoundHereAsync(_viewer.Session.PeerId, _viewer.PeerName, listen ? IncomingSoundChoice.Always : IncomingSoundChoice.Never);
+        ShowNotice(!ok ? $"Нет связи с {_viewer.PeerName}" : listen ? $"Звук {_viewer.PeerName} играет здесь" : $"Звук {_viewer.PeerName} здесь выключен");
         RefreshQuickPanel();
     }
 

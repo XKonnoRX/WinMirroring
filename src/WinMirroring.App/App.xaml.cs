@@ -160,6 +160,7 @@ public partial class App : Application
         health.Start("Экран и окна", () =>
         {
             screen.ViewerOpened += viewer => Dispatcher.BeginInvoke(() => OpenViewerWindow(viewer));
+            screen.SourcesChanged += () => Dispatcher.BeginInvoke(UpdateKeepAwake);
             screen.Start();
             screen.AttachWindowDrag(input);
         });
@@ -471,8 +472,7 @@ public partial class App : Application
                 var screen = _services.GetRequiredService<ScreenStreamingService>();
                 foreach (var peer in peers)
                 {
-                    var listening = vm.IsListeningTo(peer.Id);
-                    listen.Items.Add(CheckItem(peer.Name, listening, () => _ = vm.SetListenAsync(peer.Id, peer.Name, !listening)));
+                    listen.Items.Add(CheckItem(peer.Name, vm.IsSoundFrom(peer.Id), () => _ = vm.ToggleSoundHereAsync(peer.Id, peer.Name)));
                     screens.Items.Add(new MenuItem { Header = peer.Name, Command = new RelayCommand(() => _ = screen.RequestScreenAsync(peer.Id)) });
                 }
 

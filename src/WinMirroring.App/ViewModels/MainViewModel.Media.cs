@@ -88,7 +88,7 @@ public sealed partial class MainViewModel
         {
             status.SendingTo is null
                 ? "Звук этого устройства играет здесь."
-                : $"Звук этого устройства передаётся на {status.SendingTo} ({status.CaptureMode}).",
+                : $"Звук этого устройства. {OwnSoundLine} ({status.CaptureMode}).",
         };
 
         if (status.Receiving.Count == 0)

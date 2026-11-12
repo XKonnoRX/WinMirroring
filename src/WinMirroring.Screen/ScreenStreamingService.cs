@@ -50,6 +50,9 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
     /// <summary>True while this device is streaming to, or viewing, any other device (used to defer auto-updates).</summary>
     public bool HasActivity => !_sources.IsEmpty || !_viewers.IsEmpty;
 
+    /// <summary>True while another device shows one of this device's screens (not just a window).</summary>
+    public bool IsStreamingScreen => _sources.Values.Any(s => s.Kind is StreamKind.Monitor or StreamKind.Display);
+
     private void RaiseSourcesChanged()
     {
         SourcesChanged?.Invoke();

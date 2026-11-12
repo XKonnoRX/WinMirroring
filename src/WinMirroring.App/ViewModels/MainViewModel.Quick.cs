@@ -1,4 +1,5 @@
 using CommunityToolkit.Mvvm.ComponentModel;
+using WinMirroring.Audio;
 
 namespace WinMirroring.App.ViewModels;
 
@@ -16,7 +17,57 @@ public sealed partial class MainViewModel
 
     public bool IsSoundSentTo(string peerId) => AudioSendEnabled && AudioPinnedTarget is { IsEmpty: false } pinned && pinned.Id == peerId;
 
-    public bool IsListeningTo(string peerId) => _audio.IsListeningTo(peerId);
+    /// <summary>That device's sound plays here right now.</summary>
+    public bool IsSoundFrom(string peerId) => _audio.IsReceivingFrom(peerId);
+
+    /// <summary>What this device asked for that device's sound: automatic, always here, never here.</summary>
+    public IncomingSoundChoice SoundHereChoice(string peerId) => _audio.IncomingChoice(peerId);
+
+    public AudioStatus SoundStatus => _audio.GetStatus();
+
+    /// <summary>Where this device's sound plays now and why, in a line for the panel.</summary>
+    public string OwnSoundLine
+    {
+        get
+        {
+            var status = _audio.GetStatus();
+            if (status.SendingTo is not { } target)
+            {
+                return "Сейчас играет здесь";
+            }
+
+            var why = status.Reason switch
+            {
+                AudioRouteReason.Pinned => "выбрано здесь",
+                AudioRouteReason.Asked => $"{target} попросил",
+                AudioRouteReason.Controls => $"{target} управляет этим устройством",
+                AudioRouteReason.Watches => $"{target} показывает экран этого устройства",
+                _ => null,
+            };
+            var line = why is null ? $"Сейчас играет на {target}" : $"Сейчас играет на {target}: {why}";
+            return status.SpeakersMuted ? line + ". Динамики здесь выключены" : line;
+        }
+    }
+
+    public async Task<bool> SetSoundHereAsync(string peerId, string peerName, IncomingSoundChoice choice)
+    {
+        var ok = await _audio.SetIncomingChoiceAsync(peerId, choice);
+        StatusText = !ok
+            ? $"Не удалось связаться с {peerName}."
+            : choice switch
+            {
+                IncomingSoundChoice.Always => $"Звук {peerName} теперь играет здесь (если на {peerName} передача звука не выключена).",
+                IncomingSoundChoice.Never => $"Звук {peerName} здесь не играет, пока вы не включите его снова.",
+                _ => $"Звук {peerName} играет здесь, когда открыт его экран или вы управляете им.",
+            };
+        return ok;
+    }
+
+    /// <summary>The tray's on/off for another device's sound here: on asks for it, off turns it off here.</summary>
+    public Task<bool> ToggleSoundHereAsync(string peerId, string peerName) =>
+        SetSoundHereAsync(peerId, peerName, IsSoundFrom(peerId) || SoundHereChoice(peerId) == IncomingSoundChoice.Always
+            ? IncomingSoundChoice.Never
+            : IncomingSoundChoice.Always);
 
     /// <summary>Sends this device's sound to <paramref name="peerId"/> always, or back to automatic when null.</summary>
     public void SendSoundTo(string? peerId, string? peerName = null)
@@ -33,17 +84,6 @@ public sealed partial class MainViewModel
         AudioPinnedTarget = _noDevice;
         AudioSendEnabled = false;
         StatusText = "Звук этого устройства играет только здесь.";
-    }
-
-    public async Task<bool> SetListenAsync(string peerId, string peerName, bool listen)
-    {
-        var ok = await _audio.RequestListenAsync(peerId, listen);
-        StatusText = !ok
-            ? $"Не удалось связаться с {peerName}."
-            : listen
-                ? $"Звук {peerName} теперь играет здесь (если на том устройстве включена передача звука)."
-                : $"Звук {peerName} больше не запрашивается сюда.";
-        return ok;
     }
 
     /// <summary>Elevated processes can inject input into elevated windows (Task Manager and the like).</summary>

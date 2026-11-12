@@ -19,6 +19,7 @@ public partial class App : IViewerControl
     {
         var window = new ScreenViewerWindow(viewer, _services!);
         window.Activated += (_, _) => _activeView = viewer.StreamId;
+        window.StateChanged += (_, _) => UpdateKeepAwake();
         window.Closed += (_, _) =>
         {
             _openViewers.Remove(window);
@@ -26,6 +27,8 @@ public partial class App : IViewerControl
             {
                 _activeView = 0;
             }
+
+            UpdateKeepAwake();
         };
 
         _openViewers.Add(window);
@@ -34,6 +37,18 @@ public partial class App : IViewerControl
         window.BringToFront();
         _activeView = viewer.StreamId;
         KeepFloatingOnTop();
+        UpdateKeepAwake();
+    }
+
+    /// <summary>
+    /// The display stays on while a view of another device is on screen here, or while another device shows one of
+    /// this device's screens (its capture would otherwise go dark with the display).
+    /// </summary>
+    private void UpdateKeepAwake()
+    {
+        var watching = _openViewers.Any(v => v.IsVisible && v.WindowState != System.Windows.WindowState.Minimized);
+        var watched = _services?.GetService<ScreenStreamingService>()?.IsStreamingScreen == true;
+        KeepAwake.Set((watching || watched) && !_exiting);
     }
 
     private void KeepFloatingOnTop()
@@ -78,7 +93,9 @@ public partial class App : IViewerControl
             v.Viewer.Info.Kind,
             v.Viewer.Info.MonitorIndex,
             v.Viewer.Info.MonitorCount,
-            v.Viewer.StreamId == _activeView)).ToList();
+            v.Viewer.StreamId == _activeView,
+            v.InputAllowed,
+            v.InputOn)).ToList();
 
     public bool IsLocalDesktopActive => _activeView == 0 || FindView(_activeView) is null;
 
@@ -108,4 +125,6 @@ public partial class App : IViewerControl
     public void SwitchMonitor(uint streamId, int index) => FindView(streamId)?.SwitchToMonitor(index);
 
     public void ToggleKeyboard(uint streamId) => FindView(streamId)?.ToggleOnScreenKeyboard();
+
+    public void SetViewInput(uint streamId, bool on) => FindView(streamId)?.SetInput(on);
 }

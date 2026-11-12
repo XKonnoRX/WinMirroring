@@ -78,12 +78,20 @@ public sealed record LayoutMessage(long Version, List<LayoutCell> Cells) : Contr
 /// Sender → receiver: an audio stream begins. Packets arrive over UDP at the receiver's transport port, sealed with
 /// <see cref="Key"/> (base64, AES-256-GCM). Codec "opus" or "pcm16".
 /// </summary>
-public sealed record AudioStartMessage(uint StreamId, string Key, string Codec, int SampleRate, int Channels, int FrameMs) : ControlMessage;
+/// <param name="Automatic">
+/// The sound goes there on its own (it follows input or a screen view), not because a user chose it. When two
+/// devices would send to each other on their own, the newer one wins and the other gives way. Sent again with the
+/// same stream and key when only the reason changes.
+/// </param>
+public sealed record AudioStartMessage(uint StreamId, string Key, string Codec, int SampleRate, int Channels, int FrameMs, bool Automatic = false) : ControlMessage;
 
 public sealed record AudioStopMessage(uint StreamId) : ControlMessage;
 
-/// <summary>"Send me your sound" (or stop): the sender wants to hear the receiver's sound until it says otherwise.</summary>
-public sealed record AudioRouteRequestMessage(bool Listen) : ControlMessage;
+/// <summary>
+/// The receiver's wish about the sender's sound: <see cref="Listen"/> "send it here"; <see cref="Refuse"/> "do not
+/// send it here" (not even automatically, until asked again); neither: back to automatic.
+/// </summary>
+public sealed record AudioRouteRequestMessage(bool Listen, bool Refuse = false) : ControlMessage;
 
 /// <summary>Viewer → source: stream monitor <see cref="MonitorIndex"/> as <see cref="StreamId"/> (again with a new index to switch).</summary>
 public sealed record ScreenRequestMessage(uint StreamId, int MonitorIndex) : ControlMessage;

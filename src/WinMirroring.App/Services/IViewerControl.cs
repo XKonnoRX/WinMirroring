@@ -3,7 +3,9 @@ using System.Collections.Generic;
 namespace WinMirroring.App.Services;
 
 /// <summary>One open screen view, for listing it and switching to it in the control panel.</summary>
-public sealed record OpenViewInfo(uint StreamId, string Title, string PeerId, string Kind, int MonitorIndex, int MonitorCount, bool IsActive);
+/// <param name="InputAllowed">The other device accepts control from this view.</param>
+/// <param name="InputOn">Mouse, touch and keys go to the other device (off: only watching).</param>
+public sealed record OpenViewInfo(uint StreamId, string Title, string PeerId, string Kind, int MonitorIndex, int MonitorCount, bool IsActive, bool InputAllowed, bool InputOn);
 
 /// <summary>
 /// Lets the control panel be the single place to pick what is on screen: it lists the open views, switches between
@@ -32,4 +34,7 @@ public interface IViewerControl
     void SwitchMonitor(uint streamId, int index);
 
     void ToggleKeyboard(uint streamId);
+
+    /// <summary>Control the other device from this view, or only watch it.</summary>
+    void SetViewInput(uint streamId, bool on);
 }

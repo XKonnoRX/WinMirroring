@@ -38,7 +38,7 @@ public sealed partial class MainViewModel
             return;
         }
 
-        await SetListenAsync(peer.Id, peer.Name, !_audio.IsListeningTo(peer.Id));
+        await ToggleSoundHereAsync(peer.Id, peer.Name);
     }
 
     [RelayCommand(CanExecute = nameof(SelectedIsReady))]
