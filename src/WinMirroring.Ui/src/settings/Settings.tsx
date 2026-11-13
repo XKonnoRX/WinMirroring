@@ -135,6 +135,24 @@ export function Settings() {
                 checked={state.input.adminControl}
                 onChange={(v) => void set('input.adminControl', v)}
               />
+              {state.input.adminHelper && (
+                <>
+                  <p className="note">
+                    {state.input.adminNoPrompt
+                      ? 'Помощник запускается через задание планировщика: права уже выданы, запрос больше не появляется.'
+                      : 'Сейчас права запрашиваются при каждом запуске. Можно выдать их один раз — приложение создаст задание планировщика, которое запускает помощника без запроса.'}
+                  </p>
+                  {state.input.adminNoPrompt ? (
+                    <button className="btn" onClick={() => void run('adminPrompt')}>
+                      Спрашивать права снова
+                    </button>
+                  ) : (
+                    <button className="btn btn-accent" onClick={() => void run('adminNoPrompt')}>
+                      Выдать права один раз
+                    </button>
+                  )}
+                </>
+              )}
               <p className="note">{state.input.elevationText}</p>
               <button className="btn" disabled={!state.input.canRestartElevated} onClick={() => void run('restartElevated')}>
                 Перезапустить от имени администратора

@@ -11,6 +11,10 @@ export type SettingsState = {
     smoothingText: string
     adminControl: boolean
     adminControlText: string
+    /** The helper exe ships with this build. */
+    adminHelper: boolean
+    /** A scheduled task is registered, so the helper starts without a prompt. */
+    adminNoPrompt: boolean
     elevationText: string
     canRestartElevated: boolean
   }

@@ -22,13 +22,15 @@ public sealed class SettingsUi
     private readonly MainViewModel _vm;
     private readonly FeatureHealth _health;
     private readonly UiBridge _bridge;
+    private readonly WinMirroring.Input.Injection.ElevatedInjector _adminInput;
 
-    public SettingsUi(MirroringNode node, MainViewModel vm, FeatureHealth health, UiBridge bridge)
+    public SettingsUi(MirroringNode node, MainViewModel vm, FeatureHealth health, UiBridge bridge, WinMirroring.Input.Injection.ElevatedInjector adminInput)
     {
         _node = node;
         _vm = vm;
         _health = health;
         _bridge = bridge;
+        _adminInput = adminInput;
     }
 
     public void Register()
@@ -82,6 +84,8 @@ public sealed class SettingsUi
             smoothingText = _vm.SmoothingText,
             adminControl = _vm.AdminWindowControl,
             adminControlText = _vm.AdminWindowControlText,
+            adminHelper = WinMirroring.Input.Injection.ElevatedInjector.HelperPath is not null,
+            adminNoPrompt = WinMirroring.Input.Injection.ElevatedInjector.StartsWithoutPrompting,
             elevationText = _vm.ElevationText,
             canRestartElevated = _vm.CanRestartElevated,
         },
@@ -240,6 +244,26 @@ public sealed class SettingsUi
             case "restartElevated":
                 await _vm.RestartElevatedCommand.ExecuteAsync(null);
                 break;
+
+            // Registering a scheduled task asks for administrator once and spares the prompt at every start
+            // after that; removing it asks once more and puts the prompt back.
+            case "adminNoPrompt":
+            {
+                var done = _adminInput.AllowStartingWithoutPrompting(out var problem);
+                Changed();
+                return done
+                    ? "Готово: помощник будет запускаться без запроса."
+                    : $"Не удалось настроить запуск без запроса: {problem}";
+            }
+
+            case "adminPrompt":
+            {
+                var done = _adminInput.RequirePromptAgain(out var problem);
+                Changed();
+                return done
+                    ? "Запуск без запроса отключён — права будут спрашиваться снова."
+                    : $"Не удалось убрать задание: {problem}";
+            }
 
             case "stopSource":
                 if (_vm.ScreenSources.FirstOrDefault(s => s.StreamId == call.StreamId) is { } source)

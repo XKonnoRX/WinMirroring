@@ -155,6 +155,8 @@ const sampleSettings = {
     smoothingText: '',
     adminControl: false,
     adminControlText: 'Отдельный помощник вводит мышь и клавиатуру в окна администратора.',
+    adminHelper: true,
+    adminNoPrompt: false,
     elevationText: 'WinMirroring запущен с обычными правами.',
     canRestartElevated: true,
   },

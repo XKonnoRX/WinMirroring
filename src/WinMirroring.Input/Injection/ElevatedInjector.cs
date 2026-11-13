@@ -18,7 +18,11 @@ namespace WinMirroring.Input.Injection;
 [SupportedOSPlatform("windows")]
 public sealed class ElevatedInjector : IDisposable
 {
-    private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(90);
+    /// <summary>Long enough for the user to read a UAC prompt and decide.</summary>
+    private static readonly TimeSpan PromptedConnectTimeout = TimeSpan.FromSeconds(90);
+
+    /// <summary>Through the task nobody is asked anything, so a wait this long means it is not coming.</summary>
+    private static readonly TimeSpan QuietConnectTimeout = TimeSpan.FromSeconds(25);
 
     private readonly InjectionRouter _router;
     private readonly ILogger<ElevatedInjector> _logger;
@@ -46,13 +50,47 @@ public sealed class ElevatedInjector : IDisposable
     public bool IsActive => _router.UsingRemote;
 
     /// <summary>The helper exe shipped next to the app; null when it is missing from this build.</summary>
-    public static string? HelperPath
+    public static string? HelperPath => File.Exists(InjectionPipe.HelperPath) ? InjectionPipe.HelperPath : null;
+
+    /// <summary>
+    /// Whether the helper can be started without a prompt, because a scheduled task for this build's helper is
+    /// registered. Registering it is the one-off that replaces the prompt at every start.
+    /// </summary>
+    public static bool StartsWithoutPrompting =>
+        HelperPath is { } path && ElevatedHelperTask.IsRegisteredFor(path);
+
+    /// <summary>
+    /// Sets up the scheduled task, asking for administrator once. From then on turning control of administrator
+    /// windows on — at every launch of the app, say — puts nothing on the screen.
+    /// </summary>
+    public bool AllowStartingWithoutPrompting(out string error)
     {
-        get
+        if (HelperPath is not { } path)
         {
-            var path = Path.Combine(AppContext.BaseDirectory, "WinMirroring.InputHost.exe");
-            return File.Exists(path) ? path : null;
+            error = "вспомогательная программа WinMirroring.InputHost.exe не найдена рядом с приложением";
+            return false;
         }
+
+        if (!ElevatedHelperTask.Register(path, out error))
+        {
+            _logger.LogInformation("The scheduled task for the input helper was not registered: {Error}", error);
+            return false;
+        }
+
+        _logger.LogInformation("The input helper can now start without a prompt");
+        return true;
+    }
+
+    /// <summary>Removes the task, so starting the helper asks again. Asks for administrator once.</summary>
+    public bool RequirePromptAgain(out string error)
+    {
+        var removed = ElevatedHelperTask.Unregister(out error);
+        if (removed)
+        {
+            _logger.LogInformation("The input helper will ask for administrator again");
+        }
+
+        return removed;
     }
 
     /// <summary>
@@ -75,10 +113,11 @@ public sealed class ElevatedInjector : IDisposable
 
         Cleanup();
 
-        // A random, single-instance pipe name created before the helper launches: no other process can pre-create
-        // it or guess it, and the default pipe security is limited to this user. The handshake token and the
-        // client-image check below bind the connection to exactly the helper we started.
-        var pipeName = $"WinMirroring.Inject.{Guid.NewGuid():N}";
+        // The channel has the same name every time, because the helper may be started by a scheduled task and a
+        // task carries no arguments to tell it a new one. What binds the connection is not the name but the checks
+        // at both ends: this app refuses any client that is not the helper beside it, and the helper refuses any
+        // server that is not this app. The pipe's own permissions keep it to this user to begin with.
+        var pipeName = InjectionPipe.NameForCurrentUser();
         var token = RandomNumberGeneratorToken();
         NamedPipeServerStream pipe;
         try
@@ -98,18 +137,32 @@ public sealed class ElevatedInjector : IDisposable
             _helperPath = helperPath;
         }
 
-        Process helper;
-        try
+        // Through the task first: that is the whole point of registering it, that nothing appears on the screen.
+        Process? helper = null;
+        var quietly = false;
+        if (ElevatedHelperTask.IsRegisteredFor(helperPath))
         {
-            helper = StartHelper(helperPath, pipeName, token);
+            quietly = ElevatedHelperTask.TryStart(out var taskError);
+            if (!quietly)
+            {
+                _logger.LogWarning("The scheduled task did not start the input helper ({Error}); asking for administrator instead", taskError);
+            }
         }
-        catch (System.ComponentModel.Win32Exception ex)
+
+        if (!quietly)
         {
-            // 1223 = the user declined the UAC prompt.
-            _logger.LogInformation("Elevated helper not started: {Message}", ex.Message);
-            Cleanup();
-            Report(false, ex.NativeErrorCode == 1223 ? "запуск от имени администратора отклонён" : ex.Message);
-            return false;
+            try
+            {
+                helper = StartHelper(helperPath, pipeName, token);
+            }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                // 1223 = the user declined the UAC prompt.
+                _logger.LogInformation("Elevated helper not started: {Message}", ex.Message);
+                Cleanup();
+                Report(false, ex.NativeErrorCode == 1223 ? "запуск от имени администратора отклонён" : ex.Message);
+                return false;
+            }
         }
 
         lock (_gate)
@@ -120,7 +173,7 @@ public sealed class ElevatedInjector : IDisposable
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(ConnectTimeout);
+            timeout.CancelAfter(quietly ? QuietConnectTimeout : PromptedConnectTimeout);
             await pipe.WaitForConnectionAsync(timeout.Token).ConfigureAwait(false);
 
             VerifyClient(pipe, helperPath);
@@ -143,8 +196,11 @@ public sealed class ElevatedInjector : IDisposable
 
         var sink = new RemoteInjectionSink(pipe, _logger);
         sink.Disconnected += OnSinkDisconnected;
-        helper.EnableRaisingEvents = true;
-        helper.Exited += OnHelperExited;
+        if (helper is not null)
+        {
+            helper.EnableRaisingEvents = true;
+            helper.Exited += OnHelperExited;
+        }
 
         lock (_gate)
         {
@@ -152,8 +208,13 @@ public sealed class ElevatedInjector : IDisposable
         }
 
         _router.SetRemote(sink, prefer: true);
-        _logger.LogInformation("Elevated input helper connected (pid {Pid})", helper.Id);
-        Report(true, "ввод идёт через помощника с правами администратора");
+
+        // Started through the task there is no process of ours to watch; the channel going quiet says the same
+        // thing and is what the helper's own exit shows up as anyway.
+        _logger.LogInformation("Elevated input helper connected{Quietly}", quietly ? " without a prompt" : string.Empty);
+        Report(true, quietly
+            ? "ввод идёт через помощника с правами администратора, запрос больше не появляется"
+            : "ввод идёт через помощника с правами администратора");
         return true;
     }
 
@@ -254,24 +315,16 @@ public sealed class ElevatedInjector : IDisposable
             WindowStyle = ProcessWindowStyle.Hidden,
         }) ?? throw new InvalidOperationException("the helper process did not start");
 
-    private void VerifyClient(NamedPipeServerStream pipe, string helperPath)
+    /// <summary>
+    /// Only the helper beside this app may be on the other end. This is strict: the channel's name is one that
+    /// another process of this user could work out, so a client we cannot identify is a client we refuse. What
+    /// gets routed here is every keystroke and click, so being unable to tell who is listening is reason enough.
+    /// </summary>
+    private static void VerifyClient(NamedPipeServerStream pipe, string helperPath)
     {
-        if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out var pid) || pid == 0)
+        if (!InjectionPipe.TryGetClientProcessId(pipe, out var pid) || !InjectionPipe.IsPeer(pid, helperPath))
         {
-            _logger.LogDebug("Could not read the injection client's process id; trusting the pipe ACL");
-            return;
-        }
-
-        var image = ProcessImagePath(pid);
-        if (image is null)
-        {
-            _logger.LogDebug("Could not read the injection client's image path (pid {Pid})", pid);
-            return;
-        }
-
-        if (!string.Equals(Path.GetFullPath(image), Path.GetFullPath(helperPath), StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException($"an unexpected process connected to the injection pipe: {image}");
+            throw new InvalidOperationException("an unexpected process connected to the injection pipe");
         }
     }
 
@@ -282,41 +335,5 @@ public sealed class ElevatedInjector : IDisposable
         return token;
     }
 
-    private static string? ProcessImagePath(uint pid)
-    {
-        const uint queryLimited = 0x1000;
-        var process = OpenProcess(queryLimited, false, pid);
-        if (process == 0)
-        {
-            return null;
-        }
-
-        try
-        {
-            var capacity = 1024;
-            var buffer = new char[capacity];
-            return QueryFullProcessImageNameW(process, 0, buffer, ref capacity) ? new string(buffer, 0, capacity) : null;
-        }
-        finally
-        {
-            CloseHandle(process);
-        }
-    }
-
     public void Dispose() => Cleanup();
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetNamedPipeClientProcessId(SafePipeHandle pipe, out uint clientProcessId);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern nint OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint processId);
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool QueryFullProcessImageNameW(nint process, uint flags, [Out] char[] exeName, ref int size);
-
-    [DllImport("kernel32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CloseHandle(nint handle);
 }

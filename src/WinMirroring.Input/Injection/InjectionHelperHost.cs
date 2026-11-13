@@ -1,7 +1,5 @@
 using System.IO.Pipes;
-using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
-using Microsoft.Win32.SafeHandles;
 using static WinMirroring.Input.Native.NativeMethods;
 
 namespace WinMirroring.Input.Injection;
@@ -16,21 +14,23 @@ public static class InjectionHelperHost
 {
     public static async Task<int> RunAsync(string[] args)
     {
-        var pipeName = ArgValue(args, "--inject-pipe");
+        // Started through the scheduled task there are no arguments at all — a task takes none — so the channel
+        // has the name both sides can work out for themselves, and whatever the app sends as the token is echoed
+        // back. Nothing is lost by that: what binds the two ends is each one checking the other's exe, below.
+        var pipeName = ArgValue(args, "--inject-pipe") ?? InjectionPipe.NameForCurrentUser();
         var tokenHex = ArgValue(args, "--inject-token");
-        if (pipeName is null || tokenHex is null)
-        {
-            return 2;
-        }
 
-        byte[] expectedToken;
-        try
+        byte[]? expectedToken = null;
+        if (tokenHex is not null)
         {
-            expectedToken = Convert.FromHexString(tokenHex);
-        }
-        catch (FormatException)
-        {
-            return 2;
+            try
+            {
+                expectedToken = Convert.FromHexString(tokenHex);
+            }
+            catch (FormatException)
+            {
+                return 2;
+            }
         }
 
         // Match the app's coordinate space so absolute moves land on the right pixel.
@@ -53,12 +53,12 @@ public static class InjectionHelperHost
 
         var hello = await InjectionCodec.ReadMessageAsync(pipe, CancellationToken.None).ConfigureAwait(false);
         var token = hello is null ? null : InjectionCodec.ReadHandshake(hello);
-        if (token is null || !token.AsSpan().SequenceEqual(expectedToken))
+        if (token is null || (expectedToken is not null && !token.AsSpan().SequenceEqual(expectedToken)))
         {
             return 5;
         }
 
-        await InjectionCodec.WriteMessageAsync(pipe, InjectionCodec.Handshake(expectedToken), CancellationToken.None).ConfigureAwait(false);
+        await InjectionCodec.WriteMessageAsync(pipe, InjectionCodec.Handshake(token), CancellationToken.None).ConfigureAwait(false);
 
         var sink = new TrackingInjectionSink(new LocalInjectionSink());
         try
@@ -99,57 +99,12 @@ public static class InjectionHelperHost
         return null;
     }
 
-    /// <summary>Best-effort: the pipe server should be WinMirroring.exe in the same folder as this helper.</summary>
-    private static bool VerifyServerIsOurApp(NamedPipeClientStream pipe)
-    {
-        if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out var pid) || pid == 0)
-        {
-            return true; // cannot check; the pipe ACL already limits this to our user
-        }
-
-        var image = ProcessImagePath(pid);
-        if (image is null)
-        {
-            return true;
-        }
-
-        var expected = Path.Combine(AppContext.BaseDirectory, "WinMirroring.exe");
-        return string.Equals(Path.GetFullPath(image), Path.GetFullPath(expected), StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string? ProcessImagePath(uint pid)
-    {
-        const uint queryLimited = 0x1000;
-        var process = OpenProcess(queryLimited, false, pid);
-        if (process == 0)
-        {
-            return null;
-        }
-
-        try
-        {
-            var capacity = 1024;
-            var buffer = new char[capacity];
-            return QueryFullProcessImageNameW(process, 0, buffer, ref capacity) ? new string(buffer, 0, capacity) : null;
-        }
-        finally
-        {
-            CloseHandle(process);
-        }
-    }
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint serverProcessId);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern nint OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint processId);
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool QueryFullProcessImageNameW(nint process, uint flags, [Out] char[] exeName, ref int size);
-
-    [DllImport("kernel32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CloseHandle(nint handle);
+    /// <summary>
+    /// The server has to be the app this helper was shipped next to, and nothing else. This is strict: the name of
+    /// the channel is one another process of this user could work out as easily as we do, so a server we cannot
+    /// identify is a server we refuse. Being unable to tell is itself the answer — this helper holds the power to
+    /// type into administrator windows, and it hands that to one program only.
+    /// </summary>
+    private static bool VerifyServerIsOurApp(NamedPipeClientStream pipe) =>
+        InjectionPipe.TryGetServerProcessId(pipe, out var pid) && InjectionPipe.IsPeer(pid, InjectionPipe.AppPath);
 }
