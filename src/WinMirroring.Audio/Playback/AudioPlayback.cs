@@ -14,6 +14,7 @@ internal sealed class AudioPlayback : IAsyncDisposable
     private readonly MixingSampleProvider _mixer = new(AudioFormat.Wave) { ReadFully = true };
     private readonly HashSet<ISampleProvider> _inputs = [];
     private WasapiPlayer? _player;
+    private MMDevice? _device;
 
     public AudioPlayback(ILogger logger)
     {
@@ -48,6 +49,9 @@ internal sealed class AudioPlayback : IAsyncDisposable
             try
             {
                 using var enumerator = new MMDeviceEnumerator();
+
+                // The device is kept beside the player and released with it: it holds COM references to the
+                // endpoint, and opening and closing the output many times would otherwise leave a pile of them.
                 var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
                 var player = new WasapiPlayerBuilder()
                     .WithDevice(device)
@@ -58,6 +62,7 @@ internal sealed class AudioPlayback : IAsyncDisposable
                 player.Init(new SampleToWaveProvider(_mixer));
                 player.Play();
                 _player = player;
+                _device = device;
                 _logger.LogInformation("Sound output opened on {Device} ({Latency} ms)", device.FriendlyName, player.LatencyMilliseconds);
             }
             catch (Exception ex) when (ex is COMException or InvalidOperationException or ArgumentException)
@@ -70,6 +75,7 @@ internal sealed class AudioPlayback : IAsyncDisposable
     public void Remove(ISampleProvider input)
     {
         WasapiPlayer? toStop = null;
+        MMDevice? device = null;
         lock (_gate)
         {
             if (_inputs.Remove(input))
@@ -80,23 +86,26 @@ internal sealed class AudioPlayback : IAsyncDisposable
             if (_inputs.Count == 0)
             {
                 toStop = _player;
+                device = _device;
                 _player = null;
+                _device = null;
             }
         }
 
         if (toStop is not null)
         {
-            StopPlayer(toStop);
+            StopPlayer(toStop, device);
             _logger.LogInformation("Sound output closed");
         }
     }
 
-    private void StopPlayer(WasapiPlayer player)
+    private void StopPlayer(WasapiPlayer player, MMDevice? device)
     {
         try
         {
             player.Stop();
             player.Dispose();
+            device?.Dispose();
         }
         catch (Exception ex) when (ex is COMException or InvalidOperationException)
         {
@@ -107,17 +116,20 @@ internal sealed class AudioPlayback : IAsyncDisposable
     public ValueTask DisposeAsync()
     {
         WasapiPlayer? player;
+        MMDevice? device;
         lock (_gate)
         {
             player = _player;
+            device = _device;
             _player = null;
+            _device = null;
             _inputs.Clear();
             _mixer.RemoveAllMixerInputs();
         }
 
         if (player is not null)
         {
-            StopPlayer(player);
+            StopPlayer(player, device);
         }
 
         return ValueTask.CompletedTask;

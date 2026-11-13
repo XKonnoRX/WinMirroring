@@ -26,6 +26,9 @@ internal sealed class AudioCapture : IAsyncDisposable
     private float[] _resampled = new float[4096];
     private int _frameFill;
 
+    /// <summary>Set only for the endpoint-loopback fallback, which captures from a device of its own.</summary>
+    private MMDevice? _device;
+
     private AudioCapture(WasapiRecorder recorder, bool processLoopback, ILogger logger)
     {
         _recorder = recorder;
@@ -68,9 +71,11 @@ internal sealed class AudioCapture : IAsyncDisposable
         }
 
         using var enumerator = new MMDeviceEnumerator();
+
+        // The device is kept beside the recorder and released with it: it holds COM references to the endpoint.
         var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
         var fallback = new WasapiRecorderBuilder().WithDevice(device).WithLoopbackCapture().Build();
-        return new AudioCapture(fallback, processLoopback: false, logger);
+        return new AudioCapture(fallback, processLoopback: false, logger) { _device = device };
     }
 
     public void Start()
@@ -187,5 +192,7 @@ internal sealed class AudioCapture : IAsyncDisposable
         }
 
         await _recorder.DisposeAsync().ConfigureAwait(false);
+        _device?.Dispose();
+        _device = null;
     }
 }

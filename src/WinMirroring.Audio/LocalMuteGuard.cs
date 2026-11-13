@@ -50,15 +50,17 @@ internal sealed class LocalMuteGuard
             }
 
             var muted = new List<string>();
-            ForEachRenderEndpoint((device, volume) =>
-            {
-                _previous[device.ID] = volume.Mute;
-                if (!volume.Mute)
+            ForEachRenderEndpoint(
+                (device, volume) =>
                 {
-                    volume.Mute = true;
-                    muted.Add(device.FriendlyName);
-                }
-            });
+                    _previous[device.ID] = volume.Mute;
+                    if (!volume.Mute)
+                    {
+                        volume.Mute = true;
+                        muted.Add(device.FriendlyName);
+                    }
+                },
+                onlyAudible: true);
 
             if (_previous.Count == 0)
             {
@@ -85,16 +87,25 @@ internal sealed class LocalMuteGuard
                 return;
             }
 
-            // After a crash the remembered states are gone; the flag then means "unmute everything" (best effort).
+            // After a crash the remembered states are gone; the flag then means "unmute everything" (best effort),
+            // and only then is every output looked at — otherwise just the ones this app muted.
             var known = _previous;
-            ForEachRenderEndpoint((device, volume) =>
-            {
-                var target = known.TryGetValue(device.ID, out var prior) && prior;
-                if (volume.Mute != target)
+            var repairing = known.Count == 0;
+            ForEachRenderEndpoint(
+                (device, volume) =>
                 {
-                    volume.Mute = target;
-                }
-            });
+                    if (!repairing && !known.ContainsKey(device.ID))
+                    {
+                        return;
+                    }
+
+                    var target = known.TryGetValue(device.ID, out var prior) && prior;
+                    if (volume.Mute != target)
+                    {
+                        volume.Mute = target;
+                    }
+                },
+                onlyAudible: false);
 
             _previous.Clear();
             _settings.MutedByApp = false;
@@ -103,17 +114,32 @@ internal sealed class LocalMuteGuard
         }
     }
 
-    private void ForEachRenderEndpoint(Action<MMDevice, AudioEndpointVolume> action)
+    /// <param name="onlyAudible">
+    /// Touch just the outputs sound can actually be coming out of: the default one, the one Windows uses for calls,
+    /// and any that is playing something right now. Muting every output, including an HDMI monitor that is asleep
+    /// and virtual devices, means a system-wide change nobody asked for — and every such change is announced to
+    /// every program that watches the volume, the tray's own panel among them.
+    /// </param>
+    private void ForEachRenderEndpoint(Action<MMDevice, AudioEndpointVolume> action, bool onlyAudible)
     {
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var touched = 0;
         try
         {
             using var enumerator = new MMDeviceEnumerator();
+            var wanted = onlyAudible ? Audible(enumerator) : null;
             foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
             {
                 using (device)
                 {
                     try
                     {
+                        if (wanted is not null && !wanted.Contains(device.ID))
+                        {
+                            continue;
+                        }
+
+                        touched++;
                         action(device, device.AudioEndpointVolume);
                     }
                     catch (Exception ex) when (ex is COMException or InvalidOperationException)
@@ -127,5 +153,48 @@ internal sealed class LocalMuteGuard
         {
             _logger.LogWarning(ex, "Enumerating audio outputs failed");
         }
+
+        // Windows can take its time over an endpoint; if it ever does, the log says so.
+        if (started.ElapsedMilliseconds > 400)
+        {
+            _logger.LogInformation("Working with {Count} audio output(s) took {Ms} ms", touched, started.ElapsedMilliseconds);
+        }
+    }
+
+    /// <summary>The outputs worth muting: the defaults, plus whatever is making a sound at this moment.</summary>
+    private HashSet<string> Audible(MMDeviceEnumerator enumerator)
+    {
+        var wanted = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var role in (ReadOnlySpan<Role>)[Role.Multimedia, Role.Console, Role.Communications])
+        {
+            try
+            {
+                using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, role);
+                wanted.Add(device.ID);
+            }
+            catch (Exception ex) when (ex is COMException or InvalidOperationException)
+            {
+                // No default for this role: nothing to add.
+            }
+        }
+
+        foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+        {
+            using (device)
+            {
+                try
+                {
+                    if (device.AudioMeterInformation.MasterPeakValue > 0)
+                    {
+                        wanted.Add(device.ID);
+                    }
+                }
+                catch (Exception ex) when (ex is COMException or InvalidOperationException)
+                {
+                }
+            }
+        }
+
+        return wanted;
     }
 }
