@@ -9,7 +9,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Description>WinMirroring tray application: devices, pairing and network settings.</Description>
     <!-- The auto-updater compares this to the latest GitHub release tag (vX.Y.Z). Bump it with every release. -->
-    <Version>1.0.13</Version>
+    <Version>1.0.14</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -39,6 +39,7 @@
     <PackageReference Include="H.NotifyIcon.WPF" Version="2.4.1" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.14" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.14" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
     <PackageReference Include="Serilog" Version="4.4.0" />
     <PackageReference Include="Serilog.Extensions.Logging" Version="10.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
@@ -47,6 +48,49 @@
   <ItemGroup>
     <Resource Include="Assets\app.ico" />
   </ItemGroup>
+
+  <!-- The React interface (src\WinMirroring.Ui) is built by npm and travels next to the app as wwwroot, which
+       WebView2 serves. Without npm the app still builds and runs; only the new windows are then unavailable. -->
+  <PropertyGroup>
+    <UiDirectory>$(MSBuildThisFileDirectory)..\WinMirroring.Ui</UiDirectory>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <UiSource Include="$(UiDirectory)\src\**\*" />
+    <UiSource Include="$(UiDirectory)\index.html;$(UiDirectory)\package.json;$(UiDirectory)\vite.config.ts;$(UiDirectory)\tsconfig.json" />
+  </ItemGroup>
+
+  <Target Name="BuildUi" BeforeTargets="BeforeBuild" Condition="'$(SkipUiBuild)' != 'true'"
+          Inputs="@(UiSource)" Outputs="$(UiDirectory)\dist\index.html">
+    <!-- npm comes from PATH. The usual install folder is put in front of it as well, because a shell started
+         before Node was installed still carries the old PATH, and npm's own shims need to find node. -->
+    <PropertyGroup>
+      <NpmPath>set "PATH=$(ProgramFiles)\nodejs;%PATH%" &amp;&amp;</NpmPath>
+    </PropertyGroup>
+    <Exec Command="$(NpmPath) npm.cmd ci --no-audit --no-fund" WorkingDirectory="$(UiDirectory)" ContinueOnError="true"
+          Condition="!Exists('$(UiDirectory)\node_modules')" />
+    <Exec Command="$(NpmPath) npm.cmd run build" WorkingDirectory="$(UiDirectory)" ContinueOnError="true">
+      <Output TaskParameter="ExitCode" PropertyName="UiBuildExit" />
+    </Exec>
+    <Warning Condition="'$(UiBuildExit)' != '0'"
+             Text="Интерфейс на React не собран (npm недоступен или сборка не удалась). Приложение соберётся, но окна на WebView2 будут недоступны." />
+  </Target>
+
+  <Target Name="CopyUi" AfterTargets="Build" Condition="Exists('$(UiDirectory)\dist\index.html')">
+    <ItemGroup>
+      <UiBuilt Include="$(UiDirectory)\dist\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(UiBuilt)" SkipUnchangedFiles="true"
+          DestinationFiles="@(UiBuilt->'$(OutDir)wwwroot\%(RecursiveDir)%(Filename)%(Extension)')" />
+  </Target>
+
+  <Target Name="PublishUi" AfterTargets="Publish" Condition="Exists('$(UiDirectory)\dist\index.html')">
+    <ItemGroup>
+      <UiBuiltForPublish Include="$(UiDirectory)\dist\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(UiBuiltForPublish)" SkipUnchangedFiles="true"
+          DestinationFiles="@(UiBuiltForPublish->'$(PublishDir)wwwroot\%(RecursiveDir)%(Filename)%(Extension)')" />
+  </Target>
 
   <!-- The update script travels with every build, so any device can update itself from a copied build folder. -->
   <ItemGroup>

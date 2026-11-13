@@ -91,7 +91,9 @@ public sealed partial class InputSharingService : IAsyncDisposable
         get
         {
             var set = Screen.MonitorCatalog.Current;
-            return set.ForLayout.Select(m => new LayoutMonitor(m.Key, set.Describe(m), m.Primary)).ToList();
+            return set.ForLayout
+                .Select(m => new LayoutMonitor(m.Key, set.Describe(m), m.Primary, m.Bounds.Width, m.Bounds.Height))
+                .ToList();
         }
     }
 

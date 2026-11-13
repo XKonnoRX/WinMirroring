@@ -29,6 +29,14 @@ TestResults/
 *.coverage
 *.coveragexml
 
+## Claude Code's own folder; the dev-server entry is worth keeping
+.claude/*
+!.claude/launch.json
+
+## React interface (src/WinMirroring.Ui): dependencies and the build, both produced by npm
+node_modules/
+src/WinMirroring.Ui/dist/
+
 ## Misc
 *.log
 *.tmp

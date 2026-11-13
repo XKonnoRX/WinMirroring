@@ -21,6 +21,13 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      # The React interface (src/WinMirroring.Ui) is built by the app's project file and shipped as wwwroot.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+          cache-dependency-path: src/WinMirroring.Ui/package-lock.json
+
       - name: Publish (self-contained win-x64)
         run: dotnet publish src/WinMirroring.App/WinMirroring.App.csproj -c Release -r win-x64 --self-contained -o publish
 

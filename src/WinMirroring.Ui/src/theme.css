@@ -1,0 +1,205 @@
+/*
+ * The look: deep, near-black surfaces and one bright accent, the way Discord and Steam's Big Picture do it —
+ * large targets that work under a finger, a clear glow on whatever is focused or being moved, and movement that
+ * is quick but never instant.
+ */
+
+:root {
+  --bg-deep: #090b0f;
+  --bg: #0e1116;
+  --surface: #151a21;
+  --surface-raised: #1c222c;
+  --surface-hover: #232b37;
+  --border: #252d3a;
+  --border-bright: #36415230;
+
+  --text: #e7ebf2;
+  --text-dim: #9aa6b6;
+  --text-faint: #697385;
+
+  --accent: #5b6cff;
+  --accent-bright: #7c89ff;
+  --accent-deep: #3b49c7;
+  --accent-glow: #5b6cff59;
+
+  --good: #2fbf71;
+  --warn: #f5a524;
+  --bad: #e5484d;
+
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: 0 10px 30px #00000066;
+  --shadow-lift: 0 18px 48px #000000a6;
+
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+  /* A touch device must not rubber-band or zoom the whole page: the canvas does its own panning. */
+  overscroll-behavior: none;
+  touch-action: none;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-family: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+/* ---- shared pieces ---------------------------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 18px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background 140ms var(--ease), border-color 140ms var(--ease), transform 140ms var(--ease),
+    box-shadow 140ms var(--ease);
+}
+
+.btn:hover {
+  background: var(--surface-hover);
+  border-color: #3a4556;
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+  transform: none;
+}
+
+.btn-accent {
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-deep) 100%);
+  border-color: #6f7cff;
+  box-shadow: 0 6px 18px var(--accent-glow);
+}
+
+.btn-accent:hover {
+  background: linear-gradient(180deg, var(--accent-bright) 0%, var(--accent) 100%);
+  border-color: #8f99ff;
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-dim);
+}
+
+.btn-ghost:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.btn-icon {
+  min-width: 42px;
+  padding: 0 10px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #ffffff0f;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.chip-accent {
+  background: #5b6cff26;
+  color: var(--accent-bright);
+}
+
+.chip-good {
+  background: #2fbf7126;
+  color: #6ee7a8;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex: none;
+}
+
+.dot-on {
+  background: var(--good);
+  box-shadow: 0 0 8px #2fbf71aa;
+}
+
+/* The scrollbars Windows draws are too pale on this background. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2b3442;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3a4556;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+  }
+}

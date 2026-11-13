@@ -156,6 +156,14 @@ public partial class App : Application
             peerFiles.Notify = (title, text) => Dispatcher.BeginInvoke(() => ShowNotification(title, text));
             peerFiles.Start();
         });
+        health.Start("Окна на WebView2", () =>
+        {
+            _services.GetRequiredService<LayoutUi>().Register();
+            if (!Views.WebWindow.IsAvailable)
+            {
+                throw new InvalidOperationException($"нет собранного интерфейса в {Views.WebWindow.RootDirectory}");
+            }
+        });
         health.Start("Перетаскивание файлов", () =>
         {
             // Started regardless: it also hands dragged windows over. Only the file part needs the OLE surface.
@@ -439,6 +447,8 @@ public partial class App : Application
         services.AddSingleton<ButtonBarService>();
         services.AddSingleton<DeviceInfoService>();
         services.AddSingleton<PeerFilesService>();
+        services.AddSingleton<UiBridge>();
+        services.AddSingleton<LayoutUi>();
         services.AddSingleton<MainViewModel>();
         return services.BuildServiceProvider();
     }
@@ -716,6 +726,38 @@ public partial class App : Application
 
     private Views.ButtonPresetsWindow? _buttonEditor;
 
+    private Views.WebWindow? _layoutWindow;
+
+    /// <summary>The layout as a field to arrange devices and monitors on (a React page in WebView2).</summary>
+    public void ShowLayoutEditor()
+    {
+        if (_services is null)
+        {
+            return;
+        }
+
+        if (_layoutWindow is { IsLoaded: true } open)
+        {
+            open.Activate();
+            return;
+        }
+
+        if (!Views.WebWindow.IsAvailable)
+        {
+            MessageBox.Show(
+                "Новое окно раскладки не установлено вместе с приложением. Обновитесь до свежей сборки.",
+                "WinMirroring",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        _layoutWindow = new Views.WebWindow(_services.GetRequiredService<UiBridge>(), "layout", "WinMirroring — раскладка экранов");
+        _layoutWindow.Closed += (_, _) => _layoutWindow = null;
+        _layoutWindow.Show();
+        _layoutWindow.Activate();
+    }
+
     public async Task ExitAsync()
     {
         if (_exiting)
@@ -773,7 +815,7 @@ public partial class App : Application
 
     private void CloseWindows()
     {
-        var windows = new List<Window?> { _fileTransfer, _controlPanel, _floatingMenu, _buttonEditor };
+        var windows = new List<Window?> { _fileTransfer, _controlPanel, _floatingMenu, _buttonEditor, _layoutWindow };
         windows.AddRange(_openViewers);
         _mainWindow?.AllowClose();
         windows.Add(_mainWindow);

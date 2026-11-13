@@ -103,7 +103,8 @@ public sealed record InputMonitorsMessage(List<LayoutMonitor> Monitors, bool IsR
 
 /// <param name="Key">Stable name of the monitor on its device (its display device name).</param>
 /// <param name="Label">How to show it, e.g. "Монитор 2 · 1920×1080 · справа".</param>
-public sealed record LayoutMonitor(string Key, string Label, bool Primary);
+/// <param name="Width">Its size in pixels, so the layout editor can draw it with its own proportions (0: unknown).</param>
+public sealed record LayoutMonitor(string Key, string Label, bool Primary, int Width = 0, int Height = 0);
 
 /// <summary>
 /// Sender → receiver: an audio stream begins. Packets arrive over UDP at the receiver's transport port, sealed with

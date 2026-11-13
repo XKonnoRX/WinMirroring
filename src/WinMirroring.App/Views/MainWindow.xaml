@@ -92,6 +92,13 @@
           <TextBlock DockPanel.Dock="Top" Style="{StaticResource SectionTitle}" Text="Расположение экранов" />
           <TextBlock DockPanel.Dock="Top" Style="{StaticResource Caption}" Margin="0,0,0,10"
                      Text="Расставьте устройства по сетке так, как стоят их экраны. Курсор уходит через край экрана к соседу по сетке и возвращается тем же путём. У устройства с несколькими мониторами можно поставить каждый монитор в свою ячейку: тогда переход идёт с края именно этого монитора и на него же возвращается (между своими мониторами курсор ходит так, как они расставлены в Windows). Монитор без своей ячейки относится к ячейке «все мониторы» этого устройства, а если её нет, с него курсор никуда не уходит. Раскладка рассылается всем сопряжённым устройствам, последняя сохранённая побеждает." />
+          <Border DockPanel.Dock="Top" Margin="0,0,0,10" Padding="12,10" CornerRadius="6" Background="#111827">
+            <DockPanel>
+              <Button DockPanel.Dock="Right" Content="Открыть поле раскладки" FontWeight="SemiBold" Click="OnOpenLayoutField" />
+              <TextBlock VerticalAlignment="Center" Foreground="#D1D5DB" TextWrapping="Wrap" Margin="0,0,12,0"
+                         Text="Новое окно: устройства и мониторы расставляются перетаскиванием на поле, которое можно двигать и масштабировать. Сетка ниже — прежний способ, она делает то же самое." />
+            </DockPanel>
+          </Border>
           <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,10,0,0">
             <Button Content="Сохранить раскладку" FontWeight="SemiBold" Command="{Binding SaveLayoutCommand}" />
             <Button Content="Вернуть ввод сюда" Command="{Binding ReturnHomeCommand}" />
