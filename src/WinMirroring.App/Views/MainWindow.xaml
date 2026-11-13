@@ -91,7 +91,7 @@
         <DockPanel Margin="8">
           <TextBlock DockPanel.Dock="Top" Style="{StaticResource SectionTitle}" Text="Расположение экранов" />
           <TextBlock DockPanel.Dock="Top" Style="{StaticResource Caption}" Margin="0,0,0,10"
-                     Text="Расставьте устройства по сетке так, как стоят их экраны. Курсор уходит через край экрана к соседу по сетке и возвращается тем же путём. Раскладка рассылается всем сопряжённым устройствам, последняя сохранённая побеждает." />
+                     Text="Расставьте устройства по сетке так, как стоят их экраны. Курсор уходит через край экрана к соседу по сетке и возвращается тем же путём. У устройства с несколькими мониторами можно поставить каждый монитор в свою ячейку: тогда переход идёт с края именно этого монитора и на него же возвращается (между своими мониторами курсор ходит так, как они расставлены в Windows). Монитор без своей ячейки относится к ячейке «все мониторы» этого устройства, а если её нет, с него курсор никуда не уходит. Раскладка рассылается всем сопряжённым устройствам, последняя сохранённая побеждает." />
           <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,10,0,0">
             <Button Content="Сохранить раскладку" FontWeight="SemiBold" Command="{Binding SaveLayoutCommand}" />
             <Button Content="Вернуть ввод сюда" Command="{Binding ReturnHomeCommand}" />
@@ -100,19 +100,20 @@
           <ItemsControl ItemsSource="{Binding LayoutCells}" HorizontalAlignment="Left" VerticalAlignment="Top">
             <ItemsControl.ItemsPanel>
               <ItemsPanelTemplate>
-                <UniformGrid Columns="3" Rows="3" />
+                <UniformGrid Columns="4" Rows="3" />
               </ItemsPanelTemplate>
             </ItemsControl.ItemsPanel>
             <ItemsControl.ItemTemplate>
               <DataTemplate>
-                <Border Width="200" Height="104" Margin="4" BorderBrush="#D1D5DB" BorderThickness="1" CornerRadius="6" Background="{StaticResource PanelBrush}">
-                  <StackPanel VerticalAlignment="Center" Margin="10">
+                <Border Width="196" Height="96" Margin="4" BorderBrush="#D1D5DB" BorderThickness="1" CornerRadius="6" Background="{StaticResource PanelBrush}">
+                  <StackPanel VerticalAlignment="Center" Margin="8">
                     <TextBlock Style="{StaticResource Caption}" HorizontalAlignment="Center">
                       <Run Text="колонка" /> <Run Text="{Binding Column, Mode=OneWay}" /><Run Text=", ряд" /> <Run Text="{Binding Row, Mode=OneWay}" />
                     </TextBlock>
                     <ComboBox Margin="0,6,0,0"
-                              ItemsSource="{Binding DataContext.DeviceChoices, RelativeSource={RelativeSource AncestorType=Window}}"
+                              ItemsSource="{Binding DataContext.LayoutChoices, RelativeSource={RelativeSource AncestorType=Window}}"
                               DisplayMemberPath="Name"
+                              ToolTip="{Binding Selected.Name}"
                               SelectedItem="{Binding Selected}" />
                   </StackPanel>
                 </Border>

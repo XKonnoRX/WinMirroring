@@ -19,7 +19,8 @@ namespace WinMirroring.App.ViewModels;
 
 public sealed partial class MainViewModel : ObservableObject
 {
-    private const int GridSize = 3;
+    private const int GridColumns = 4;
+    private const int GridRows = 3;
 
     private readonly MirroringNode _node;
     private readonly InputSharingService _input;
@@ -27,6 +28,9 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly Dispatcher _dispatcher;
     private readonly Dictionary<string, DeviceChoice> _choicesById = new(StringComparer.Ordinal);
     private readonly DeviceChoice _noDevice = new(string.Empty, "—");
+
+    /// <summary>Layout entries by (device, monitor key or "" for the whole device).</summary>
+    private readonly Dictionary<(string Id, string Monitor), DeviceChoice> _layoutChoices = [];
     private readonly DispatcherTimer _statsTimer;
     private readonly bool _initialized;
 
@@ -73,10 +77,11 @@ public sealed partial class MainViewModel : ObservableObject
         }
 
         DeviceChoices.Add(_noDevice);
+        LayoutChoices.Add(_noDevice);
         EnsureChoice(node.Identity.Id, $"{node.Settings.DeviceName} (это устройство)");
-        for (var row = 0; row < GridSize; row++)
+        for (var row = 0; row < GridRows; row++)
         {
-            for (var column = 0; column < GridSize; column++)
+            for (var column = 0; column < GridColumns; column++)
             {
                 LayoutCells.Add(new LayoutCellViewModel(column, row) { Selected = _noDevice });
             }
@@ -87,12 +92,14 @@ public sealed partial class MainViewModel : ObservableObject
             Upsert(peer);
         }
 
+        RefreshLayoutChoices();
         LoadLayout();
         UpdateInputFocus(input.RemoteTargetId);
 
         node.Peers.Changed += OnPeerChanged;
         input.FocusChanged += peerId => _dispatcher.InvokeAsync(() => UpdateInputFocus(peerId));
         input.LayoutChanged += () => _dispatcher.InvokeAsync(LoadLayout);
+        input.MonitorsChanged += () => _dispatcher.InvokeAsync(RefreshLayoutChoices);
 
         LoadInterfaces();
         UpdateStatus();
@@ -116,6 +123,9 @@ public sealed partial class MainViewModel : ObservableObject
     public ObservableCollection<DeviceChoice> DeviceChoices { get; } = [];
 
     public ObservableCollection<LayoutCellViewModel> LayoutCells { get; } = [];
+
+    /// <summary>What a layout cell can hold: a device as a whole, or one monitor of a device with several.</summary>
+    public ObservableCollection<DeviceChoice> LayoutChoices { get; } = [];
 
     public string DeviceId { get; }
 
@@ -278,22 +288,80 @@ public sealed partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void SaveLayout()
     {
-        var cells = LayoutCells
-            .Where(c => c.Selected is { IsEmpty: false })
-            .Select(c => new LayoutCell(c.Selected!.Id, c.Column, c.Row))
+        var chosen = LayoutCells.Where(c => c.Selected is { IsEmpty: false }).ToList();
+        var duplicates = chosen
+            .GroupBy(c => (c.Selected!.Id, c.Selected.Monitor))
+            .Where(g => g.Count() > 1)
+            .Select(g => g.First().Selected!.Name)
             .ToList();
-
-        var duplicates = cells.GroupBy(c => c.DeviceId).Where(g => g.Count() > 1).Select(g => _choicesById[g.Key].Name).ToList();
         if (duplicates.Count > 0)
         {
-            StatusText = $"Устройство не может стоять в двух ячейках: {string.Join(", ", duplicates)}.";
+            StatusText = $"Одно и то же не может стоять в двух ячейках: {string.Join(", ", duplicates)}.";
             return;
         }
 
+        var cells = chosen.Select(c => new LayoutCell(c.Selected!.Id, c.Column, c.Row, c.Selected.Monitor)).ToList();
         _input.ApplyLayout(cells);
         StatusText = cells.Any(c => c.DeviceId == _node.Identity.Id)
             ? "Раскладка сохранена и отправлена сопряжённым устройствам."
             : "Раскладка сохранена, но это устройство в ней не стоит: его курсор никуда не перейдёт.";
+    }
+
+    /// <summary>
+    /// Keeps the layout entries in step with the devices and their monitors: each device as a whole and, for a device
+    /// with several monitors, each monitor on its own. Entries still placed in a cell are kept even when their
+    /// monitor is not reported right now (the device is offline, say).
+    /// </summary>
+    private void RefreshLayoutChoices()
+    {
+        var inUse = LayoutCells.Select(c => c.Selected).Where(c => c is { IsEmpty: false }).ToHashSet();
+        foreach (var (id, device) in _choicesById.ToList())
+        {
+            var monitors = id == _node.Identity.Id ? _input.LocalMonitors : _input.PeerMonitors(id);
+            var several = monitors.Count > 1;
+            EnsureLayoutChoice(id, null).Name = several ? $"{device.Name} — все мониторы" : device.Name;
+
+            var reported = several ? monitors.Select(m => m.Key).ToHashSet(StringComparer.Ordinal) : [];
+            foreach (var monitor in several ? monitors : [])
+            {
+                EnsureLayoutChoice(id, monitor.Key).Name = $"{device.Name} · {monitor.Label}";
+            }
+
+            foreach (var ((choiceId, key), choice) in _layoutChoices.ToList())
+            {
+                if (choiceId == id && key.Length > 0 && !reported.Contains(key) && !inUse.Contains(choice))
+                {
+                    _layoutChoices.Remove((choiceId, key));
+                    LayoutChoices.Remove(choice);
+                }
+            }
+        }
+    }
+
+    private DeviceChoice EnsureLayoutChoice(string id, string? monitor)
+    {
+        var key = (id, monitor ?? string.Empty);
+        if (_layoutChoices.TryGetValue(key, out var existing))
+        {
+            return existing;
+        }
+
+        var deviceName = _choicesById.TryGetValue(id, out var device) ? device.Name : id[..Math.Min(8, id.Length)];
+        var choice = new DeviceChoice(id, monitor is null ? deviceName : $"{deviceName} · монитор {monitor.TrimStart('\\', '.')}", monitor);
+        _layoutChoices[key] = choice;
+
+        // Grouped by device: after that device's last entry, or at the end.
+        var last = LayoutChoices.Select((c, i) => (c, i)).LastOrDefault(x => x.c.Id == id);
+        if (last.c is null)
+        {
+            LayoutChoices.Add(choice);
+        }
+        else
+        {
+            LayoutChoices.Insert(last.i + 1, choice);
+        }
+
+        return choice;
     }
 
     [RelayCommand]
@@ -351,8 +419,15 @@ public sealed partial class MainViewModel : ObservableObject
         foreach (var cell in LayoutCells)
         {
             var match = layout.Cells.FirstOrDefault(c => c.Column == cell.Column && c.Row == cell.Row);
-            cell.Selected = match is null ? _noDevice : EnsureChoice(match.DeviceId, null);
+            if (match is not null)
+            {
+                EnsureChoice(match.DeviceId, null);
+            }
+
+            cell.Selected = match is null ? _noDevice : EnsureLayoutChoice(match.DeviceId, match.Monitor);
         }
+
+        RefreshLayoutChoices();
     }
 
     private DeviceChoice EnsureChoice(string id, string? name)
@@ -530,6 +605,11 @@ public sealed partial class MainViewModel : ObservableObject
         }
 
         EnsureChoice(info.Id, info.Name);
+        if (_initialized)
+        {
+            RefreshLayoutChoices();
+        }
+
         RefreshPeerCommands();
     }
 

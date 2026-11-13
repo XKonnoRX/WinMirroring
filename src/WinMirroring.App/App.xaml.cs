@@ -124,6 +124,9 @@ public partial class App : Application
         health.Start("Общий ввод", () =>
         {
             input.Start();
+
+            // Monitors plugged in, removed or rearranged: the layout's per-monitor cells and edges follow at once.
+            Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (_, _) => input.RefreshMonitors();
             input.RemoteInputBlocked += (peer, window) => Dispatcher.BeginInvoke(() => ShowNotification(
                 $"{peer}: окно администратора не принимает ввод",
                 $"«{(window.Length > 0 ? window : "Окно")}» запущено с правами администратора, и Windows не пропускает в него ввод с другого устройства. " +

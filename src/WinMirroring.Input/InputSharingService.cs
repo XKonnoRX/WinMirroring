@@ -41,6 +41,9 @@ public sealed partial class InputSharingService : IAsyncDisposable
     private readonly InputInjector _injector = new();
     private readonly RemoteCursorPlayer _player;
     private readonly ConcurrentDictionary<string, ControlledState> _controllers = new(StringComparer.Ordinal);
+
+    /// <summary>Monitors each connected device announced; a device in here also understands crossings onto a monitor.</summary>
+    private readonly ConcurrentDictionary<string, IReadOnlyList<LayoutMonitor>> _peerMonitors = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _cts = new();
     private int _disposed;
 
@@ -78,6 +81,55 @@ public sealed partial class InputSharingService : IAsyncDisposable
     public event Action<string?>? FocusChanged;
 
     public event Action? LayoutChanged;
+
+    /// <summary>This device's or a connected device's monitors changed (or became known).</summary>
+    public event Action? MonitorsChanged;
+
+    /// <summary>This device's monitors as they can be placed in the layout (the virtual monitor is not one of them).</summary>
+    public IReadOnlyList<LayoutMonitor> LocalMonitors
+    {
+        get
+        {
+            var set = Screen.MonitorCatalog.Current;
+            return set.ForLayout.Select(m => new LayoutMonitor(m.Key, set.Describe(m), m.Primary)).ToList();
+        }
+    }
+
+    /// <summary>The monitors <paramref name="peerId"/> announced; empty for an older device or one not connected.</summary>
+    public IReadOnlyList<LayoutMonitor> PeerMonitors(string peerId) =>
+        _peerMonitors.TryGetValue(peerId, out var monitors) ? monitors : [];
+
+    /// <summary>Re-reads this device's monitors now (after a display change) and tells the other devices if they changed.</summary>
+    public void RefreshMonitors() => Screen.MonitorCatalog.Refresh();
+
+    /// <summary>The catalog notices a change on whichever thread asks it (the hook thread, say): act elsewhere.</summary>
+    private void OnMonitorCatalogChanged() => _ = Task.Run(OnLocalMonitorsChanged);
+
+    private void OnLocalMonitorsChanged()
+    {
+        _logger.LogInformation("Monitors changed: {Monitors}", string.Join(", ", LocalMonitors.Select(m => m.Label)));
+        foreach (var session in _node.Sessions.Sessions)
+        {
+            if (session.State == SessionState.Ready)
+            {
+                _ = SendMonitorsAsync(session, isReply: true);
+            }
+        }
+
+        MonitorsChanged?.Invoke();
+    }
+
+    private async Task SendMonitorsAsync(PeerSession session, bool isReply)
+    {
+        try
+        {
+            await session.SendControlAsync(new InputMonitorsMessage(LocalMonitors.ToList(), isReply), _cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Monitor list not sent to {Peer}", session.PeerName);
+        }
+    }
 
     /// <summary>Raised with the peer id that starts controlling this device, or null when it stops.</summary>
     public event Action<string?>? ControlledByChanged;
@@ -150,6 +202,7 @@ public sealed partial class InputSharingService : IAsyncDisposable
     {
         _node.Sessions.SessionReady += OnSessionReady;
         _node.Sessions.SessionClosed += OnSessionClosed;
+        Screen.MonitorCatalog.Changed += OnMonitorCatalogChanged;
         foreach (var session in _node.Sessions.Sessions)
         {
             if (session.State == SessionState.Ready)
@@ -300,11 +353,19 @@ public sealed partial class InputSharingService : IAsyncDisposable
         {
             _ = SendLayoutAsync(session);
         }
+
+        // Asked, not just told: its own list may have arrived before this handler was attached, so it answers.
+        _ = SendMonitorsAsync(session, isReply: false);
     }
 
     private void OnSessionClosed(PeerSession session)
     {
         session.ControlMessageReceived -= OnControlMessage;
+        if (_peerMonitors.TryRemove(session.PeerId, out _))
+        {
+            MonitorsChanged?.Invoke();
+        }
+
         if (_controllers.TryRemove(session.PeerId, out var state))
         {
             ReleaseControl(session, state, "session closed");
@@ -328,6 +389,17 @@ public sealed partial class InputSharingService : IAsyncDisposable
 
             case KeyboardLayoutMessage keyboard:
                 OnKeyboardLayoutMessage(session, keyboard);
+                return;
+
+            case InputMonitorsMessage monitors:
+                _peerMonitors[session.PeerId] = monitors.Monitors;
+                _logger.LogInformation("{Peer} has {Count} monitor(s): {Monitors}", session.PeerName, monitors.Monitors.Count, string.Join(", ", monitors.Monitors.Select(m => m.Label)));
+                if (!monitors.IsReply)
+                {
+                    _ = SendMonitorsAsync(session, isReply: true);
+                }
+
+                MonitorsChanged?.Invoke();
                 return;
 
             case not LayoutMessage:
@@ -376,6 +448,7 @@ public sealed partial class InputSharingService : IAsyncDisposable
 
         _node.Sessions.SessionReady -= OnSessionReady;
         _node.Sessions.SessionClosed -= OnSessionClosed;
+        Screen.MonitorCatalog.Changed -= OnMonitorCatalogChanged;
 
         _commands.Writer.TryComplete();
         await _cts.CancelAsync().ConfigureAwait(false);

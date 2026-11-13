@@ -1,7 +1,13 @@
 namespace WinMirroring.Core.Settings;
 
-/// <summary>Where a device sits on the shared grid. Neighbouring cells share an edge the cursor can cross.</summary>
-public sealed record LayoutCell(string DeviceId, int Column, int Row);
+/// <summary>
+/// Where a device sits on the shared grid. Neighbouring cells share an edge the cursor can cross.
+/// </summary>
+/// <param name="Monitor">
+/// One monitor of a device with several (its key, see <c>LayoutMonitor.Key</c>): crossings start and end on that
+/// monitor's edges. Null: the device as a whole (all its monitors not placed on their own).
+/// </param>
+public sealed record LayoutCell(string DeviceId, int Column, int Row, string? Monitor = null);
 
 public sealed class InputSettings
 {

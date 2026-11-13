@@ -33,6 +33,18 @@ public enum InputEventKind : byte
 
     /// <summary>Both directions while control is active: proves the link is alive when nothing else is sent.</summary>
     Alive = 8,
+
+    /// <summary>
+    /// <see cref="Enter"/> onto one monitor of the controlled device (<see cref="InputEvent.Monitor"/>). Sent only to
+    /// devices that announced their monitors, so older ones never see it.
+    /// </summary>
+    EnterOnMonitor = 9,
+
+    /// <summary>
+    /// <see cref="EdgeReached"/> saying which monitor the cursor leaves, with the position along that monitor's edge
+    /// and along the whole desktop's edge (<see cref="InputEvent.RelativeToScreen"/>).
+    /// </summary>
+    EdgeReachedOnMonitor = 10,
 }
 
 /// <summary>One decoded event. Fields that do not apply to <see cref="Kind"/> are zero.</summary>
@@ -51,7 +63,14 @@ public readonly record struct InputEvent(
     bool Extended,
     Edge Edge,
     float Relative,
-    bool AtCenter);
+    bool AtCenter)
+{
+    /// <summary>Position along the edge of the device's whole desktop (EdgeReached kinds); equals <see cref="Relative"/> for the plain kinds.</summary>
+    public float RelativeToScreen { get; init; }
+
+    /// <summary>The monitor (its key) for the "on monitor" kinds, else null.</summary>
+    public string? Monitor { get; init; }
+}
 
 /// <summary>
 /// Little-endian binary encoding for the Input channel. A frame holds one or more events back to back;
@@ -110,6 +129,29 @@ public static class InputCodec
 
     public static void WriteEdgeReached(IBufferWriter<byte> writer, Edge edge, float relative) =>
         WriteEdge(writer, InputEventKind.EdgeReached, (byte)edge, relative);
+
+    public static void WriteEnterOnMonitor(IBufferWriter<byte> writer, Edge edge, float relative, string monitor) =>
+        WriteEdgeOnMonitor(writer, InputEventKind.EnterOnMonitor, edge, relative, relative, monitor);
+
+    public static void WriteEdgeReachedOnMonitor(IBufferWriter<byte> writer, Edge edge, float relative, float relativeToScreen, string monitor) =>
+        WriteEdgeOnMonitor(writer, InputEventKind.EdgeReachedOnMonitor, edge, relative, relativeToScreen, monitor);
+
+    /// <summary>kind, edge, relative (f32), relative to the whole desktop (f32), key length, key (UTF-8, at most 64 bytes).</summary>
+    private static void WriteEdgeOnMonitor(IBufferWriter<byte> writer, InputEventKind kind, Edge edge, float relative, float relativeToScreen, string monitor)
+    {
+        var key = System.Text.Encoding.UTF8.GetBytes(monitor);
+        var length = Math.Min(key.Length, MaxMonitorKeyBytes);
+        var span = writer.GetSpan(11 + length);
+        span[0] = (byte)kind;
+        span[1] = (byte)edge;
+        BinaryPrimitives.WriteSingleLittleEndian(span[2..], relative);
+        BinaryPrimitives.WriteSingleLittleEndian(span[6..], relativeToScreen);
+        span[10] = (byte)length;
+        key.AsSpan(0, length).CopyTo(span[11..]);
+        writer.Advance(11 + length);
+    }
+
+    private const int MaxMonitorKeyBytes = 64;
 
     public static void WriteLeave(IBufferWriter<byte> writer) => WriteKind(writer, InputEventKind.Leave);
 
@@ -174,8 +216,22 @@ public static class InputCodec
             case InputEventKind.Enter or InputEventKind.EdgeReached when data.Length >= 6:
                 var atCenter = kind == InputEventKind.Enter && data[1] == CenterMarker;
                 var edge = data[1] <= (byte)Edge.Bottom ? (Edge)data[1] : Edge.Left;
-                evt = new InputEvent { Kind = kind, Edge = edge, Relative = BinaryPrimitives.ReadSingleLittleEndian(data[2..]), AtCenter = atCenter };
+                var relative = BinaryPrimitives.ReadSingleLittleEndian(data[2..]);
+                evt = new InputEvent { Kind = kind, Edge = edge, Relative = relative, AtCenter = atCenter, RelativeToScreen = relative };
                 consumed = 6;
+                return true;
+
+            case InputEventKind.EnterOnMonitor or InputEventKind.EdgeReachedOnMonitor when data.Length >= 11 && data.Length >= 11 + data[10]:
+                var keyLength = data[10];
+                evt = new InputEvent
+                {
+                    Kind = kind,
+                    Edge = data[1] <= (byte)Edge.Bottom ? (Edge)data[1] : Edge.Left,
+                    Relative = BinaryPrimitives.ReadSingleLittleEndian(data[2..]),
+                    RelativeToScreen = BinaryPrimitives.ReadSingleLittleEndian(data[6..]),
+                    Monitor = System.Text.Encoding.UTF8.GetString(data.Slice(11, keyLength)),
+                };
+                consumed = 11 + keyLength;
                 return true;
 
             case InputEventKind.Leave or InputEventKind.Alive:

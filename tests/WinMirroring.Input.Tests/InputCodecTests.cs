@@ -35,6 +35,36 @@ public class InputCodecTests
     }
 
     [Fact]
+    public void MonitorEventsCarryTheMonitorAndBothPositions()
+    {
+        var writer = new ArrayBufferWriter<byte>();
+        InputCodec.WriteEnterOnMonitor(writer, Edge.Left, 0.3f, @"\\.\DISPLAY2");
+        InputCodec.WriteEdgeReachedOnMonitor(writer, Edge.Top, 0.75f, 0.4f, @"\\.\DISPLAY1");
+        InputCodec.WriteEdgeReached(writer, Edge.Bottom, 0.6f);
+        InputCodec.WriteAlive(writer);
+
+        var events = ReadAll(writer.WrittenSpan);
+
+        Assert.Equal(4, events.Count);
+        Assert.Equal((InputEventKind.EnterOnMonitor, Edge.Left, 0.3f, @"\\.\DISPLAY2", false), (events[0].Kind, events[0].Edge, events[0].Relative, events[0].Monitor, events[0].AtCenter));
+        Assert.Equal((InputEventKind.EdgeReachedOnMonitor, Edge.Top, 0.75f, 0.4f, @"\\.\DISPLAY1"), (events[1].Kind, events[1].Edge, events[1].Relative, events[1].RelativeToScreen, events[1].Monitor));
+
+        // The plain event from an older device: no monitor, and its position is along the whole desktop.
+        Assert.Equal((InputEventKind.EdgeReached, 0.6f, 0.6f, (string?)null), (events[2].Kind, events[2].Relative, events[2].RelativeToScreen, events[2].Monitor));
+    }
+
+    [Fact]
+    public void ATruncatedMonitorEventIsNotRead()
+    {
+        var frame = InputCodec.Single(w => InputCodec.WriteEnterOnMonitor(w, Edge.Right, 0.5f, "MON"));
+
+        Assert.False(InputCodec.TryRead(frame.AsSpan(0, frame.Length - 1), out _, out _));
+        Assert.True(InputCodec.TryRead(frame, out var evt, out var consumed));
+        Assert.Equal(frame.Length, consumed);
+        Assert.Equal("MON", evt.Monitor);
+    }
+
+    [Fact]
     public void MouseMoveClampsToInt16()
     {
         var writer = new ArrayBufferWriter<byte>();

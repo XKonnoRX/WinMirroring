@@ -7,6 +7,13 @@ using WinMirroring.Input.Timing;
 
 namespace WinMirroring.Input.Injection;
 
+/// <summary>The cursor is pushed out across an edge of the monitor it is on (where no other monitor continues).</summary>
+/// <param name="Relative">Along that monitor's edge.</param>
+/// <param name="RelativeToScreen">Along the edge of the whole desktop.</param>
+/// <param name="Monitor">That monitor's key.</param>
+/// <param name="At">Where the cursor stopped.</param>
+internal readonly record struct PlayerEdge(Edge Edge, float Relative, float RelativeToScreen, string Monitor, Point At);
+
 /// <summary>
 /// Drives the local cursor on behalf of a remote controller.
 /// <list type="bullet">
@@ -61,7 +68,7 @@ internal sealed class RemoteCursorPlayer : IDisposable
     }
 
     /// <summary>Raised (under the player lock, keep it short) when the cursor is pushed out across an edge.</summary>
-    public event Action<object, Edge, float>? EdgeReached;
+    public event Action<object, PlayerEdge>? EdgeReached;
 
     /// <summary>Raised (off the player lock, at most every 10 s) when an elevated window swallows our input.</summary>
     public event Action<object, string>? InjectionBlocked;
@@ -264,31 +271,44 @@ internal sealed class RemoteCursorPlayer : IDisposable
             }
         }
 
-        var screen = VirtualScreen.Current;
+        // Stay on the monitors: a move that would leave every monitor stops at the edge of the one the cursor is on
+        // (with monitors of different sizes the desktop's bounding box has corners where no monitor is).
+        var monitors = MonitorCatalog.Current;
         var wantedX = (long)_tracked.X + dx;
         var wantedY = (long)_tracked.Y + dy;
-        var x = (int)Math.Clamp(wantedX, screen.Left, screen.Right - 1);
-        var y = (int)Math.Clamp(wantedY, screen.Top, screen.Bottom - 1);
-
-        if (x != _tracked.X || y != _tracked.Y)
+        var wanted = new Point((int)Math.Clamp(wantedX, int.MinValue / 2, int.MaxValue / 2), (int)Math.Clamp(wantedY, int.MinValue / 2, int.MaxValue / 2));
+        Point next;
+        if (monitors.At(wanted) is not null)
         {
-            _injector.MoveAbsolute(x, y);
-            _tracked = new Point(x, y);
+            next = wanted;
+        }
+        else
+        {
+            var bounds = monitors.Nearest(_tracked).Bounds;
+            next = new Point(Math.Clamp(wanted.X, bounds.Left, bounds.Right - 1), Math.Clamp(wanted.Y, bounds.Top, bounds.Bottom - 1));
+        }
+
+        if (next != _tracked)
+        {
+            _injector.MoveAbsolute(next.X, next.Y);
+            _tracked = next;
         }
 
         _lastInjectTicks = nowTicks;
-        DetectEdge(screen, wantedX, wantedY, x, y);
+        DetectEdge(monitors, wantedX, wantedY, next);
     }
 
-    private void DetectEdge(Rectangle screen, long wantedX, long wantedY, int x, int y)
+    private void DetectEdge(MonitorSet monitors, long wantedX, long wantedY, Point at)
     {
         var resistance = Math.Max(1, _edgeResistance());
+        var monitor = monitors.Nearest(at);
+        var screen = monitor.Bounds;
         Edge? reached = null;
 
-        _pushLeft = wantedX < screen.Left ? _pushLeft + (int)Math.Min(int.MaxValue / 4, screen.Left - wantedX) : 0;
-        _pushRight = wantedX > screen.Right - 1 ? _pushRight + (int)Math.Min(int.MaxValue / 4, wantedX - (screen.Right - 1)) : 0;
-        _pushTop = wantedY < screen.Top ? _pushTop + (int)Math.Min(int.MaxValue / 4, screen.Top - wantedY) : 0;
-        _pushBottom = wantedY > screen.Bottom - 1 ? _pushBottom + (int)Math.Min(int.MaxValue / 4, wantedY - (screen.Bottom - 1)) : 0;
+        _pushLeft = wantedX < screen.Left && !monitors.ContinuesBeyond(monitor, Edge.Left, at) ? _pushLeft + (int)Math.Min(int.MaxValue / 4, screen.Left - wantedX) : 0;
+        _pushRight = wantedX > screen.Right - 1 && !monitors.ContinuesBeyond(monitor, Edge.Right, at) ? _pushRight + (int)Math.Min(int.MaxValue / 4, wantedX - (screen.Right - 1)) : 0;
+        _pushTop = wantedY < screen.Top && !monitors.ContinuesBeyond(monitor, Edge.Top, at) ? _pushTop + (int)Math.Min(int.MaxValue / 4, screen.Top - wantedY) : 0;
+        _pushBottom = wantedY > screen.Bottom - 1 && !monitors.ContinuesBeyond(monitor, Edge.Bottom, at) ? _pushBottom + (int)Math.Min(int.MaxValue / 4, wantedY - (screen.Bottom - 1)) : 0;
 
         if (_pushLeft >= resistance)
         {
@@ -310,7 +330,12 @@ internal sealed class RemoteCursorPlayer : IDisposable
         if (reached is { } edge && _owner is { } owner)
         {
             ResetPush();
-            EdgeReached?.Invoke(owner, edge, EdgeMath.RelativeAlong(screen, edge, new Point(x, y)));
+            EdgeReached?.Invoke(owner, new PlayerEdge(
+                edge,
+                EdgeMath.RelativeAlong(screen, edge, at),
+                EdgeMath.RelativeAlong(VirtualScreen.Current, edge, at),
+                monitor.Key,
+                at));
         }
     }
 

@@ -44,6 +44,11 @@ public sealed class MirroringNode : IAsyncDisposable
     private PeerListener? _listener;
     private MediaSocket? _media;
 
+    /// <summary>Interfaces and addresses the network was started with; a change of these restarts it.</summary>
+    private string _networkSignature = string.Empty;
+    private Timer? _networkCheck;
+    private bool _watchingAddresses;
+
     public MirroringNode(NodeOptions options, IPairingUserInterface pairingUi, ILoggerFactory loggerFactory)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -159,12 +164,65 @@ public sealed class MirroringNode : IAsyncDisposable
             }
 
             StartNetwork();
+            if (!_watchingAddresses)
+            {
+                _watchingAddresses = true;
+                _networkCheck = new Timer(_ => _ = CheckNetworkAsync(), null, Timeout.Infinite, Timeout.Infinite);
+                System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += OnAddressChanged;
+            }
         }
         finally
         {
             _networkGate.Release();
         }
     }
+
+    private void OnAddressChanged(object? sender, EventArgs e) => ScheduleNetworkCheck();
+
+    /// <summary>Address changes come in bursts (sleep, Wi-Fi, a VPN reconnecting): look once things settle.</summary>
+    private void ScheduleNetworkCheck()
+    {
+        try
+        {
+            _networkCheck?.Change(TimeSpan.FromSeconds(3), Timeout.InfiniteTimeSpan);
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// The listener and discovery are bound to the interfaces' addresses as they were at start. When an address
+    /// changes (after sleep, on another network) they would keep failing, so the network is started again, but only
+    /// when the selected interfaces or their addresses really changed. Existing sessions survive.
+    /// </summary>
+    private async Task CheckNetworkAsync()
+    {
+        if (Volatile.Read(ref _disposed) != 0 || !IsRunning)
+        {
+            return;
+        }
+
+        try
+        {
+            var fresh = NetworkSelection.Resolve(Settings.SelectedInterfaceIds, _options.IncludeLoopback);
+            var signature = Signature(fresh);
+            if (signature == _networkSignature)
+            {
+                return;
+            }
+
+            _logger.LogInformation("Network addresses changed ({Old} → {New}); restarting discovery and the listener", _networkSignature, signature);
+            await RestartNetworkAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            _logger.LogWarning(ex, "Restarting the network after an address change failed");
+        }
+    }
+
+    private static string Signature(NetworkSelection network) =>
+        string.Join("; ", network.SelectedInterfaces.Select(i => $"{i.Name} {i.Address}").Order(StringComparer.Ordinal));
 
     /// <summary>Re-reads interface selection and ports from settings and rebinds. Existing sessions survive.</summary>
     public async Task RestartNetworkAsync()
@@ -208,6 +266,7 @@ public sealed class MirroringNode : IAsyncDisposable
     private void StartNetwork()
     {
         Network = NetworkSelection.Resolve(Settings.SelectedInterfaceIds, _options.IncludeLoopback);
+        _networkSignature = Signature(Network);
         if (Network.SelectedInterfaces.Count == 0)
         {
             _logger.LogWarning("No usable network interface is selected; the node is idle");
@@ -231,6 +290,7 @@ public sealed class MirroringNode : IAsyncDisposable
             Sessions.RememberedDiscoveryEndPoints,
             _loggerFactory.CreateLogger<DiscoveryService>());
         discovery.PeerSeen += Sessions.OnPeerSeen;
+        discovery.AddressLost += ScheduleNetworkCheck;
         discovery.Start();
         _discovery = discovery;
 
@@ -259,6 +319,7 @@ public sealed class MirroringNode : IAsyncDisposable
         if (_discovery is { } discovery)
         {
             discovery.PeerSeen -= Sessions.OnPeerSeen;
+            discovery.AddressLost -= ScheduleNetworkCheck;
             await discovery.DisposeAsync().ConfigureAwait(false);
             _discovery = null;
         }
@@ -276,6 +337,12 @@ public sealed class MirroringNode : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
+        }
+
+        System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged -= OnAddressChanged;
+        if (_networkCheck is { } check)
+        {
+            await check.DisposeAsync().ConfigureAwait(false);
         }
 
         await StopAsync().ConfigureAwait(false);

@@ -30,6 +30,7 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(DisplayExtendResultMessage), "display-result")]
 [JsonDerivedType(typeof(KeyboardLayoutMessage), "kbd-layout")]
 [JsonDerivedType(typeof(DeviceCapabilitiesMessage), "caps")]
+[JsonDerivedType(typeof(InputMonitorsMessage), "input-monitors")]
 public abstract record ControlMessage;
 
 /// <summary>
@@ -73,6 +74,17 @@ public sealed record ByeMessage(string? Reason) : ControlMessage;
 
 /// <summary>The device grid, broadcast whenever it changes; the newest version wins everywhere.</summary>
 public sealed record LayoutMessage(long Version, List<LayoutCell> Cells) : ControlMessage;
+
+/// <summary>
+/// The sender's monitors, for placing them one by one in the layout. Sent when a session starts (the other side
+/// answers with <see cref="IsReply"/> set) and again, as a reply, when the sender's monitors change. A device that
+/// sends it also understands crossings onto a given monitor; an older one never sends it.
+/// </summary>
+public sealed record InputMonitorsMessage(List<LayoutMonitor> Monitors, bool IsReply = false) : ControlMessage;
+
+/// <param name="Key">Stable name of the monitor on its device (its display device name).</param>
+/// <param name="Label">How to show it, e.g. "Монитор 2 · 1920×1080 · справа".</param>
+public sealed record LayoutMonitor(string Key, string Label, bool Primary);
 
 /// <summary>
 /// Sender → receiver: an audio stream begins. Packets arrive over UDP at the receiver's transport port, sealed with

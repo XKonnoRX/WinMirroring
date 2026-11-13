@@ -94,7 +94,8 @@ internal sealed class InputSender
         }
     }
 
-    public bool PostEnter(bool atCenter, Edge edge, float relative)
+    /// <param name="monitor">Enter on this monitor of the controlled device (only for devices that know monitors).</param>
+    public bool PostEnter(bool atCenter, Edge edge, float relative, string? monitor = null)
     {
         lock (_gate)
         {
@@ -106,6 +107,10 @@ internal sealed class InputSender
             if (atCenter)
             {
                 InputCodec.WriteEnterAtCenter(_pending);
+            }
+            else if (!string.IsNullOrEmpty(monitor))
+            {
+                InputCodec.WriteEnterOnMonitor(_pending, edge, relative, monitor);
             }
             else
             {

@@ -1,5 +1,6 @@
 using WinMirroring.Core.Discovery;
 using WinMirroring.Core.Messages;
+using WinMirroring.Core.Settings;
 using WinMirroring.Core.Transport;
 
 namespace WinMirroring.Core.Tests;
@@ -103,6 +104,29 @@ public class CodecTests
         Assert.False(decoded.HasVirtualDisplay);
         Assert.False(decoded.IsReply);
         Assert.Equal(message.Monitors, decoded.Monitors);
+    }
+
+    [Fact]
+    public void MonitorListsAndPerMonitorLayoutCellsRoundTrip()
+    {
+        var monitors = new InputMonitorsMessage([new LayoutMonitor(@"\\.\DISPLAY1", "Монитор 1 · 1920×1080 · основной", true)], IsReply: true);
+        var decodedMonitors = Assert.IsType<InputMonitorsMessage>(ControlMessageCodec.TryDecode(ControlMessageCodec.Encode(monitors)));
+        Assert.True(decodedMonitors.IsReply);
+        Assert.Equal(monitors.Monitors, decodedMonitors.Monitors);
+
+        var layout = new LayoutMessage(42, [new LayoutCell("laptop", 0, 0, @"\\.\DISPLAY2"), new LayoutCell("tablet", 1, 0)]);
+        var decodedLayout = Assert.IsType<LayoutMessage>(ControlMessageCodec.TryDecode(ControlMessageCodec.Encode(layout)));
+        Assert.Equal(layout.Cells, decodedLayout.Cells);
+    }
+
+    [Fact]
+    public void ALayoutFromAnOlderDeviceHasWholeDeviceCells()
+    {
+        var json = """{"t":"layout","version":7,"cells":[{"deviceId":"pc","column":1,"row":2}]}"""u8.ToArray();
+
+        var decoded = Assert.IsType<LayoutMessage>(ControlMessageCodec.TryDecode(json));
+
+        Assert.Equal(new LayoutCell("pc", 1, 2), Assert.Single(decoded.Cells));
     }
 
     [Theory]

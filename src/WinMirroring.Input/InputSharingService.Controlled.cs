@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using WinMirroring.Core.Peers;
 using WinMirroring.Core.Transport;
+using WinMirroring.Input.Injection;
 using WinMirroring.Input.Layout;
 using WinMirroring.Input.Protocol;
 using WinMirroring.Input.Screen;
@@ -38,7 +39,7 @@ public sealed partial class InputSharingService
     {
         switch (evt.Kind)
         {
-            case InputEventKind.Enter:
+            case InputEventKind.Enter or InputEventKind.EnterOnMonitor:
                 TakeControl(session, state, evt);
                 break;
 
@@ -62,9 +63,9 @@ public sealed partial class InputSharingService
                 ReleaseControl(session, state, "released by the controller");
                 break;
 
-            case InputEventKind.EdgeReached:
+            case InputEventKind.EdgeReached or InputEventKind.EdgeReachedOnMonitor:
                 // We are the controller here: the controlled device says the cursor is leaving it.
-                _commands.Writer.TryWrite(new EdgeReachedCommand(session.PeerId, evt.Edge, evt.Relative));
+                _commands.Writer.TryWrite(new EdgeReachedCommand(session.PeerId, evt.Edge, evt.Relative, evt.RelativeToScreen, evt.Monitor));
                 break;
 
             case InputEventKind.Alive:
@@ -75,9 +76,12 @@ public sealed partial class InputSharingService
 
     private void TakeControl(PeerSession session, ControlledState state, InputEvent evt)
     {
+        // Onto the named monitor, or along the whole desktop; never into a gap where no monitor is.
+        var monitors = MonitorCatalog.Current;
+        var area = monitors.Find(evt.Monitor)?.Bounds ?? VirtualScreen.Current;
         var entry = evt.AtCenter
             ? VirtualScreen.PrimaryCenter
-            : EdgeMath.PointOn(VirtualScreen.Current, evt.Edge, evt.Relative, inset: 1);
+            : monitors.Snap(EdgeMath.PointOn(area, evt.Edge, evt.Relative, inset: 1));
 
         state.Active = true;
         var generation = Interlocked.Increment(ref state.Generation);
@@ -188,16 +192,16 @@ public sealed partial class InputSharingService
         }
     }
 
-    private void OnPlayerEdgeReached(object owner, Edge edge, float relative)
+    private void OnPlayerEdgeReached(object owner, PlayerEdge reached)
     {
         if (owner is PeerSession session && _controllers.TryGetValue(session.PeerId, out var state))
         {
             // Called under the player lock; the hand-off runs elsewhere.
-            _ = Task.Run(() => HandOffAsync(session, state, edge, relative));
+            _ = Task.Run(() => HandOffAsync(session, state, reached));
         }
     }
 
-    private async Task HandOffAsync(PeerSession session, ControlledState state, Edge edge, float relative)
+    private async Task HandOffAsync(PeerSession session, ControlledState state, PlayerEdge reached)
     {
         if (Interlocked.Exchange(ref state.HandOffPending, 1) != 0)
         {
@@ -208,10 +212,9 @@ public sealed partial class InputSharingService
         {
             if (BeforeEdgeHandOff is { } prepare && _injector.IsButtonDown(MouseButton.Left))
             {
-                var at = EdgeMath.PointOn(VirtualScreen.Current, edge, relative, inset: 0);
                 try
                 {
-                    await prepare(session, at).WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+                    await prepare(session, reached.At).WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -219,7 +222,7 @@ public sealed partial class InputSharingService
                 }
             }
 
-            await SendEdgeReachedAsync(session, edge, relative).ConfigureAwait(false);
+            await SendEdgeReachedAsync(session, reached).ConfigureAwait(false);
         }
         finally
         {
@@ -227,11 +230,15 @@ public sealed partial class InputSharingService
         }
     }
 
-    private async Task SendEdgeReachedAsync(PeerSession session, Edge edge, float relative)
+    /// <summary>Which monitor the cursor leaves goes only to a controller that knows monitors; older ones get the plain event.</summary>
+    private async Task SendEdgeReachedAsync(PeerSession session, PlayerEdge reached)
     {
         try
         {
-            await session.SendAsync(ChannelId.Input, InputCodec.Single(w => InputCodec.WriteEdgeReached(w, edge, relative)), _cts.Token).ConfigureAwait(false);
+            var frame = _peerMonitors.ContainsKey(session.PeerId) && reached.Monitor.Length > 0
+                ? InputCodec.Single(w => InputCodec.WriteEdgeReachedOnMonitor(w, reached.Edge, reached.Relative, reached.RelativeToScreen, reached.Monitor))
+                : InputCodec.Single(w => InputCodec.WriteEdgeReached(w, reached.Edge, reached.RelativeToScreen));
+            await session.SendAsync(ChannelId.Input, frame, _cts.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or OperationCanceledException)
         {

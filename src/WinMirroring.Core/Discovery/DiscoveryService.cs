@@ -20,6 +20,7 @@ public sealed class DiscoveryService : IAsyncDisposable
 
     private static readonly TimeSpan DnsCacheLifetime = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan DnsFailureLifetime = TimeSpan.FromSeconds(15);
+    private const long FailureReportInterval = 10 * 60_000;
 
     private readonly DeviceIdentity _identity;
     private readonly int _discoveryPort;
@@ -32,6 +33,7 @@ public sealed class DiscoveryService : IAsyncDisposable
     private readonly List<(NetworkInterfaceInfo Nic, Socket Socket)> _senders = [];
     private readonly ConcurrentDictionary<IPAddress, byte> _probedAddresses = new();
     private readonly Dictionary<string, (IPAddress[] Addresses, DateTimeOffset ResolvedAt)> _dnsCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<IPEndPoint, SendFailure> _sendFailures = [];
 
     private Socket? _receiver;
     private Task? _receiveLoop;
@@ -56,6 +58,9 @@ public sealed class DiscoveryService : IAsyncDisposable
     }
 
     public event Action<DiscoveredPeer>? PeerSeen;
+
+    /// <summary>A beacon could not be sent because an interface's address is no longer valid.</summary>
+    public event Action? AddressLost;
 
     /// <summary>True when we actively probed this address, so its answers are welcome even outside selected subnets.</summary>
     public bool IsProbedAddress(IPAddress address) => _probedAddresses.ContainsKey(address);
@@ -336,15 +341,87 @@ public sealed class DiscoveryService : IAsyncDisposable
         try
         {
             await socket.SendToAsync(datagram, SocketFlags.None, target, ct).ConfigureAwait(false);
+            NoteSendWorked(target);
         }
         catch (SocketException ex)
         {
-            _logger.LogDebug(ex, "Beacon to {Target} failed", target);
+            NoteSendFailed(target, ex);
         }
         catch (ObjectDisposedException)
         {
         }
     }
+
+    /// <summary>
+    /// A beacon goes out every couple of seconds, so a failure that persists (an address that went away with sleep
+    /// or a network change) is logged once, then summed up every few minutes, and its recovery is logged too.
+    /// </summary>
+    private void NoteSendFailed(IPEndPoint target, SocketException ex)
+    {
+        var now = Environment.TickCount64;
+        bool report;
+        int count;
+        long since;
+        lock (_sendFailures)
+        {
+            if (!_sendFailures.TryGetValue(target, out var failure) || failure.Error != ex.SocketErrorCode)
+            {
+                failure = new SendFailure(ex.SocketErrorCode, 0, now, now - FailureReportInterval);
+            }
+
+            failure = failure with { Count = failure.Count + 1 };
+            report = failure.Count == 1 || now - failure.ReportedTicks >= FailureReportInterval;
+            if (report)
+            {
+                failure = failure with { ReportedTicks = now };
+            }
+
+            _sendFailures[target] = failure;
+            count = failure.Count;
+            since = failure.FirstTicks;
+        }
+
+        if (!report)
+        {
+            return;
+        }
+
+        if (count == 1)
+        {
+            _logger.LogInformation("Beacon to {Target} failed: {Error} ({Code}); repeats are counted, not logged", target, ex.Message, (int)ex.SocketErrorCode);
+        }
+        else
+        {
+            _logger.LogInformation("Beacon to {Target} still failing: {Count} times in {Minutes:F0} min ({Code})", target, count, (now - since) / 60_000.0, (int)ex.SocketErrorCode);
+        }
+
+        if (ex.SocketErrorCode == SocketError.AddressNotAvailable)
+        {
+            // The interface's address is gone (sleep, another network): the node re-reads its interfaces.
+            AddressLost?.Invoke();
+        }
+    }
+
+    private void NoteSendWorked(IPEndPoint target)
+    {
+        if (_sendFailures.Count == 0)
+        {
+            return;
+        }
+
+        SendFailure failure;
+        lock (_sendFailures)
+        {
+            if (!_sendFailures.Remove(target, out failure))
+            {
+                return;
+            }
+        }
+
+        _logger.LogInformation("Beacon to {Target} works again after {Count} failure(s)", target, failure.Count);
+    }
+
+    private readonly record struct SendFailure(SocketError Error, int Count, long FirstTicks, long ReportedTicks);
 
     public async ValueTask DisposeAsync()
     {
