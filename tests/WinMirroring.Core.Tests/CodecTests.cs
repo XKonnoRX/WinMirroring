@@ -91,6 +91,8 @@ public class CodecTests
         new DisplayExtendResultMessage(false, "нет драйвера"),
         new KeyboardLayoutMessage(unchecked((int)0xF0020409)),
         new DeviceCapabilitiesMessage(true, IsReply: true),
+        new DeviceInfoMessage("1.0.13"),
+        new DeviceInfoMessage("1.0.13", IsReply: true),
         new DeviceCapabilitiesMessage(false, CanEncodeH264: true, CanDecodeH264: true),
     };
 

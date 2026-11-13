@@ -31,6 +31,62 @@ public static class ClipboardCodec
     /// <summary>[8] source → viewer: what the catch found (payload may be absent).</summary>
     public const byte ViewerCaughtMessage = 8;
 
+    /// <summary>[9] JSON <see cref="SendFilesRequest"/>: these files are offered to you, for a stated purpose.</summary>
+    public const byte SendFilesMessage = 9;
+
+    /// <summary>[10] JSON <see cref="SendFilesResult"/>: what the receiver did with a <see cref="SendFilesMessage"/>.</summary>
+    public const byte SendFilesResultMessage = 10;
+
+    public static byte[] EncodeSendFiles(SendFilesRequest request) => Tagged(SendFilesMessage, request);
+
+    public static byte[] EncodeSendFilesResult(SendFilesResult result) => Tagged(SendFilesResultMessage, result);
+
+    public static SendFilesRequest? TryDecodeSendFiles(ReadOnlySpan<byte> message)
+    {
+        if (message.Length < 2 || message[0] != SendFilesMessage)
+        {
+            return null;
+        }
+
+        try
+        {
+            var request = JsonSerializer.Deserialize<SendFilesRequest>(message[1..], Json);
+            return request is { Manifest.Entries: not null } && Enum.IsDefined(request.Purpose) && request.Manifest.Entries.All(IsSafeEntry)
+                ? request
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    public static SendFilesResult? TryDecodeSendFilesResult(ReadOnlySpan<byte> message)
+    {
+        if (message.Length < 2 || message[0] != SendFilesResultMessage)
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<SendFilesResult>(message[1..], Json);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static byte[] Tagged<T>(byte type, T value)
+    {
+        var json = JsonSerializer.SerializeToUtf8Bytes(value, Json);
+        var message = new byte[json.Length + 1];
+        message[0] = type;
+        json.CopyTo(message, 1);
+        return message;
+    }
+
     public static byte[] EncodeViewerDrag(byte type, ViewerDragMessage message)
     {
         var json = JsonSerializer.SerializeToUtf8Bytes(message, Json);

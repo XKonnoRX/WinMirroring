@@ -145,6 +145,17 @@ public partial class App : Application
         health.Set("Раскладка клавиатуры", true, layoutNames.Count == 0 ? "не удалось прочитать список раскладок" : "здесь: " + string.Join(", ", layoutNames));
         health.Start("Буфер обмена", clipboard.Start);
         clipboard.TransferProgress += p => Dispatcher.BeginInvoke(() => ShowFileTransfer(p));
+        health.Start("Файлы и версии устройств", () =>
+        {
+            _services.GetRequiredService<DeviceInfoService>().Start();
+            var peerFiles = _services.GetRequiredService<PeerFilesService>();
+
+            // Files another device sends here are only opened or installed after the user here agrees.
+            peerFiles.Confirm = (title, text) => Dispatcher.InvokeAsync(() =>
+                MessageBox.Show(text, title, MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes).Task;
+            peerFiles.Notify = (title, text) => Dispatcher.BeginInvoke(() => ShowNotification(title, text));
+            peerFiles.Start();
+        });
         health.Start("Перетаскивание файлов", () =>
         {
             // Started regardless: it also hands dragged windows over. Only the file part needs the OLE surface.
@@ -426,6 +437,8 @@ public partial class App : Application
         services.AddSingleton<ScreenStreamingService>();
         services.AddSingleton<GithubUpdater>();
         services.AddSingleton<ButtonBarService>();
+        services.AddSingleton<DeviceInfoService>();
+        services.AddSingleton<PeerFilesService>();
         services.AddSingleton<MainViewModel>();
         return services.BuildServiceProvider();
     }

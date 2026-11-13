@@ -17,7 +17,7 @@ namespace WinMirroring.Clipboard;
 /// large data as a reference the peers pull in bounded chunks (so mouse input on the same link stays responsive),
 /// and files as an offer that becomes virtual files on the other side, transferred only when pasted.
 /// </summary>
-public sealed class ClipboardSyncService : IAsyncDisposable
+public sealed partial class ClipboardSyncService : IAsyncDisposable
 {
     private const int InlineLimit = 256 * 1024;
     private const int MaxDirectPasteEntries = 5000;
@@ -304,6 +304,13 @@ public sealed class ClipboardSyncService : IAsyncDisposable
                 }
             }
 
+            return ValueTask.CompletedTask;
+        }
+
+        if (payload.Span[0] is ClipboardCodec.SendFilesMessage or ClipboardCodec.SendFilesResultMessage)
+        {
+            // Files sent to this device on purpose: not the clipboard, and not gated by the clipboard settings.
+            OnSendFilesFrame(session, payload.Span);
             return ValueTask.CompletedTask;
         }
 

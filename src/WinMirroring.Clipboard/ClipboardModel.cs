@@ -47,3 +47,24 @@ public sealed record FileOfferManifest(long OfferId, string SourceName, List<Fil
 
 /// <summary>Progress of materialising a received file offer locally, for a progress indicator.</summary>
 public sealed record FileTransferProgress(long OfferId, string What, long Done, long Total, bool Finished, bool Ok);
+
+/// <summary>What the receiving device is asked to do with files another device sends it.</summary>
+public enum SendFilesPurpose
+{
+    /// <summary>Save them and open them there with their usual program.</summary>
+    Open = 0,
+
+    /// <summary>A WinMirroring build: offer to install it there (the user there decides).</summary>
+    Update = 1,
+}
+
+/// <summary>
+/// One device offers files to one other device, for <see cref="Purpose"/>, outside the clipboard. The receiver
+/// decides whether to take them (nothing is transferred until it does) and answers with a
+/// <see cref="SendFilesResult"/>.
+/// </summary>
+/// <param name="Note">Shown to the user there, e.g. the version of an offered build.</param>
+public sealed record SendFilesRequest(uint RequestId, SendFilesPurpose Purpose, string? Note, FileOfferManifest Manifest);
+
+/// <summary>The receiving device's answer: taken and done, or why not.</summary>
+public sealed record SendFilesResult(uint RequestId, bool Ok, string? Error);

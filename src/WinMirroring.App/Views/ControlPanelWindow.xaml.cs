@@ -134,7 +134,8 @@ public partial class ControlPanelWindow : Window
                 .Append(screen.PeerVirtualDisplay(peer.Id)?.ToString() ?? "?")
                 .Append(vm.IsSoundSentTo(peer.Id))
                 .Append(vm.IsSoundFrom(peer.Id))
-                .Append(vm.SoundHereChoice(peer.Id));
+                .Append(vm.SoundHereChoice(peer.Id))
+                .Append(vm.VersionLineOf(peer.Id));
             foreach (var monitor in screen.PeerMonitors(peer.Id))
             {
                 text.Append('m').Append(monitor.Index).Append(monitor.Label).Append(monitor.Primary);
@@ -217,6 +218,7 @@ public partial class ControlPanelWindow : Window
         foreach (var peer in peers)
         {
             Sections.Children.Add(MakeDeviceHeader(peer.Name));
+            Sections.Children.Add(MakeNote(vm.VersionLineOf(peer.Id)));
 
             var screenView = open.FirstOrDefault(v => v.Kind == "monitor" && v.PeerId == peer.Id);
             var monitors = screen.PeerMonitors(peer.Id);
@@ -251,7 +253,13 @@ public partial class ControlPanelWindow : Window
             }
 
             Sections.Children.Add(MakeButton("Отправить окно", () => _ = vm.SendWindowToPeerAsync(peer.Id, peer.Name)));
+            Sections.Children.Add(MakeButton("Открыть файл на устройстве…", () => _ = vm.OpenOnDeviceAsync(peer.Id, peer.Name), choosesScreen: true));
             Sections.Children.Add(MakeButton("Управлять вводом", () => vm.ControlPeerById(peer.Id, peer.Name)));
+            if (vm.CanUpdatePeer(peer.Id))
+            {
+                // This build is newer: hand it over, so a device with no access to GitHub can be updated too.
+                Sections.Children.Add(MakeButton($"Обновить до {vm.LocalVersionText}", () => _ = vm.UpdatePeerAsync(peer.Id, peer.Name)));
+            }
 
             // This device extends onto the peer (needs the driver here).
             if (hasLocalDriver)

@@ -32,6 +32,7 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(KeyboardLayoutMessage), "kbd-layout")]
 [JsonDerivedType(typeof(DeviceCapabilitiesMessage), "caps")]
 [JsonDerivedType(typeof(InputMonitorsMessage), "input-monitors")]
+[JsonDerivedType(typeof(DeviceInfoMessage), "device-info")]
 public abstract record ControlMessage;
 
 /// <summary>
@@ -47,6 +48,12 @@ public sealed record DeviceCapabilitiesMessage(
     List<RemoteMonitor>? Monitors = null,
     bool CanEncodeH264 = false,
     bool CanDecodeH264 = false) : ControlMessage;
+
+/// <summary>
+/// The app version this device runs ("1.0.13"), so devices can show it and offer to bring an older one up to date
+/// from a newer one. Sent when a session is ready and answered (<see cref="IsReply"/>) like the capabilities.
+/// </summary>
+public sealed record DeviceInfoMessage(string AppVersion, bool IsReply = false) : ControlMessage;
 
 /// <summary>One monitor of a device, by the index a <see cref="ScreenRequestMessage"/> uses.</summary>
 public sealed record RemoteMonitor(int Index, string Label, bool Primary);

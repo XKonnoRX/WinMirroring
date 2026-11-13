@@ -7,10 +7,16 @@ internal static class OfferDownloader
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WinMirroring", "cache", "clipboard");
 
     /// <param name="onProgress">Reports total bytes copied so far and the whole size, as the copy runs.</param>
+    /// <param name="targetRoot">Where to put the files; by default a folder of this offer inside the cache.</param>
     /// <returns>Absolute paths of the top-level items, in offer order.</returns>
-    public static async Task<IReadOnlyList<string>> DownloadAsync(FileOfferManifest manifest, IRemoteFileSource source, Action<long, long>? onProgress, CancellationToken ct)
+    public static async Task<IReadOnlyList<string>> DownloadAsync(
+        FileOfferManifest manifest,
+        IRemoteFileSource source,
+        Action<long, long>? onProgress,
+        CancellationToken ct,
+        string? targetRoot = null)
     {
-        var root = Path.Combine(CacheRoot, manifest.OfferId.ToString("x16", System.Globalization.CultureInfo.InvariantCulture));
+        var root = targetRoot ?? Path.Combine(CacheRoot, manifest.OfferId.ToString("x16", System.Globalization.CultureInfo.InvariantCulture));
         Directory.CreateDirectory(root);
         var rootFull = Path.GetFullPath(root) + Path.DirectorySeparatorChar;
 

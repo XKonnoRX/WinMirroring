@@ -43,6 +43,8 @@ public sealed partial class MainViewModel : ObservableObject
         DialogPairingUi pairingUi,
         FeatureHealth health,
         DiagnosticsService diagnostics,
+        DeviceInfoService devices,
+        PeerFilesService peerFiles,
         ILogger<MainViewModel> logger)
     {
         _node = node;
@@ -52,6 +54,8 @@ public sealed partial class MainViewModel : ObservableObject
         _screen = screen;
         _health = health;
         _diagnostics = diagnostics;
+        _devices = devices;
+        _peerFiles = peerFiles;
         _logger = logger;
         _dispatcher = Application.Current.Dispatcher;
 

@@ -9,7 +9,11 @@ internal sealed class LocalOfferStore
     private const int MaxOffers = 8;
     private const int MaxEntries = 50_000;
 
-    private sealed record Offer(long Id, List<FileOfferEntry> Entries, List<string?> FullPaths);
+    private sealed record Offer(long Id, List<FileOfferEntry> Entries, List<string?> FullPaths)
+    {
+        /// <summary>Kept until released: a transfer in progress must not be evicted by later clipboard copies.</summary>
+        public bool Pinned { get; set; }
+    }
 
     private const int MaxBlobs = 4;
 
@@ -51,8 +55,11 @@ internal sealed class LocalOfferStore
         return false;
     }
 
-    /// <summary>Expands the copied paths (folders recursively) into a new offer; null when nothing is readable.</summary>
-    public FileOfferManifest? Create(IReadOnlyList<string> paths, string sourceName)
+    /// <param name="pinned">
+    /// Keep the offer until <see cref="Release"/>: a file sent to a device on purpose must stay readable even if the
+    /// user copies other files meanwhile (an evicted offer makes the transfer fail halfway).
+    /// </param>
+    public FileOfferManifest? Create(IReadOnlyList<string> paths, string sourceName, bool pinned = false)
     {
         var entries = new List<FileOfferEntry>();
         var fullPaths = new List<string?>();
@@ -89,17 +96,47 @@ internal sealed class LocalOfferStore
             return null;
         }
 
-        var offer = new Offer(Random.Shared.NextInt64(1, long.MaxValue), entries, fullPaths);
+        var offer = new Offer(Random.Shared.NextInt64(1, long.MaxValue), entries, fullPaths) { Pinned = pinned };
         lock (_gate)
         {
             _offers.AddFirst(offer);
-            while (_offers.Count > MaxOffers)
-            {
-                _offers.RemoveLast();
-            }
+            Evict();
         }
 
         return new FileOfferManifest(offer.Id, sourceName, entries);
+    }
+
+    /// <summary>Lets a pinned offer be evicted again (its transfer finished, or failed).</summary>
+    public void Release(long offerId)
+    {
+        lock (_gate)
+        {
+            foreach (var offer in _offers)
+            {
+                if (offer.Id == offerId)
+                {
+                    offer.Pinned = false;
+                    break;
+                }
+            }
+
+            Evict();
+        }
+    }
+
+    /// <summary>Drops the oldest unpinned offers above the limit (called under the lock).</summary>
+    private void Evict()
+    {
+        for (var node = _offers.Last; node is not null && _offers.Count > MaxOffers;)
+        {
+            var previous = node.Previous;
+            if (!node.Value.Pinned)
+            {
+                _offers.Remove(node);
+            }
+
+            node = previous;
+        }
     }
 
     public bool TryGetFile(long offerId, int index, out string fullPath)

@@ -152,4 +152,52 @@ public sealed partial class MainViewModel
         _input.ControlPeer(peerId);
         StatusText = $"Ввод передан на {peerName}. Вернуть: Ctrl+Alt+Home.";
     }
+
+    // ---- files and versions of the other devices ---------------------------------------------------------
+
+    private readonly Services.DeviceInfoService _devices;
+    private readonly Services.PeerFilesService _peerFiles;
+
+    /// <summary>"Версия 1.0.12 · здесь 1.0.13" — what each device runs, for the panel.</summary>
+    public string VersionLineOf(string peerId)
+    {
+        var mine = Services.DeviceInfoService.LocalVersion.ToString(3);
+        if (_devices.PeerVersion(peerId) is not { } theirs)
+        {
+            return $"Версия неизвестна · здесь {mine}";
+        }
+
+        return theirs.ToString(3) == mine ? $"Версия {mine}, как здесь" : $"Версия {theirs.ToString(3)} · здесь {mine}";
+    }
+
+    /// <summary>This device's build is newer, so it can update that device.</summary>
+    public bool CanUpdatePeer(string peerId) => _devices.CanUpdate(peerId);
+
+    public string LocalVersionText => Services.DeviceInfoService.LocalVersion.ToString(3);
+
+    /// <summary>Asks for files here and sends them to a device to be opened there.</summary>
+    public async Task OpenOnDeviceAsync(string peerId, string peerName)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = $"Что открыть на {peerName}",
+            Multiselect = true,
+            CheckFileExists = true,
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        StatusText = $"Отправляю на {peerName}…";
+        StatusText = await _peerFiles.OpenOnDeviceAsync(peerId, peerName, dialog.FileNames);
+    }
+
+    /// <summary>Sends this device's build to a device running an older one (it asks its user before installing).</summary>
+    public async Task UpdatePeerAsync(string peerId, string peerName)
+    {
+        StatusText = $"Упаковываю эту сборку для {peerName}…";
+        StatusText = await _peerFiles.SendOwnBuildAsync(peerId, peerName);
+    }
 }
