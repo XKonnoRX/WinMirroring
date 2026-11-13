@@ -64,6 +64,8 @@ public sealed class HubUi
             return call is null ? "Непонятная команда." : await RunAsync(call);
         });
 
+        _bridge.On("hub.devices", _ => Snapshot());
+
         _input.LayoutChanged += Changed;
         _input.MonitorsChanged += Changed;
         _input.FocusChanged += _ => Changed();
@@ -164,6 +166,10 @@ public sealed class HubUi
     }
 
     // ---- what the page can do -----------------------------------------------------------------------------
+
+    /// <summary>The same device actions the field offers, for the side panel.</summary>
+    public Task<object?> RunCommandAsync(string name, string? deviceId, string? monitor, string? text) =>
+        RunAsync(new CommandArgs(name, deviceId, monitor, text));
 
     private async Task<object?> RunAsync(CommandArgs call)
     {

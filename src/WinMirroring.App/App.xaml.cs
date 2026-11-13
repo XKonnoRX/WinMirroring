@@ -161,6 +161,15 @@ public partial class App : Application
             var hub = _services.GetRequiredService<HubUi>();
             hub.OpenSettings = ShowMainWindow;
             hub.Register();
+            _services.GetRequiredService<SettingsUi>().Register();
+
+            var panel = _services.GetRequiredService<PanelUi>();
+            panel.Hide = HideWebPanel;
+            panel.OpenHub = ShowHub;
+            panel.OpenSettings = ShowMainWindow;
+            panel.OpenButtonEditor = ShowButtonEditor;
+            panel.HideButton = HideFloatingMenu;
+            panel.Register();
             if (!Views.WebWindow.IsAvailable)
             {
                 throw new InvalidOperationException($"нет собранного интерфейса в {Views.WebWindow.RootDirectory}");
@@ -426,7 +435,7 @@ public partial class App : Application
         Log.Information("WinMirroring {Version} starting", typeof(App).Assembly.GetName().Version);
     }
 
-    private static ServiceProvider BuildServices()
+    private ServiceProvider BuildServices()
     {
         var services = new ServiceCollection();
         services.AddSingleton<ILoggerFactory>(new SerilogLoggerFactory(Log.Logger));
@@ -451,6 +460,9 @@ public partial class App : Application
         services.AddSingleton<PeerFilesService>();
         services.AddSingleton<UiBridge>();
         services.AddSingleton<HubUi>();
+        services.AddSingleton<SettingsUi>();
+        services.AddSingleton<IViewerControl>(_ => this);
+        services.AddSingleton<PanelUi>();
         services.AddSingleton<MainViewModel>();
         return services.BuildServiceProvider();
     }
@@ -571,7 +583,36 @@ public partial class App : Application
         }
     }
 
+    private Views.WebWindow? _settingsWindow;
+
+    /// <summary>The settings. The new window when the built interface is there, the old tabbed one otherwise.</summary>
     private void ShowMainWindow()
+    {
+        if (_services is null)
+        {
+            return;
+        }
+
+        if (Views.WebWindow.IsAvailable)
+        {
+            if (_settingsWindow is { IsLoaded: true } open)
+            {
+                open.Activate();
+                return;
+            }
+
+            _settingsWindow = new Views.WebWindow(_services.GetRequiredService<UiBridge>(), "settings", "WinMirroring — параметры");
+            _settingsWindow.Closed += (_, _) => _settingsWindow = null;
+            _settingsWindow.Show();
+            _settingsWindow.Activate();
+            return;
+        }
+
+        ShowOldSettings();
+    }
+
+    /// <summary>The tabbed window: the fallback, and still where the old layout grid lives.</summary>
+    private void ShowOldSettings()
     {
         if (_services is null)
         {
@@ -685,6 +726,7 @@ public partial class App : Application
         }
 
         _controlPanel?.HidePanel();
+        HideWebPanel();
         _floatingMenu.Hide();
         var node = _services.GetRequiredService<MirroringNode>();
         node.Settings.MenuButtonHidden = true;
@@ -692,8 +734,9 @@ public partial class App : Application
     }
 
     private Views.ControlPanelWindow? _controlPanel;
+    private Views.WebWindow? _webPanel;
 
-    /// <summary>The floating button opens (or closes) the main control panel.</summary>
+    /// <summary>The floating button opens (or closes) the side panel.</summary>
     private void ToggleControlPanel()
     {
         if (_services?.GetService<MainViewModel>() is not { } vm)
@@ -701,10 +744,26 @@ public partial class App : Application
             return;
         }
 
+        if (Views.WebWindow.IsAvailable)
+        {
+            if (_webPanel is { IsVisible: true })
+            {
+                HideWebPanel();
+                return;
+            }
+
+            _webPanel ??= new Views.WebWindow(_services.GetRequiredService<UiBridge>(), "panel", "WinMirroring", panel: true);
+            _webPanel.ShowDocked();
+            KeepFloatingOnTop();
+            return;
+        }
+
         _controlPanel ??= new Views.ControlPanelWindow();
         _controlPanel.Toggle(vm, _services.GetRequiredService<ScreenStreamingService>(), this, _services.GetRequiredService<ButtonBarService>(),
             ShowMainWindow, ShowButtonEditor, HideFloatingMenu);
     }
+
+    private void HideWebPanel() => _webPanel?.Hide();
 
     /// <summary>The editor of the view's button bar and its presets (one window, brought to the front if open).</summary>
     private void ShowButtonEditor()
@@ -814,7 +873,7 @@ public partial class App : Application
 
     private void CloseWindows()
     {
-        var windows = new List<Window?> { _fileTransfer, _controlPanel, _floatingMenu, _buttonEditor, _layoutWindow };
+        var windows = new List<Window?> { _fileTransfer, _controlPanel, _floatingMenu, _buttonEditor, _layoutWindow, _webPanel, _settingsWindow };
         windows.AddRange(_openViewers);
         _mainWindow?.AllowClose();
         windows.Add(_mainWindow);

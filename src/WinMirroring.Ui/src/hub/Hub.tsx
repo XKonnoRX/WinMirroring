@@ -191,6 +191,30 @@ export function Hub() {
 
   const panning = useRef<{ x: number; y: number; view: View } | null>(null)
 
+  // Every finger on the field, so two of them can pinch (a card may swallow the second one, hence the capture phase).
+  const pointers = useRef(new Map<number, { x: number; y: number }>())
+  const pinch = useRef<{ distance: number; x: number; y: number; view: View } | null>(null)
+
+  const onPointerDownCapture = (event: React.PointerEvent) => {
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
+    if (pointers.current.size === 2) {
+      // A second finger: stop moving anything and start zooming instead.
+      panning.current = null
+      setDrag(null)
+      pinch.current = { ...measure(), view }
+    }
+  }
+
+  const measure = () => {
+    const [a, b] = [...pointers.current.values()]
+    if (!a || !b) return { distance: 1, x: 0, y: 0 }
+    return {
+      distance: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+      x: (a.x + b.x) / 2,
+      y: (a.y + b.y) / 2,
+    }
+  }
+
   const onSurfaceDown = (event: React.PointerEvent) => {
     if (event.button !== 0 && event.button !== 1) return
     panning.current = { x: event.clientX, y: event.clientY, view }
@@ -199,6 +223,26 @@ export function Hub() {
   }
 
   const onSurfaceMove = (event: React.PointerEvent) => {
+    if (pointers.current.has(event.pointerId)) {
+      pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
+    }
+
+    // Two fingers: the distance between them is the zoom, and the point between them is held in place.
+    if (pinch.current && pointers.current.size >= 2) {
+      const start = pinch.current
+      const now = measure()
+      const zoom = clamp((start.view.zoom * now.distance) / start.distance, MIN_ZOOM, MAX_ZOOM)
+      const box = surface.current!.getBoundingClientRect()
+      const anchor = { x: start.x - box.left, y: start.y - box.top }
+      const world = { x: (anchor.x - start.view.x) / start.view.zoom, y: (anchor.y - start.view.y) / start.view.zoom }
+      setView({
+        x: now.x - box.left - world.x * zoom,
+        y: now.y - box.top - world.y * zoom,
+        zoom,
+      })
+      return
+    }
+
     if (drag) {
       const point = toSurface(event.clientX, event.clientY)
       setDrag({ ...drag, x: point.x, y: point.y, moved: true })
@@ -211,6 +255,11 @@ export function Hub() {
   }
 
   const onSurfaceUp = (event: React.PointerEvent) => {
+    pointers.current.delete(event.pointerId)
+    if (pointers.current.size < 2) {
+      pinch.current = null
+    }
+
     panning.current = null
     if (!drag) {
       return
@@ -218,6 +267,8 @@ export function Hub() {
 
     if (!drag.moved) {
       setSelected(drag.group.device.id)
+    } else if (pinch.current) {
+      // The drag turned into a pinch: leave the device where it was.
     } else if (hoveredAnchor && canDrop) {
       place(drag.group, hoveredAnchor)
     } else if (!hoveredAnchor && !drag.fromTray) {
@@ -302,6 +353,7 @@ export function Hub() {
         <div
           ref={surface}
           className={`hub-field${drag ? ' is-dragging' : ''}`}
+          onPointerDownCapture={onPointerDownCapture}
           onPointerDown={onSurfaceDown}
           onPointerMove={onSurfaceMove}
           onPointerUp={onSurfaceUp}

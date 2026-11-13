@@ -22,14 +22,45 @@ public partial class WebWindow : Window
     private readonly string _route;
     private CoreWebView2? _page;
 
-    public WebWindow(UiBridge bridge, string route, string title)
+    /// <param name="panel">
+    /// A side panel rather than an ordinary window: docked to the right edge, over everything, without stealing
+    /// focus, and kept out of screen capture so a device watching this screen does not see it.
+    /// </param>
+    public WebWindow(UiBridge bridge, string route, string title, bool panel = false)
     {
         InitializeComponent();
         _bridge = bridge;
         _route = route;
         Title = title;
+        if (panel)
+        {
+            WindowStyle = WindowStyle.None;
+            ResizeMode = ResizeMode.NoResize;
+            ShowInTaskbar = false;
+            ShowActivated = false;
+            Topmost = true;
+            Width = 360;
+            MinWidth = 0;
+            MinHeight = 0;
+            CaptureExclusion.Apply(this);
+        }
+
+        _panel = panel;
         Loaded += OnLoaded;
         Closed += OnClosed;
+    }
+
+    private readonly bool _panel;
+
+    /// <summary>Puts the panel against the right edge of the work area and shows it.</summary>
+    public void ShowDocked()
+    {
+        var work = SystemParameters.WorkArea;
+        Height = work.Height;
+        Top = work.Top;
+        Left = work.Right - Width;
+        Show();
+        Topmost = true;
     }
 
     /// <summary>The built interface is next to the app; without it (npm never ran) these windows cannot open.</summary>
@@ -39,7 +70,11 @@ public partial class WebWindow : Window
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
-        UseDarkTitleBar();
+        if (!_panel)
+        {
+            UseDarkTitleBar();
+        }
+
         try
         {
             await View.EnsureCoreWebView2Async(await EnvironmentAsync());
