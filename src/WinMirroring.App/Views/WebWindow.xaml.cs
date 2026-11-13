@@ -42,6 +42,10 @@ public partial class WebWindow : Window
             Width = 360;
             MinWidth = 0;
             MinHeight = 0;
+
+            // The panel sets its own place. Without this the window is centred on the first Show, because WPF
+            // applies the startup location from the markup after the position has already been set.
+            WindowStartupLocation = WindowStartupLocation.Manual;
             CaptureExclusion.Apply(this);
         }
 
@@ -55,12 +59,20 @@ public partial class WebWindow : Window
     /// <summary>Puts the panel against the right edge of the work area and shows it.</summary>
     public void ShowDocked()
     {
+        Dock();
+        Show();
+
+        // Again after showing: the work area is only known for certain once the window is on a screen.
+        Dock();
+        Topmost = true;
+    }
+
+    private void Dock()
+    {
         var work = SystemParameters.WorkArea;
         Height = work.Height;
         Top = work.Top;
         Left = work.Right - Width;
-        Show();
-        Topmost = true;
     }
 
     /// <summary>The built interface is next to the app; without it (npm never ran) these windows cannot open.</summary>
