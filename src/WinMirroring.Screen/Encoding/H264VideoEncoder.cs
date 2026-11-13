@@ -36,6 +36,7 @@ internal sealed class H264VideoEncoder : IDisposable
     private readonly bool _sharedDevice;
     private readonly bool _providesSamples;
     private readonly int _outputSize;
+    private readonly MfOutputSample _output = new();
     private ICodecAPI? _codecApi;
     private object? _codecApiRcw;
 
@@ -526,9 +527,7 @@ internal sealed class H264VideoEncoder : IDisposable
         var buffer = new OutputDataBuffer { StreamID = 0 };
         if (!_providesSamples)
         {
-            var allocated = MediaFactory.MFCreateSample();
-            allocated.AddBuffer(MediaFactory.MFCreateMemoryBuffer(_outputSize));
-            buffer.Sample = allocated;
+            buffer.Sample = _output.ForSize(_outputSize);
         }
 
         var result = _transform.ProcessOutput(ProcessOutputFlags.None, 1, ref buffer, out _);
@@ -555,7 +554,12 @@ internal sealed class H264VideoEncoder : IDisposable
         }
         finally
         {
-            buffer.Sample?.Dispose();
+            if (_providesSamples)
+            {
+                // A sample the transform made is ours to give back; the one we lend it is not (see MfOutputSample).
+                buffer.Sample?.Dispose();
+            }
+
             buffer.Events?.Dispose();
         }
     }
@@ -596,6 +600,7 @@ internal sealed class H264VideoEncoder : IDisposable
             _codecApi = null;
         }
 
+        _output.Dispose();
         _events.Dispose();
         _transform.Dispose();
         _deviceManager?.Dispose();

@@ -14,6 +14,7 @@ internal sealed class H264VideoDecoder : IDisposable
 {
     private readonly ILogger _logger;
     private readonly IMFTransform _transform;
+    private readonly MfOutputSample _output = new();
     private byte[] _nv12 = [];
     private int _outputSize;
     private int _width;
@@ -209,9 +210,8 @@ internal sealed class H264VideoDecoder : IDisposable
     {
         for (var attempt = 0; attempt < 3; attempt++)
         {
-            var allocated = MediaFactory.MFCreateSample();
-            allocated.AddBuffer(MediaFactory.MFCreateMemoryBuffer(_outputSize));
-            var buffer = new OutputDataBuffer { StreamID = 0, Sample = allocated };
+            var sample = _output.ForSize(_outputSize);
+            var buffer = new OutputDataBuffer { StreamID = 0, Sample = sample };
 
             var result = _transform.ProcessOutput(ProcessOutputFlags.None, 1, ref buffer, out _);
             try
@@ -228,17 +228,18 @@ internal sealed class H264VideoDecoder : IDisposable
                     continue;
                 }
 
-                if (result.Failure || buffer.Sample is not { } sample)
+                if (result.Failure || buffer.Sample is null)
                 {
                     return false;
                 }
 
+                // Read through our own handle on the sample, not through the one that came back: that one is a
+                // second wrapper around the same sample and disposing it would destroy a sample we keep.
                 ReadFrame(sample, ref bgra);
                 return true;
             }
             finally
             {
-                buffer.Sample?.Dispose();
                 buffer.Events?.Dispose();
             }
         }
@@ -326,6 +327,7 @@ internal sealed class H264VideoDecoder : IDisposable
         {
         }
 
+        _output.Dispose();
         _transform.Dispose();
     }
 }
