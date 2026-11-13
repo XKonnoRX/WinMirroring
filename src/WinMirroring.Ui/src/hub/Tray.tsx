@@ -26,6 +26,11 @@ export function Tray({
   const [adding, setAdding] = useState(false)
   const empty = unplaced.length === 0 && discovered.length === 0
 
+  // A device found on the network is sought out and confirmed on both screens; one a paired device vouched for
+  // needs only a press here, so the two are offered apart.
+  const nearby = discovered.filter((d) => !d.introducedBy)
+  const introduced = discovered.filter((d) => d.introducedBy)
+
   const add = () => {
     const text = address.trim()
     if (!text) return
@@ -75,12 +80,23 @@ export function Tray({
           </button>
         ))}
 
-        {discovered.length > 0 && <span className="tray-split">Найдены рядом</span>}
-        {discovered.map((device) => (
+        {nearby.length > 0 && <span className="tray-split">Найдены рядом</span>}
+        {nearby.map((device) => (
           <div key={device.id} className="tray-card is-found">
             <span className="tray-card-name">{device.name}</span>
             <button className="btn btn-accent tray-pair" onClick={() => onCommand('pair', { deviceId: device.id })}>
               Сопрячь
+            </button>
+          </div>
+        ))}
+
+        {introduced.length > 0 && <span className="tray-split">Через другие устройства</span>}
+        {introduced.map((device) => (
+          <div key={device.id} className="tray-card is-found is-introduced">
+            <span className="tray-card-name">{device.name}</span>
+            <span className="tray-card-note">через {device.introducedBy}</span>
+            <button className="btn btn-accent tray-pair" onClick={() => onCommand('trust', { deviceId: device.id })}>
+              Доверять
             </button>
           </div>
         ))}

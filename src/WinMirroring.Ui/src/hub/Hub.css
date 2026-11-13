@@ -371,6 +371,23 @@
   min-height: 32px;
 }
 
+/* Known through another device: the card carries a line saying through which, so it is packed tighter. */
+.tray-card.is-introduced {
+  padding: 10px 12px;
+  gap: 3px;
+}
+
+.tray-card.is-introduced .tray-card-note {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tray-card.is-introduced .tray-pair {
+  min-height: 26px;
+}
+
 .tray-card-name {
   font-weight: 600;
   font-size: 13.5px;

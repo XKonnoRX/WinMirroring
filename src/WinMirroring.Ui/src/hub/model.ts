@@ -31,6 +31,11 @@ export type Device = {
   sound: Sound | null
   /** The monitor of this device that is open here right now, if any. */
   shownMonitor: string | null
+  /**
+   * Name of the paired device that vouched for this one. Such a device can be trusted with one press instead of a
+   * confirmation on both screens, because the device that vouched was confirmed by hand already.
+   */
+  introducedBy: string | null
 }
 
 /** One square of the grid the cursor crosses between. A cell without a monitor stands for the whole device. */

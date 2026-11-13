@@ -73,6 +73,7 @@ public sealed class HubUi
         _input.MonitorsChanged += Changed;
         _input.FocusChanged += _ => Changed();
         _devices.Changed += Changed;
+        _node.Introductions.Changed += Changed;
         _node.Peers.Changed += _ => Changed();
         _node.Sessions.SessionReady += _ => Changed();
         _node.Sessions.SessionClosed += _ => Changed();
@@ -86,10 +87,19 @@ public sealed class HubUi
 
     private object Snapshot()
     {
-        var devices = new List<DeviceDto> { Describe(null) };
+        // A device known only through a paired peer is not in the directory at all until it is seen on the
+        // network, so the two lists are merged: whichever way it is known, it is one card on the field.
+        var introduced = _node.Introductions.Snapshot().ToDictionary(i => i.Id, StringComparer.Ordinal);
+        var devices = new List<DeviceDto> { Describe(null, null) };
         foreach (var peer in _node.Peers.Snapshot().Where(p => p.Id != _node.Identity.Id))
         {
-            devices.Add(Describe(peer));
+            introduced.Remove(peer.Id, out var via);
+            devices.Add(Describe(peer, via));
+        }
+
+        foreach (var via in introduced.Values)
+        {
+            devices.Add(Introduced(via));
         }
 
         var known = devices.Select(d => d.Id).ToHashSet(StringComparer.Ordinal);
@@ -108,7 +118,27 @@ public sealed class HubUi
         };
     }
 
-    private DeviceDto Describe(PeerInfo? peer)
+    /// <summary>A device only a paired peer has told us about: nothing of it is known first-hand yet.</summary>
+    private static DeviceDto Introduced(PeerIntroduction via) => new(
+        via.Id,
+        via.Name,
+        false,
+        false,
+        false,
+        $"известно через {via.ViaName}",
+        via.Addresses.FirstOrDefault() ?? string.Empty,
+        string.Empty,
+        Core.Identity.CertificateFingerprint.ToDisplay(via.Fingerprint),
+        null,
+        null,
+        false,
+        [],
+        null,
+        null,
+        null,
+        via.ViaName);
+
+    private DeviceDto Describe(PeerInfo? peer, PeerIntroduction? via)
     {
         var id = peer?.Id ?? _node.Identity.Id;
         var self = peer is null;
@@ -132,7 +162,8 @@ public sealed class HubUi
             Monitors(id, self),
             self ? ScreenStreamingService.IsVirtualDisplayAvailable : _screen.PeerVirtualDisplay(id),
             self ? null : SoundOf(id),
-            self ? null : _viewers.ShownMonitorOf(id));
+            self ? null : _viewers.ShownMonitorOf(id),
+            via?.ViaName);
     }
 
     private List<MonitorDto> Monitors(string id, bool self)
@@ -178,12 +209,19 @@ public sealed class HubUi
     private async Task<object?> RunAsync(CommandArgs call)
     {
         var id = call.DeviceId ?? string.Empty;
-        var name = _node.Peers.TryGet(id, out var info) ? info.Name : id;
+        var name = _node.Peers.TryGet(id, out var info) && !string.IsNullOrEmpty(info.Name) ? info.Name
+            : _node.Introductions.TryGet(id, out var known) ? known.Name
+            : id;
         switch (call.Name)
         {
             case "pair":
                 await _node.PairAsync(id);
                 return $"Запрос на сопряжение отправлен на {name}.";
+
+            case "trust":
+                return await _node.Introductions.TrustAsync(id)
+                    ? $"{name} сопряжено — подтверждение дало доверенное устройство."
+                    : $"{name} больше не предлагается доверенным устройством.";
 
             case "unpair":
                 if (MessageBox.Show(
@@ -334,7 +372,8 @@ public sealed class HubUi
         List<MonitorDto> Monitors,
         bool? HasVirtualDisplay,
         SoundDto? Sound,
-        string? ShownMonitor);
+        string? ShownMonitor,
+        string? IntroducedBy);
 
     private sealed record CellDto(string DeviceId, string? Monitor, int Column, int Row);
 

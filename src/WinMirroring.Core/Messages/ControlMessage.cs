@@ -33,6 +33,8 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(DeviceCapabilitiesMessage), "caps")]
 [JsonDerivedType(typeof(InputMonitorsMessage), "input-monitors")]
 [JsonDerivedType(typeof(DeviceInfoMessage), "device-info")]
+[JsonDerivedType(typeof(PeerVouchMessage), "vouch")]
+[JsonDerivedType(typeof(VouchRelayMessage), "vouch-relay")]
 public abstract record ControlMessage;
 
 /// <summary>
@@ -54,6 +56,30 @@ public sealed record DeviceCapabilitiesMessage(
 /// from a newer one. Sent when a session is ready and answered (<see cref="IsReply"/>) like the capabilities.
 /// </summary>
 public sealed record DeviceInfoMessage(string AppVersion, bool IsReply = false) : ControlMessage;
+
+/// <summary>
+/// A device the sender is paired with, offered to a peer it is also paired with so the two can recognise each
+/// other. The certificate fingerprint is the whole point: it is what the receiver pins, and it is only worth
+/// anything because it arrives from a device the receiver has already confirmed by hand.
+/// </summary>
+public sealed record VouchedPeer(
+    string Id,
+    string Name,
+    string Fingerprint,
+    int TransportPort,
+    int DiscoveryPort,
+    List<string>? Addresses = null);
+
+/// <summary>Everyone the sender is paired with, so that pairings made one by one can close into a mesh.</summary>
+public sealed record PeerVouchMessage(List<VouchedPeer> Peers, bool IsReply = false) : ControlMessage;
+
+/// <summary>
+/// "Pass this on." Sent to the device that gave the vouch: the sender has just trusted <see cref="ToPeerId"/> on
+/// its word and asks it to tell that device, so trust ends up on both sides from one confirmation. The hop in the
+/// middle only forwards the record of the device it is talking to, and only to a device it is itself paired with;
+/// the far end recognises the message by <see cref="ToPeerId"/> being its own.
+/// </summary>
+public sealed record VouchRelayMessage(string ToPeerId, VouchedPeer Peer) : ControlMessage;
 
 /// <summary>
 /// One monitor of a device. <see cref="Key"/> is its display device name, which names it exactly; the index is

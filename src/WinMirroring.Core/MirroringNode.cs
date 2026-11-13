@@ -110,6 +110,13 @@ public sealed class MirroringNode : IAsyncDisposable
         }
 
         Sessions = new PeerSessionManager(Identity, Settings, SaveSettings, Peers, pairingUi, loggerFactory.CreateLogger<PeerSessionManager>());
+        Introductions = new PeerIntroductions(
+            Sessions,
+            Settings,
+            Identity,
+            () => ListeningEndPoints.Select(e => e.Address.ToString()),
+            loggerFactory.CreateLogger<PeerIntroductions>());
+        Introductions.Start();
 
         Network = NetworkSelection.Resolve(Settings.SelectedInterfaceIds, options.IncludeLoopback);
     }
@@ -123,6 +130,9 @@ public sealed class MirroringNode : IAsyncDisposable
     public PeerDirectory Peers { get; }
 
     public PeerSessionManager Sessions { get; }
+
+    /// <summary>Devices known through a paired peer, which can be trusted without a confirmation of their own.</summary>
+    public PeerIntroductions Introductions { get; }
 
     public NetworkSelection Network { get; private set; }
 

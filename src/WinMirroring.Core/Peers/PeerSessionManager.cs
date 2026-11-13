@@ -55,6 +55,9 @@ public sealed class PeerSessionManager : IAsyncDisposable
 
     public event Action<PeerSession>? SessionClosed;
 
+    /// <summary>A device was added to or removed from the list this one is paired with.</summary>
+    public event Action? PairedPeersChanged;
+
     public bool TryGetSession(string peerId, out PeerSession session)
     {
         if (_sessions.TryGetValue(peerId, out var found) && found.State != SessionState.Closed)
@@ -419,10 +422,59 @@ public sealed class PeerSessionManager : IAsyncDisposable
         return session.State == SessionState.Ready || await session.PairAsync(ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Pins a device's certificate without a confirmation of its own, on the word of a device that was confirmed by
+    /// hand. False when the record is unusable. Any session already open with that device is closed, because
+    /// whether the two sides are paired is settled during the handshake: the reconnect a moment later comes up
+    /// ready instead of unpaired.
+    /// </summary>
+    public bool Trust(string id, string name, string fingerprint, int transportPort, int discoveryPort, IEnumerable<string>? addresses = null)
+    {
+        if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(fingerprint) || string.Equals(id, _identity.Id, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var record = _settings.FindPairedById(id);
+        if (record is null)
+        {
+            record = new PairedPeer { Id = id };
+            _settings.PairedPeers.Add(record);
+        }
+
+        record.Name = string.IsNullOrWhiteSpace(name) ? id : name;
+        record.Fingerprint = fingerprint;
+        record.PairedAt = DateTimeOffset.UtcNow;
+        record.TransportPort = transportPort > 0 ? transportPort : Protocol.ProtocolConstants.DefaultTransportPort;
+        record.DiscoveryPort = discoveryPort > 0 ? discoveryPort : Protocol.ProtocolConstants.DefaultDiscoveryPort;
+        foreach (var address in (addresses ?? []).Reverse())
+        {
+            record.RememberAddress(address);
+        }
+
+        _saveSettings();
+        _directory.Update(id, info =>
+        {
+            info.Name = record.Name;
+            info.Fingerprint = fingerprint;
+            info.IsPaired = true;
+        });
+
+        if (TryGetSession(id, out var open) && open.State != SessionState.Ready)
+        {
+            _ = open.CloseAsync("trusted");
+        }
+
+        _logger.LogInformation("Trusting {Peer} ({Fingerprint}) without a confirmation of its own", record.Name, CertificateFingerprint.ToDisplay(fingerprint));
+        PairedPeersChanged?.Invoke();
+        return true;
+    }
+
     public async Task UnpairAsync(string peerId)
     {
         _settings.PairedPeers.RemoveAll(p => string.Equals(p.Id, peerId, StringComparison.Ordinal));
         _saveSettings();
+        PairedPeersChanged?.Invoke();
 
         if (TryGetSession(peerId, out var session))
         {
@@ -456,6 +508,7 @@ public sealed class PeerSessionManager : IAsyncDisposable
         _saveSettings();
 
         _directory.Update(session.PeerId, info => info.IsPaired = true);
+        PairedPeersChanged?.Invoke();
         return Task.CompletedTask;
     }
 

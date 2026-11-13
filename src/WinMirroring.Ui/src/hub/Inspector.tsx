@@ -35,7 +35,20 @@ export function Inspector({
       <div className="inspector-body">
         {device.lastError && <div className="inspector-error">{device.lastError}</div>}
 
-        {!device.paired ? (
+        {!device.paired && device.introducedBy ? (
+          <section>
+            <p className="inspector-note">
+              Это устройство сопряжено с «{device.introducedBy}», а «{device.introducedBy}» сопряжено с этим.
+              Подтверждать на обоих экранах не нужно: отпечаток пришёл от устройства, которое вы уже подтвердили
+              вручную, и оно же передаст нашу сторону обратно.
+            </p>
+            <dl className="inspector-facts">
+              <dt>Отпечаток</dt>
+              <dd className="mono">{device.fingerprint || '—'}</dd>
+            </dl>
+            <button className="btn btn-accent wide" onClick={() => run('trust')}>Доверять</button>
+          </section>
+        ) : !device.paired ? (
           <section>
             <p className="inspector-note">
               Устройство найдено в сети, но ещё не сопряжено. Запрос уйдёт туда, и там его нужно подтвердить.

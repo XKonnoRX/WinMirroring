@@ -85,6 +85,7 @@ const device = (over: Record<string, unknown>) => ({
   hasVirtualDisplay: true,
   sound: { here: 'auto', playing: false, sentTo: false },
   shownMonitor: null,
+  introducedBy: null,
   ...over,
 })
 
@@ -117,6 +118,16 @@ const sample = {
     }),
     device({ id: 'pc', name: 'Домашний ПК', online: false, state: 'не на связи', version: null, hasVirtualDisplay: null }),
     device({ id: 'new', name: 'LAPTOP-X1', paired: false, state: 'найдено рядом', version: null, hasVirtualDisplay: null }),
+    device({
+      id: 'studio',
+      name: 'STUDIO-PC',
+      paired: false,
+      online: false,
+      state: 'известно через DESKTOP-P50HIEF',
+      version: null,
+      hasVirtualDisplay: null,
+      introducedBy: 'DESKTOP-P50HIEF',
+    }),
   ],
   cells: [
     { deviceId: 'self', monitor: 'self-2', column: 0, row: 0 },
