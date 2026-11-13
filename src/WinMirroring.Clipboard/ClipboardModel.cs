@@ -14,7 +14,11 @@ public enum ClipboardItemKind : byte
 public sealed record ClipboardItem(ClipboardItemKind Kind, byte[] Data);
 
 /// <summary>What was read from the local clipboard: either data formats or a list of file paths.</summary>
-public sealed record ClipboardSnapshot(IReadOnlyList<ClipboardItem> Items, IReadOnlyList<string> Files)
+/// <param name="Refused">
+/// Why nothing was read: the application that copied it marked it as content no other program may carry away, so
+/// it was left alone. Null when nothing forbade reading it.
+/// </param>
+public sealed record ClipboardSnapshot(IReadOnlyList<ClipboardItem> Items, IReadOnlyList<string> Files, string? Refused = null)
 {
     public bool IsEmpty => Items.Count == 0 && Files.Count == 0;
 

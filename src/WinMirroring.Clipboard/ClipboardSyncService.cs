@@ -162,6 +162,15 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
             return;
         }
 
+        if (snapshot.Refused is { } refused)
+        {
+            // Said out loud rather than passed over in silence: otherwise copying a password and finding nothing
+            // on the other device looks like the app being broken.
+            _logger.LogInformation("The clipboard was not shared: {Reason}", refused);
+            Report($"Не отправлено: {refused}");
+            return;
+        }
+
         var targets = _node.Sessions.Sessions.Where(s => s.State == SessionState.Ready).ToList();
         if (targets.Count == 0)
         {
@@ -228,7 +237,7 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
         }
 
         var snapshot = await thread.ReadNowAsync().ConfigureAwait(false);
-        if (snapshot is null || snapshot.IsEmpty)
+        if (snapshot is null || (snapshot.IsEmpty && snapshot.Refused is null))
         {
             return false;
         }

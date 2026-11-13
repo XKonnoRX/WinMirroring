@@ -246,7 +246,9 @@ internal sealed class ClipboardThread : IDisposable
             return;
         }
 
-        if (snapshot is { IsEmpty: false })
+        // A refused snapshot carries nothing but still travels on, so the user is told why their copy did not
+        // appear on the other device instead of being left to wonder.
+        if (snapshot is not null && (!snapshot.IsEmpty || snapshot.Refused is not null))
         {
             try
             {
@@ -269,6 +271,14 @@ internal sealed class ClipboardThread : IDisposable
 
         try
         {
+            if (WhySyncIsRefused() is { } refused)
+            {
+                // Nothing is read at all. Reading and then deciding not to send would already have put someone's
+                // password into this process's memory, and the point of the mark is that it never gets there.
+                _logger.LogDebug("The clipboard was left alone: {Reason}", refused);
+                return new ClipboardSnapshot([], [], refused);
+            }
+
             if (IsClipboardFormatAvailable(CF_HDROP))
             {
                 return new ClipboardSnapshot([], ReadDropFiles(GetClipboardData(CF_HDROP)));
@@ -299,6 +309,31 @@ internal sealed class ClipboardThread : IDisposable
         {
             CloseClipboard();
         }
+    }
+
+    /// <summary>
+    /// Why what is on the clipboard must not leave this machine, or null when nothing forbids it. The clipboard is
+    /// already open; what the marks mean is <see cref="ClipboardPrivacy"/>'s business, this only reads them.
+    /// </summary>
+    private static string? WhySyncIsRefused() => ClipboardPrivacy.WhySyncIsRefused(
+        ClipboardFormats.ExcludeFromMonitors != 0 && IsClipboardFormatAvailable(ClipboardFormats.ExcludeFromMonitors),
+        ReadPermission(ClipboardFormats.CanUploadToCloud),
+        ReadPermission(ClipboardFormats.CanIncludeInHistory));
+
+    /// <summary>
+    /// The DWORD a permission format carries, or null when the format is not on the clipboard at all. A format
+    /// that is there but cannot be read counts as zero: it was put there for a reason, and the wrong way to be
+    /// wrong here is to send someone's password anyway.
+    /// </summary>
+    private static uint? ReadPermission(uint id)
+    {
+        if (id == 0 || !IsClipboardFormatAvailable(id))
+        {
+            return null;
+        }
+
+        var value = ReadGlobal(GetClipboardData(id), 64);
+        return value is null || value.Length < 4 ? 0u : BitConverter.ToUInt32(value, 0);
     }
 
     internal static IReadOnlyList<string> ReadDropFiles(nint handle)

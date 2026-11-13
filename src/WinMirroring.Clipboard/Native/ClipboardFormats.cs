@@ -12,6 +12,14 @@ internal static class ClipboardFormats
     public static readonly uint FileContents = RegisterClipboardFormatW("FileContents");
     public static readonly uint PreferredDropEffect = RegisterClipboardFormatW("Preferred DropEffect");
 
+    // What an application says may be done with what it copied. A password manager puts these on the clipboard,
+    // and this app is precisely what they are aimed at: a program that watches the clipboard and carries what it
+    // finds to another machine. The first forbids any such program from touching the content at all; the other two
+    // are a DWORD where zero is no — no clipboard history, no copy to other machines.
+    public static readonly uint ExcludeFromMonitors = RegisterClipboardFormatW("ExcludeClipboardContentFromMonitorProcessing");
+    public static readonly uint CanIncludeInHistory = RegisterClipboardFormatW("CanIncludeInClipboardHistory");
+    public static readonly uint CanUploadToCloud = RegisterClipboardFormatW("CanUploadToCloudClipboard");
+
     /// <summary>Order matters: richer formats first, so the size budget keeps them when space runs out.</summary>
     public static IEnumerable<(ClipboardItemKind Kind, uint Id)> Shared =>
     [
