@@ -425,6 +425,7 @@ public partial class App : Application
         services.AddSingleton<DragDropCoordinator>();
         services.AddSingleton<ScreenStreamingService>();
         services.AddSingleton<GithubUpdater>();
+        services.AddSingleton<ButtonBarService>();
         services.AddSingleton<MainViewModel>();
         return services.BuildServiceProvider();
     }
@@ -676,8 +677,31 @@ public partial class App : Application
         }
 
         _controlPanel ??= new Views.ControlPanelWindow();
-        _controlPanel.Toggle(vm, _services.GetRequiredService<ScreenStreamingService>(), this, ShowMainWindow, HideFloatingMenu);
+        _controlPanel.Toggle(vm, _services.GetRequiredService<ScreenStreamingService>(), this, _services.GetRequiredService<ButtonBarService>(),
+            ShowMainWindow, ShowButtonEditor, HideFloatingMenu);
     }
+
+    /// <summary>The editor of the view's button bar and its presets (one window, brought to the front if open).</summary>
+    private void ShowButtonEditor()
+    {
+        if (_services is null)
+        {
+            return;
+        }
+
+        if (_buttonEditor is { IsLoaded: true } open)
+        {
+            open.Activate();
+            return;
+        }
+
+        _buttonEditor = new Views.ButtonPresetsWindow(_services.GetRequiredService<ButtonBarService>());
+        _buttonEditor.Closed += (_, _) => _buttonEditor = null;
+        _buttonEditor.Show();
+        _buttonEditor.Activate();
+    }
+
+    private Views.ButtonPresetsWindow? _buttonEditor;
 
     public async Task ExitAsync()
     {
@@ -736,7 +760,7 @@ public partial class App : Application
 
     private void CloseWindows()
     {
-        var windows = new List<Window?> { _fileTransfer, _controlPanel, _floatingMenu };
+        var windows = new List<Window?> { _fileTransfer, _controlPanel, _floatingMenu, _buttonEditor };
         windows.AddRange(_openViewers);
         _mainWindow?.AllowClose();
         windows.Add(_mainWindow);

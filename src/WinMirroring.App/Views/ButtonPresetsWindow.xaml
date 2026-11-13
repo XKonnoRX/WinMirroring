@@ -1,0 +1,100 @@
+<Window x:Class="WinMirroring.App.Views.ButtonPresetsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="WinMirroring — кнопки трансляции"
+        Width="820" Height="600" MinWidth="640" MinHeight="460"
+        WindowStartupLocation="CenterScreen" FontSize="14"
+        Icon="pack://application:,,,/Assets/app.ico">
+  <Window.Resources>
+    <Style TargetType="Button">
+      <Setter Property="Padding" Value="12,5" />
+      <Setter Property="Margin" Value="0,0,6,0" />
+      <Setter Property="MinHeight" Value="34" />
+    </Style>
+    <Style TargetType="ToggleButton">
+      <Setter Property="Padding" Value="12,5" />
+      <Setter Property="MinHeight" Value="34" />
+    </Style>
+    <Style TargetType="TextBox">
+      <Setter Property="Padding" Value="4,5" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style TargetType="TextBlock" x:Key="Label">
+      <Setter Property="Margin" Value="0,10,0,3" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style TargetType="TextBlock" x:Key="Hint">
+      <Setter Property="Foreground" Value="#6B7280" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+      <Setter Property="Margin" Value="0,4,0,0" />
+    </Style>
+  </Window.Resources>
+
+  <DockPanel Margin="14">
+    <!-- Presets -->
+    <DockPanel DockPanel.Dock="Top">
+      <TextBlock Text="Набор" VerticalAlignment="Center" FontWeight="SemiBold" Margin="0,0,10,0" />
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="8,0,0,0">
+        <Button Content="Новый" Click="OnNewPreset" ToolTip="Пустой набор" />
+        <Button Content="Копия" Click="OnCopyPreset" ToolTip="Новый набор с теми же кнопками" />
+        <Button Content="Удалить" Click="OnDeletePreset" Margin="0" />
+      </StackPanel>
+      <ComboBox x:Name="PresetBox" DisplayMemberPath="Name" SelectionChanged="OnPresetSelected" MinHeight="34" VerticalContentAlignment="Center" />
+    </DockPanel>
+    <DockPanel DockPanel.Dock="Top" Margin="0,8,0,0">
+      <TextBlock Text="Название" VerticalAlignment="Center" Margin="0,0,10,0" />
+      <TextBox x:Name="PresetNameBox" TextChanged="OnPresetNameChanged" />
+    </DockPanel>
+
+    <!-- Save -->
+    <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0" LastChildFill="True">
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+        <Button Content="Сохранить и показать этот набор" FontWeight="SemiBold" IsDefault="True" Click="OnSave" />
+        <Button Content="Отмена" IsCancel="True" Margin="0" />
+      </StackPanel>
+      <Button DockPanel.Dock="Left" Content="Добавить стандартные наборы" Click="OnRestoreDefaults"
+              ToolTip="Добавляет «Основные», «Браузер» и «Текст» (под другим именем, если такие уже есть)" />
+      <TextBlock x:Name="StatusText" Foreground="#B91C1C" VerticalAlignment="Center" TextWrapping="Wrap" Margin="6,0" />
+    </DockPanel>
+
+    <!-- Buttons of the preset and the selected button -->
+    <Grid Margin="0,12,0,0">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="340" />
+      </Grid.ColumnDefinitions>
+
+      <DockPanel Grid.Column="0">
+        <TextBlock DockPanel.Dock="Top" Text="Кнопки (слева направо)" FontWeight="SemiBold" Margin="0,0,0,4" />
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0">
+          <Button Content="+ Кнопка" Click="OnAddButton" />
+          <Button Content="Удалить" Click="OnRemoveButton" />
+          <Button Content="↑" Click="OnMoveUp" MinWidth="40" ToolTip="Левее" />
+          <Button Content="↓" Click="OnMoveDown" MinWidth="40" ToolTip="Правее" Margin="0" />
+        </StackPanel>
+        <ListBox x:Name="ButtonList" SelectionChanged="OnButtonSelected" />
+      </DockPanel>
+
+      <StackPanel x:Name="EditorPanel" Grid.Column="1" Margin="14,0,0,0">
+        <TextBlock Style="{StaticResource Label}" Text="Подпись" Margin="0,0,0,3" />
+        <TextBox x:Name="LabelBox" TextChanged="OnButtonEdited" />
+
+        <TextBlock Style="{StaticResource Label}" Text="Клавиши" />
+        <DockPanel>
+          <ToggleButton x:Name="RecordToggle" DockPanel.Dock="Right" Content="Записать" Margin="6,0,0,0" Click="OnRecordClick"
+                        ToolTip="Нажмите сочетание на клавиатуре — оно запишется сюда" />
+          <TextBox x:Name="KeysBox" TextChanged="OnButtonEdited" />
+        </DockPanel>
+        <TextBlock Style="{StaticResource Hint}"
+                   Text="Например Ctrl+Shift+T. Несколько нажатий подряд через запятую: Ctrl+K, Ctrl+C. Одна Ctrl, Shift или Alt — залипающая кнопка (держится до повторного нажатия). То, что перехватывает Windows здесь (Alt+Tab, Win+…), впишите вручную." />
+
+        <TextBlock Style="{StaticResource Label}" Text="Текст (необязательно)" />
+        <TextBox x:Name="TypedTextBox" TextChanged="OnButtonEdited" />
+        <TextBlock Style="{StaticResource Hint}" Text="Набирается там после клавиш, если они есть." />
+
+        <TextBlock x:Name="ButtonError" Foreground="#B91C1C" TextWrapping="Wrap" Margin="0,10,0,0" />
+      </StackPanel>
+    </Grid>
+  </DockPanel>
+</Window>

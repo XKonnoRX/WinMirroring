@@ -11,6 +11,7 @@ using WinMirroring.App.Services;
 using WinMirroring.Audio;
 using WinMirroring.Clipboard;
 using WinMirroring.Input;
+using WinMirroring.Input.Keyboard;
 using WinMirroring.Screen;
 using WinMirroring.Screen.Protocol;
 using InputButton = WinMirroring.Input.Protocol.MouseButton;
@@ -53,6 +54,11 @@ public partial class ScreenViewerWindow : Window
     private readonly ClipboardSyncService? _clipboard;
     private readonly ViewModels.MainViewModel? _quick;
     private readonly InputSharingService? _input;
+    private readonly ButtonBarService? _bar;
+
+    /// <summary>Modifiers a latching bar button holds down on the other device (left-hand virtual-key codes).</summary>
+    private readonly HashSet<ushort> _latched = [];
+    private readonly List<(System.Windows.Controls.Primitives.ToggleButton Button, IReadOnlyList<ushort> Modifiers)> _latchButtons = [];
     private readonly DispatcherTimer _statsTimer;
     private readonly DispatcherTimer _noticeTimer;
     private readonly DispatcherTimer _layoutTimer;
@@ -86,6 +92,12 @@ public partial class ScreenViewerWindow : Window
         _clipboard = services.GetService<ClipboardSyncService>();
         _quick = services.GetService<ViewModels.MainViewModel>();
         _input = services.GetService<InputSharingService>();
+        _bar = services.GetService<ButtonBarService>();
+        if (_bar is not null)
+        {
+            _bar.Changed += OnButtonBarChanged;
+        }
+
         UpdateInfo();
 
         // A tap on the picture while the quick panel is open just closes the panel.
@@ -146,6 +158,8 @@ public partial class ScreenViewerWindow : Window
         {
             PrepareDisplayMode();
         }
+
+        RebuildButtonBar();
 
         Loaded += (_, _) =>
         {
@@ -622,6 +636,144 @@ public partial class ScreenViewerWindow : Window
         }
 
         _keysDown.Clear();
+        if (_latched.Count > 0)
+        {
+            _latched.Clear();
+            RefreshLatchButtons();
+        }
+    }
+
+    // ---- button bar --------------------------------------------------------------------------------------
+
+    /// <summary>Screens only: a window copy is an ordinary small window, a bar over it would hide what it shows.</summary>
+    private bool ButtonBarFits => !_windowMode && _viewer.Info.Kind is "monitor" or "display";
+
+    private void OnButtonBarChanged() => Dispatcher.BeginInvoke(RebuildButtonBar);
+
+    private void RebuildButtonBar()
+    {
+        ButtonBarItems.Children.Clear();
+        _latchButtons.Clear();
+        foreach (var button in _bar?.ActiveButtons ?? [])
+        {
+            if (button.Latch)
+            {
+                var modifiers = button.Chords[0].Modifiers;
+                var toggle = new System.Windows.Controls.Primitives.ToggleButton
+                {
+                    Content = button.Label,
+                    Style = (Style)FindResource("BarToggle"),
+                    ToolTip = $"{button.Label}: держится нажатой, пока не нажмёте снова",
+                };
+                toggle.Click += (_, _) => SetLatch(modifiers, toggle.IsChecked == true);
+                _latchButtons.Add((toggle, modifiers));
+                ButtonBarItems.Children.Add(toggle);
+            }
+            else
+            {
+                var press = new Button
+                {
+                    Content = button.Label,
+                    Style = (Style)FindResource("BarButton"),
+                    ToolTip = button.Chords.Count > 0 ? KeyChord.FormatSequence(button.Chords) : button.Text,
+                };
+                press.Click += (_, _) => PressBarButton(button);
+                ButtonBarItems.Children.Add(press);
+            }
+        }
+
+        RefreshLatchButtons();
+        UpdateButtonBarVisibility();
+    }
+
+    private void UpdateButtonBarVisibility()
+    {
+        var show = _bar is { Visible: true } && ButtonBarFits && ButtonBarItems.Children.Count > 0;
+        ButtonBar.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+
+        // Notices go above the bar instead of under it.
+        NoticeBorder.Margin = new Thickness(0, 0, 0, show ? 72 : 24);
+    }
+
+    private void PressBarButton(BarButton button)
+    {
+        if (!ControlEnabled)
+        {
+            ShowNotice("Только просмотр: включите управление в меню, чтобы кнопки нажимали клавиши там");
+            return;
+        }
+
+        foreach (var chord in button.Chords)
+        {
+            SendChord(chord);
+        }
+
+        if (button.Text is { } text)
+        {
+            _viewer.SendText(text);
+        }
+    }
+
+    /// <summary>Holds the chord's modifiers (those not already held there), taps its key, lets go in reverse order.</summary>
+    private void SendChord(KeyChord chord)
+    {
+        var pressed = new List<ushort>();
+        foreach (var vk in chord.Modifiers)
+        {
+            if (!_keysDown.ContainsKey(vk))
+            {
+                SendVirtualKey(vk, up: false);
+                pressed.Add(vk);
+            }
+        }
+
+        if (chord.Key != 0)
+        {
+            SendVirtualKey(chord.Key, up: false);
+            SendVirtualKey(chord.Key, up: true);
+        }
+
+        for (var i = pressed.Count - 1; i >= 0; i--)
+        {
+            SendVirtualKey(pressed[i], up: true);
+        }
+    }
+
+    private void SendVirtualKey(ushort vk, bool up) =>
+        _viewer.SendKey(vk, (ushort)MapVirtualKeyW(vk, 0), up, KeyChord.IsExtended(vk));
+
+    /// <summary>A latching button: its modifiers stay down there (for Ctrl+click on a tablet, say) until pressed again.</summary>
+    private void SetLatch(IReadOnlyList<ushort> modifiers, bool on)
+    {
+        if (on && !ControlEnabled)
+        {
+            ShowNotice("Только просмотр: включите управление в меню, чтобы кнопки нажимали клавиши там");
+            RefreshLatchButtons();
+            return;
+        }
+
+        foreach (var vk in modifiers)
+        {
+            if (on && _latched.Add(vk) && !_keysDown.ContainsKey(vk))
+            {
+                _keysDown[vk] = ((ushort)MapVirtualKeyW(vk, 0), KeyChord.IsExtended(vk));
+                SendVirtualKey(vk, up: false);
+            }
+            else if (!on && _latched.Remove(vk) && _keysDown.Remove(vk))
+            {
+                SendVirtualKey(vk, up: true);
+            }
+        }
+
+        RefreshLatchButtons();
+    }
+
+    private void RefreshLatchButtons()
+    {
+        foreach (var (button, modifiers) in _latchButtons)
+        {
+            button.IsChecked = modifiers.All(_latched.Contains);
+        }
     }
 
     // ---- keyboard ----------------------------------------------------------------------------------------
@@ -697,7 +849,8 @@ public partial class ScreenViewerWindow : Window
     {
         foreach (var (modKey, vk, extended) in TrackedModifiers)
         {
-            var down = Keyboard.IsKeyDown(modKey);
+            // A modifier latched by a bar button counts as held, though no key here is down.
+            var down = Keyboard.IsKeyDown(modKey) || _latched.Contains(vk);
             var tracked = _keysDown.ContainsKey(vk);
             if (down == tracked)
             {
@@ -1201,6 +1354,11 @@ public partial class ScreenViewerWindow : Window
         _noticeTimer.Stop();
         _layoutTimer.Stop();
         InputLanguageManager.Current.InputLanguageChanged -= OnInputLanguageChanged;
+        if (_bar is not null)
+        {
+            _bar.Changed -= OnButtonBarChanged;
+        }
+
         ReleaseRemoteInput();
         if (!_closingFromRemote)
         {

@@ -44,6 +44,8 @@ public sealed class AppSettings
 
     public ScreenSettings Screen { get; set; } = new();
 
+    public ButtonBarSettings ButtonBar { get; set; } = new();
+
     public PairedPeer? FindPairedById(string peerId) =>
         PairedPeers.FirstOrDefault(p => string.Equals(p.Id, peerId, StringComparison.Ordinal));
 

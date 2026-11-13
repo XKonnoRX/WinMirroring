@@ -55,7 +55,7 @@ public partial class ControlPanelWindow : Window
     public bool IsShown { get; private set; }
 
     /// <summary>Opens the panel (rebuilt from current state) or closes it if already open; returns whether it is now shown.</summary>
-    public bool Toggle(MainViewModel vm, ScreenStreamingService screen, IViewerControl viewers, Action openSettings, Action hideButton)
+    public bool Toggle(MainViewModel vm, ScreenStreamingService screen, IViewerControl viewers, ButtonBarService bar, Action openSettings, Action openButtonEditor, Action hideButton)
     {
         if (IsShown)
         {
@@ -63,8 +63,8 @@ public partial class ControlPanelWindow : Window
             return false;
         }
 
-        _repopulate = () => Populate(vm, screen, viewers, openSettings, hideButton);
-        _signature = () => BuildSignature(vm, screen, viewers);
+        _repopulate = () => Populate(vm, screen, viewers, bar, openSettings, openButtonEditor, hideButton);
+        _signature = () => BuildSignature(vm, screen, viewers, bar);
         _repopulate();
 
         var work = SystemParameters.WorkArea;
@@ -111,9 +111,10 @@ public partial class ControlPanelWindow : Window
     }
 
     /// <summary>Everything the panel shows, as one string: when it changes, the panel is rebuilt.</summary>
-    private static string BuildSignature(MainViewModel vm, ScreenStreamingService screen, IViewerControl viewers)
+    private static string BuildSignature(MainViewModel vm, ScreenStreamingService screen, IViewerControl viewers, ButtonBarService bar)
     {
         var text = new StringBuilder();
+        text.Append(bar.Visible).Append(bar.ActiveName).AppendJoin(',', bar.Presets.Select(p => p.Name)).Append('|');
         text.Append(ScreenStreamingService.IsVirtualDisplayAvailable).Append('|')
             .Append(vm.SoundAutomatic).Append(vm.SoundKeptHere).Append(vm.InputEnabled)
             .Append(vm.SyncKeyboardLayout).Append(vm.AdminWindowControl).Append('|')
@@ -143,9 +144,9 @@ public partial class ControlPanelWindow : Window
         return text.ToString();
     }
 
-    private void Populate(MainViewModel vm, ScreenStreamingService screen, IViewerControl viewers, Action openSettings, Action hideButton)
+    private void Populate(MainViewModel vm, ScreenStreamingService screen, IViewerControl viewers, ButtonBarService bar, Action openSettings, Action openButtonEditor, Action hideButton)
     {
-        _lastSignature = BuildSignature(vm, screen, viewers);
+        _lastSignature = BuildSignature(vm, screen, viewers, bar);
         Sections.Children.Clear();
         var peers = vm.ReadyPeers;
         var hasLocalDriver = ScreenStreamingService.IsVirtualDisplayAvailable;
@@ -184,6 +185,21 @@ public partial class ControlPanelWindow : Window
                 else
                 {
                     Sections.Children.Add(MakeNote("Только просмотр: управление запрещено на том устройстве"));
+                }
+
+                if (view.Kind is "monitor" or "display")
+                {
+                    // The bar of keys over full-screen views: shown or not, which preset, and editing them.
+                    Sections.Children.Add(MakeToggle("Панель кнопок внизу", bar.Visible, bar.SetVisible));
+                    if (bar.Visible && bar.Presets.Count > 1)
+                    {
+                        foreach (var preset in bar.Presets)
+                        {
+                            Sections.Children.Add(MakeChoice($"Набор «{preset.Name}»", preset.Name == bar.ActiveName, () => bar.SetActive(preset.Name)));
+                        }
+                    }
+
+                    Sections.Children.Add(MakeButton("Настроить кнопки и наборы…", openButtonEditor, choosesScreen: true));
                 }
 
                 Sections.Children.Add(MakeButton("Экранная клавиатура", () => viewers.ToggleKeyboard(view.StreamId)));

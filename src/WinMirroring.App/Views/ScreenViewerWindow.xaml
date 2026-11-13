@@ -30,6 +30,46 @@
       <Setter Property="FontSize" Value="12" />
       <Setter Property="Margin" Value="2,12,0,2" />
     </Style>
+
+    <!-- Button bar over the picture: finger-sized, dark, never takes keyboard focus from the picture -->
+    <Style TargetType="ButtonBase" x:Key="BarBase">
+      <Setter Property="MinHeight" Value="40" />
+      <Setter Property="MinWidth" Value="48" />
+      <Setter Property="Margin" Value="3,0" />
+      <Setter Property="Padding" Value="12,4" />
+      <Setter Property="FontSize" Value="14" />
+      <Setter Property="Foreground" Value="White" />
+      <Setter Property="Background" Value="#374151" />
+      <Setter Property="BorderBrush" Value="#4B5563" />
+      <Setter Property="Focusable" Value="False" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ButtonBase">
+            <Border x:Name="Chrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="1" CornerRadius="6" Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Chrome" Property="BorderBrush" Value="#9CA3AF" />
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="Chrome" Property="Background" Value="#1D4ED8" />
+              </Trigger>
+              <Trigger Property="ToggleButton.IsChecked" Value="True">
+                <Setter TargetName="Chrome" Property="Background" Value="#2563EB" />
+                <Setter TargetName="Chrome" Property="BorderBrush" Value="#93C5FD" />
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.5" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType="Button" x:Key="BarButton" BasedOn="{StaticResource BarBase}" />
+    <Style TargetType="ToggleButton" x:Key="BarToggle" BasedOn="{StaticResource BarBase}" />
   </Window.Resources>
 
   <Grid>
@@ -68,6 +108,15 @@
       <TextBlock x:Name="WaitingText" Text="Ожидание изображения…" Foreground="#9CA3AF" FontSize="16"
                  HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />
     </Grid>
+
+    <!-- Buttons that press keys on the other device (presets from the main menu), over the bottom of the picture.
+         A press here never reaches the picture below. -->
+    <Border x:Name="ButtonBar" Grid.Row="1" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="8,0,8,8"
+            Background="#D9111827" BorderBrush="#374151" BorderThickness="1" CornerRadius="10" Padding="5" Visibility="Collapsed">
+      <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" PanningMode="HorizontalOnly">
+        <StackPanel x:Name="ButtonBarItems" Orientation="Horizontal" />
+      </ScrollViewer>
+    </Border>
 
     <Border x:Name="NoticeBorder" Grid.Row="1" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,24"
             Background="#E61F2937" CornerRadius="6" Padding="14,8" Visibility="Collapsed" IsHitTestVisible="False">
