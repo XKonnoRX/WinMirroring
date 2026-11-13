@@ -248,23 +248,23 @@ internal sealed class H264VideoDecoder : IDisposable
 
     private void ReadFrame(IMFSample sample, ref byte[] bgra)
     {
-        var nv12Size = Nv12Converter.Nv12Size(_width, _height);
-        if (_nv12.Length < nv12Size)
-        {
-            _nv12 = new byte[nv12Size];
-        }
-
         using var buffer = sample.GetBufferByIndex(0);
         using var buffer2d = buffer.QueryInterfaceOrNull<IMF2DBuffer>();
+
+        // The whole frame is taken, not just the rows that are shown: its luma plane is as tall as the coded
+        // picture (a multiple of 16), and the chroma plane begins only after that.
+        int length;
         if (buffer2d is not null)
         {
-            var length = Math.Min(_nv12.Length, buffer2d.ContiguousLength);
+            length = buffer2d.ContiguousLength;
+            Grow(length);
             buffer2d.ContiguousCopyTo(_nv12, length);
         }
         else
         {
-            buffer.Lock(out var pointer, out _, out var length);
-            Marshal.Copy(pointer, _nv12, 0, Math.Min(_nv12.Length, length));
+            buffer.Lock(out var pointer, out _, out length);
+            Grow(length);
+            Marshal.Copy(pointer, _nv12, 0, length);
             buffer.Unlock();
         }
 
@@ -274,7 +274,16 @@ internal sealed class H264VideoDecoder : IDisposable
             bgra = new byte[pixels];
         }
 
-        Nv12Converter.Nv12ToBgra(_nv12, _width, _height, bgra);
+        var rows = Nv12Converter.RowsIn(length, _width, _height);
+        Nv12Converter.Nv12ToBgra(_nv12, _width, _height, bgra, _width * rows);
+    }
+
+    private void Grow(int length)
+    {
+        if (_nv12.Length < length)
+        {
+            _nv12 = new byte[length];
+        }
     }
 
     /// <summary>

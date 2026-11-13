@@ -16,6 +16,21 @@ internal static class Nv12Converter
     public static int Nv12Size(int width, int height) => width * height + width * height / 2;
 
     /// <summary>
+    /// How many luma rows an NV12 buffer of <paramref name="length"/> bytes really holds. A decoder's frame is as
+    /// tall as the coded picture (a multiple of 16), so this is where its chroma plane begins.
+    /// </summary>
+    public static int RowsIn(int length, int width, int fallbackHeight)
+    {
+        if (width <= 0 || length <= 0)
+        {
+            return fallbackHeight;
+        }
+
+        var rows = (int)(2L * length / (3L * width));
+        return rows >= fallbackHeight ? rows & ~1 : fallbackHeight;
+    }
+
+    /// <summary>
     /// Converts the <paramref name="crop"/> region of a BGRA frame (<paramref name="frameWidth"/> pixels per row)
     /// into a tightly packed NV12 buffer. The crop width and height must be even.
     /// </summary>
@@ -75,12 +90,18 @@ internal static class Nv12Converter
     }
 
     /// <summary>
-    /// Converts a tightly packed NV12 image into BGRA (alpha 255) in <paramref name="bgra"/>, which must hold
+    /// Converts an NV12 image into BGRA (alpha 255) in <paramref name="bgra"/>, which must hold
     /// <paramref name="width"/>×<paramref name="height"/>×4 bytes.
     /// </summary>
-    public static unsafe void Nv12ToBgra(ReadOnlySpan<byte> nv12, int width, int height, byte[] bgra)
+    /// <param name="uvOffset">
+    /// Where the chroma plane starts. A decoder hands back a frame whose luma plane is as tall as the coded
+    /// picture, which H.264 rounds up to a multiple of 16: for a 1080-line screen the chroma begins after 1088
+    /// rows, not 1080. Reading it from the wrong place leaves the picture grey with a shifted colour ghost over
+    /// it. Zero means a tightly packed image, where it follows <paramref name="height"/> rows.
+    /// </param>
+    public static unsafe void Nv12ToBgra(ReadOnlySpan<byte> nv12, int width, int height, byte[] bgra, int uvOffset = 0)
     {
-        var uvPlane = width * height;
+        var uvPlane = uvOffset > 0 ? uvOffset : width * height;
         fixed (byte* src = nv12)
         fixed (byte* dst = bgra)
         {

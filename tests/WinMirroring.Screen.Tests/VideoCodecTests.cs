@@ -99,6 +99,87 @@ public class VideoCodecTests
         Assert.InRange(Math.Abs(back[2] - bgra[source + 2]), 0, 6);
     }
 
+    /// <summary>
+    /// A decoded frame is as tall as the coded picture, which H.264 rounds up to a multiple of 16, so for a
+    /// 1080-line screen the chroma plane starts after 1088 rows. Reading it after 1080 leaves the picture grey
+    /// with a shifted colour ghost over it, which is what a real 1080p stream looked like.
+    /// </summary>
+    [Fact]
+    public void ChromaIsReadAfterTheCodedHeightNotTheVisibleOne()
+    {
+        const int width = 64;
+        const int height = 18;
+        const int coded = 32; // what a decoder would hand back for 18 visible rows
+        var nv12 = new byte[width * coded + (width * coded / 2)];
+        Array.Fill(nv12, (byte)128, 0, width * height);
+        Array.Fill(nv12, (byte)235, width * height, width * (coded - height)); // the rows below the picture
+        for (var i = width * coded; i < nv12.Length; i += 2)
+        {
+            nv12[i] = 90;       // U
+            nv12[i + 1] = 240;  // V — mid-grey luma with this chroma is a strong red
+        }
+
+        Assert.Equal(coded, Nv12Converter.RowsIn(nv12.Length, width, height));
+
+        var bgra = new byte[width * height * 4];
+        Nv12Converter.Nv12ToBgra(nv12, width, height, bgra, width * coded);
+        for (var y = 0; y < height; y++)
+        {
+            var i = y * width * 4;
+            Assert.Equal((54, 54, 255), (bgra[i], bgra[i + 1], bgra[i + 2]));
+        }
+
+        // Read as if the frame were tightly packed, the top rows take the leftover luma for chroma: not red.
+        var wrong = new byte[width * height * 4];
+        Nv12Converter.Nv12ToBgra(nv12, width, height, wrong);
+        Assert.NotEqual(bgra[0..4], wrong[0..4]);
+    }
+
+    /// <summary>The same, over the real encoder and decoder at a screen height that is not a multiple of 16.</summary>
+    [Fact]
+    public void HardwareH264KeepsColoursAt1080p()
+    {
+        Assert.SkipUnless(VideoCodecSupport.CanEncodeH264 && VideoCodecSupport.CanDecodeH264, "No hardware H.264 encoder on this machine.");
+
+        const int width = 1920;
+        const int height = 1080;
+        var source = ColourBands(width, height);
+        var crop = new Rectangle(0, 0, width, height);
+
+        using var encoder = H264VideoEncoder.TryCreate(width, height, 30, 12000, NullLogger.Instance)!;
+        using var decoder = H264VideoDecoder.TryCreate(width, height, NullLogger.Instance)!;
+        var output = Array.Empty<byte>();
+        var produced = false;
+        foreach (var unit in encoder.Encode(source, width, crop, forceKeyframe: true))
+        {
+            produced |= decoder.DecodeInto(unit.Data, ref output, out var w, out var h) && (w, h) == (width, height);
+        }
+
+        Assert.True(produced, "the 1080p frame did not come back");
+        Assert.InRange(MeanColorError(source, output), 0, 24);
+    }
+
+    /// <summary>Wide bands of saturated colour: a chroma plane read at the wrong offset shows up immediately.</summary>
+    private static byte[] ColourBands(int width, int height)
+    {
+        var image = new byte[width * height * 4];
+        ReadOnlySpan<(byte B, byte G, byte R)> colours = [(40, 40, 230), (40, 200, 40), (230, 60, 40), (30, 210, 220)];
+        for (var y = 0; y < height; y++)
+        {
+            var colour = colours[(y / 40) % colours.Length];
+            for (var x = 0; x < width; x++)
+            {
+                var i = (y * width + x) * 4;
+                image[i] = colour.B;
+                image[i + 1] = colour.G;
+                image[i + 2] = colour.R;
+                image[i + 3] = 255;
+            }
+        }
+
+        return image;
+    }
+
     [Fact]
     public void Even_RoundsDown()
     {
