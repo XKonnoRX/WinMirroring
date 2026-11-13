@@ -7,6 +7,7 @@ using WinMirroring.Core.Network;
 using WinMirroring.Core.Pairing;
 using WinMirroring.Core.Peers;
 using WinMirroring.Screen.Capture;
+using WinMirroring.Screen.Encoding;
 
 namespace WinMirroring.Screen.Tests;
 
@@ -40,24 +41,44 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
     }
 
     [Fact(Explicit = true)]
-    public async Task ViewerReceivesTheMonitor()
+    public Task ViewerReceivesTheMonitor() => StreamThePrimaryMonitorAsync(Core.Settings.VideoCodec.Jpeg, "jpeg");
+
+    /// <summary>The same over hardware H.264: capture, encode, the session, decode, and the picture compared.</summary>
+    [Fact(Explicit = true)]
+    public Task ViewerReceivesTheMonitorAsVideo()
+    {
+        if (!VideoCodecSupport.CanEncodeH264 || !VideoCodecSupport.CanDecodeH264)
+        {
+            Assert.Skip("No hardware H.264 encoder (or no decoder) on this machine.");
+        }
+
+        return StreamThePrimaryMonitorAsync(Core.Settings.VideoCodec.Auto, "h264");
+    }
+
+    private async Task StreamThePrimaryMonitorAsync(Core.Settings.VideoCodec codec, string expectedCodec)
     {
         var ct = TestContext.Current.CancellationToken;
         var discoveryA = FreeUdpPort();
         var discoveryB = FreeUdpPort();
         var a = CreateNode("ScreenA", discoveryA, $"127.0.0.1:{discoveryB}");
         var b = CreateNode("ScreenB", discoveryB, $"127.0.0.1:{discoveryA}");
+        a.Settings.Screen.VideoCodec = codec;
         await a.StartAsync();
         await b.StartAsync();
 
-        await using var screenA = new ScreenStreamingService(a, NullLogger<ScreenStreamingService>.Instance);
-        await using var screenB = new ScreenStreamingService(b, NullLogger<ScreenStreamingService>.Instance);
+        var log = Path.Combine(Path.GetTempPath(), $"winmirroring-stream-{expectedCodec}.log");
+        File.WriteAllText(log, string.Empty);
+        await using var screenA = new ScreenStreamingService(a, new FileLogger<ScreenStreamingService>(log));
+        await using var screenB = new ScreenStreamingService(b, new FileLogger<ScreenStreamingService>(log));
         screenA.Start();
         screenB.Start();
 
         await WaitUntilAsync(() => b.Peers.TryGet(a.Identity.Id, out var peer) && peer.TransportEndPoint is not null, ct);
         Assert.True(await b.PairAsync(a.Identity.Id, ct));
         await WaitUntilAsync(() => a.Sessions.TryGetSession(b.Identity.Id, out var s) && s.State == SessionState.Ready, ct);
+
+        // The source picks the codec from what the viewer said it can decode: wait until it has heard.
+        await WaitUntilAsync(() => screenA.PeerVirtualDisplay(b.Identity.Id) is not null, ct);
 
         var opened = new TaskCompletionSource<ScreenViewer>(TaskCreationOptions.RunContinuationsAsynchronously);
         screenB.ViewerOpened += viewer => opened.TrySetResult(viewer);
@@ -81,6 +102,7 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
         var primary = DisplayCatalog.Monitors()[0];
 
         Assert.Equal("monitor", viewer.Info.Kind);
+        Assert.Equal(expectedCodec, viewer.Info.Codec);
 
         // Without a DPI-aware manifest (as in this test host) monitor bounds are scaled, capture is physical:
         // same proportions, capture at least as large.

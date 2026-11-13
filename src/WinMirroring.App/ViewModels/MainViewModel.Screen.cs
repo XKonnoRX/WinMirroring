@@ -3,9 +3,13 @@ using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using WinMirroring.App.Views;
+using WinMirroring.Core.Settings;
 using WinMirroring.Screen;
 
 namespace WinMirroring.App.ViewModels;
+
+/// <summary>A selectable screen codec with a Russian label for the settings combo box.</summary>
+public sealed record VideoCodecChoice(VideoCodec Value, string Label);
 
 /// <summary>Screen and window streaming: device actions, settings and outgoing streams.</summary>
 public sealed partial class MainViewModel
@@ -14,6 +18,13 @@ public sealed partial class MainViewModel
     private bool _screenInitialized;
 
     public ObservableCollection<ActiveScreenSource> ScreenSources { get; } = [];
+
+    public IReadOnlyList<VideoCodecChoice> ScreenVideoCodecOptions { get; } =
+    [
+        new(VideoCodec.Auto, "Авто — H.264, иначе JPEG"),
+        new(VideoCodec.H264, "H.264 (аппаратный)"),
+        new(VideoCodec.Jpeg, "JPEG (изменённые участки)"),
+    ];
 
     [ObservableProperty]
     public partial bool ScreenAllowViewing { get; set; }
@@ -33,6 +44,12 @@ public sealed partial class MainViewModel
     [ObservableProperty]
     public partial int ScreenQuality { get; set; }
 
+    [ObservableProperty]
+    public partial VideoCodec ScreenVideoCodec { get; set; }
+
+    [ObservableProperty]
+    public partial int ScreenVideoBitrate { get; set; }
+
     private void InitializeScreen()
     {
         var settings = _node.Settings.Screen;
@@ -42,6 +59,8 @@ public sealed partial class MainViewModel
         ScreenHideSentWindow = settings.HideSentWindow;
         ScreenMaxFps = settings.MaxFps;
         ScreenQuality = settings.Quality;
+        ScreenVideoCodec = settings.VideoCodec;
+        ScreenVideoBitrate = settings.VideoBitrateKbps;
         _screen.SourcesChanged += () => _dispatcher.InvokeAsync(ReloadScreenSources);
         ReloadScreenSources();
         _screenInitialized = true;
@@ -222,6 +241,16 @@ public sealed partial class MainViewModel
         if (value is >= 30 and <= 95)
         {
             SaveScreen(s => s.Quality = value);
+        }
+    }
+
+    partial void OnScreenVideoCodecChanged(VideoCodec value) => SaveScreen(s => s.VideoCodec = value);
+
+    partial void OnScreenVideoBitrateChanged(int value)
+    {
+        if (value is >= 1000 and <= 100_000)
+        {
+            SaveScreen(s => s.VideoBitrateKbps = value);
         }
     }
 }

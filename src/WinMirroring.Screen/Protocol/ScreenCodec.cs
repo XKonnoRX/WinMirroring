@@ -38,6 +38,9 @@ public enum ScreenMessageType : byte
 
     /// <summary>Viewer → source: a command for the captured window (restore it from minimised).</summary>
     Window = 8,
+
+    /// <summary>Source → viewer: one H.264 access unit (the hardware-video path; <see cref="Frame"/> is the fallback).</summary>
+    VideoFrame = 9,
 }
 
 /// <summary>What a <see cref="ScreenMessageType.Window"/> message asks the captured window to do.</summary>
@@ -48,9 +51,13 @@ public enum WindowCommand : byte
 
 public sealed record ScreenFrame(uint StreamId, uint FrameNo, int Width, int Height, IReadOnlyList<EncodedTile> Tiles);
 
+/// <summary>One H.264 access unit for a stream: the decoded picture is <see cref="Width"/>×<see cref="Height"/>.</summary>
+public sealed record ScreenVideoFrame(uint StreamId, uint FrameNo, int Width, int Height, bool Keyframe, byte[] Data);
+
 /// <summary>
 /// Screen channel, little-endian, first byte <see cref="ScreenMessageType"/>, then u32 stream id.
 /// Frame: u32 frame no, u16 width, u16 height, u16 tile count, tiles (u16 x, y, w, h, i32 length, JPEG).
+/// VideoFrame: u32 frame no, u16 width, u16 height, u8 flags (bit0 keyframe), u16 reserved, H.264 access unit.
 /// Ack: u32 frame no. Pointer: u8 action, u8 button, f32 x, f32 y, i16 wheel. Key: u16 vk, u16 scan, u8 flags.
 /// Crop: f32 x, y, w, h.
 /// </summary>
@@ -122,6 +129,40 @@ public static class ScreenCodec
         }
 
         return new ScreenFrame(streamId, frameNo, width, height, tiles);
+    }
+
+    private const int VideoHeader = 16;
+
+    /// <summary>VideoFrame: u32 frame no, u16 width, u16 height, u8 flags (bit0 keyframe), then the H.264 bytes.</summary>
+    public static byte[] EncodeVideoFrame(uint streamId, uint frameNo, int width, int height, bool keyframe, ReadOnlySpan<byte> data)
+    {
+        var message = new byte[VideoHeader + data.Length];
+        var span = message.AsSpan();
+        span[0] = (byte)ScreenMessageType.VideoFrame;
+        BinaryPrimitives.WriteUInt32LittleEndian(span[1..], streamId);
+        BinaryPrimitives.WriteUInt32LittleEndian(span[5..], frameNo);
+        BinaryPrimitives.WriteUInt16LittleEndian(span[9..], (ushort)width);
+        BinaryPrimitives.WriteUInt16LittleEndian(span[11..], (ushort)height);
+        span[13] = (byte)(keyframe ? 1 : 0);
+        // span[14..16] reserved for alignment / future flags.
+        data.CopyTo(span[VideoHeader..]);
+        return message;
+    }
+
+    public static ScreenVideoFrame? TryDecodeVideoFrame(ReadOnlySpan<byte> message)
+    {
+        if (message.Length < VideoHeader || message[0] != (byte)ScreenMessageType.VideoFrame)
+        {
+            return null;
+        }
+
+        var streamId = BinaryPrimitives.ReadUInt32LittleEndian(message[1..]);
+        var frameNo = BinaryPrimitives.ReadUInt32LittleEndian(message[5..]);
+        int width = BinaryPrimitives.ReadUInt16LittleEndian(message[9..]);
+        int height = BinaryPrimitives.ReadUInt16LittleEndian(message[11..]);
+        var keyframe = (message[13] & 1) != 0;
+        var data = message[VideoHeader..].ToArray();
+        return new ScreenVideoFrame(streamId, frameNo, width, height, keyframe, data);
     }
 
     public static byte[] EncodeAck(uint streamId, uint frameNo)

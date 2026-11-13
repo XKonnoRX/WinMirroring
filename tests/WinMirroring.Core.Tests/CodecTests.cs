@@ -78,7 +78,10 @@ public class CodecTests
         new AudioRouteRequestMessage(true),
         new AudioRouteRequestMessage(false, Refuse: true),
         new ScreenRequestMessage(5, 1),
+        new ScreenStreamMessage(5, "monitor", "Монитор 1", 0, 2, true, Codec: "h264"),
+        new ScreenStreamMessage(9, "window", "Окно", 0, 0, false, Minimized: true, ScalePercent: 125),
         new ScreenStopMessage(5, "closed"),
+        new ScreenCodecFallbackMessage(5, "нет декодера"),
         new LogRequestMessage(3),
         new LogResponseMessage(3, "app.log", "text", null),
         new InputReleaseRequestMessage(),
@@ -88,6 +91,7 @@ public class CodecTests
         new DisplayExtendResultMessage(false, "нет драйвера"),
         new KeyboardLayoutMessage(unchecked((int)0xF0020409)),
         new DeviceCapabilitiesMessage(true, IsReply: true),
+        new DeviceCapabilitiesMessage(false, CanEncodeH264: true, CanDecodeH264: true),
     };
 
     [Fact]
@@ -144,5 +148,17 @@ public class CodecTests
         Assert.Null(ControlMessageCodec.TryDecode("{\"t\":\"from-the-future\"}"u8));
         Assert.Null(ControlMessageCodec.TryDecode("not json"u8));
         Assert.Null(ControlMessageCodec.TryDecode("{}"u8));
+    }
+
+    [Fact]
+    public void ScreenStreamMessageFromOlderPeerDefaultsToJpeg()
+    {
+        // A peer built before the H.264 path omits "codec"; it must read as the tile codec, not crash.
+        var message = ControlMessageCodec.TryDecode(
+            "{\"t\":\"screen-stream\",\"streamId\":5,\"kind\":\"monitor\",\"title\":\"Монитор 1\",\"monitorIndex\":0,\"monitorCount\":2,\"controlAllowed\":true}"u8);
+
+        var stream = Assert.IsType<ScreenStreamMessage>(message);
+        Assert.Equal("jpeg", stream.Codec);
+        Assert.Equal(5u, stream.StreamId);
     }
 }

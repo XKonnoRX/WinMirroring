@@ -242,7 +242,7 @@ public sealed partial class ScreenStreamingService
         }
 
         _logger.LogInformation("Extending onto {Peer}: {Width}x{Height}@{Hz} at {Position}{Exact}", session.PeerName, chosen.Width, chosen.Height, chosen.Frequency, position, exact ? string.Empty : " (closest offered mode)");
-        var source = ScreenSource.ForDisplay(session, NewStreamId(), monitor, _node.Settings.Screen, _logger);
+        var source = ScreenSource.ForDisplay(session, NewStreamId(), monitor, _node.Settings.Screen, NegotiateVideo(session), _logger);
         if (!await StartSourceAsync(session, source).ConfigureAwait(false))
         {
             VirtualDisplay.Detach(device);

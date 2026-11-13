@@ -3,9 +3,11 @@ using Microsoft.Extensions.Logging;
 using WinMirroring.Core;
 using WinMirroring.Core.Messages;
 using WinMirroring.Core.Peers;
+using WinMirroring.Core.Settings;
 using WinMirroring.Core.Transport;
 using WinMirroring.Input;
 using WinMirroring.Screen.Capture;
+using WinMirroring.Screen.Encoding;
 using WinMirroring.Screen.Protocol;
 
 namespace WinMirroring.Screen;
@@ -104,6 +106,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
     {
         _node.Sessions.SessionReady += OnSessionReady;
         _node.Sessions.SessionClosed += OnSessionClosed;
+        WinMirroring.Input.Screen.MonitorCatalog.Changed += OnMonitorsChanged;
         foreach (var session in _node.Sessions.Sessions)
         {
             if (session.State == SessionState.Ready)
@@ -203,7 +206,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             ScreenSource source;
             try
             {
-                source = ScreenSource.ForWindow(session, NewStreamId(), window, _node.Settings.Screen, _logger);
+                source = ScreenSource.ForWindow(session, NewStreamId(), window, _node.Settings.Screen, NegotiateVideo(session), _logger);
             }
             catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or ArgumentException or InvalidOperationException)
             {
@@ -290,7 +293,10 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
     public IReadOnlyList<RemoteMonitor> PeerMonitors(string peerId) =>
         _peerCaps.TryGetValue(peerId, out var caps) && caps.Monitors is { } monitors ? monitors : [];
 
-    /// <summary>This device's offer: its driver and its real monitors (the virtual one is left out of the list).</summary>
+    /// <summary>
+    /// This device's offer: its driver, its real monitors (the virtual one is left out of the list) and the screen
+    /// codecs it can use.
+    /// </summary>
     private static DeviceCapabilitiesMessage DescribeCapabilities(bool reply)
     {
         var virtualDevice = Display.VirtualDisplay.FindDeviceName();
@@ -298,19 +304,43 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             .Where(m => !string.Equals(m.DeviceName, virtualDevice, StringComparison.OrdinalIgnoreCase))
             .Select(m => new RemoteMonitor(m.Index, $"{m.Bounds.Width}×{m.Bounds.Height}", m.IsPrimary))
             .ToList();
-        return new DeviceCapabilitiesMessage(virtualDevice is not null, reply, monitors);
+        return new DeviceCapabilitiesMessage(virtualDevice is not null, reply, monitors, VideoCodecSupport.CanEncodeH264, VideoCodecSupport.CanDecodeH264);
     }
 
-    private void SendCapabilities(PeerSession session, bool reply)
+    /// <summary>Built off the caller's thread: the first codec probe starts Media Foundation and can take a moment.</summary>
+    private void SendCapabilities(PeerSession session, bool reply) => _ = Task.Run(async () =>
     {
         try
         {
-            _ = session.SendControlAsync(DescribeCapabilities(reply));
+            await session.SendControlAsync(DescribeCapabilities(reply)).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or OperationCanceledException)
         {
             _logger.LogDebug("Capabilities to {Peer} not sent: {Message}", session.PeerName, ex.Message);
         }
+    });
+
+    /// <summary>Monitors plugged in, removed or rearranged: every connected device gets the new list (as a reply, so it does not answer).</summary>
+    private void OnMonitorsChanged()
+    {
+        foreach (var session in _node.Sessions.Sessions)
+        {
+            if (session.State == SessionState.Ready)
+            {
+                SendCapabilities(session, reply: true);
+            }
+        }
+    }
+
+    /// <summary>H.264 is used only when this device may encode it, the setting allows it, and the peer can decode it.</summary>
+    private bool NegotiateVideo(PeerSession session)
+    {
+        if (_node.Settings.Screen.VideoCodec == VideoCodec.Jpeg || !VideoCodecSupport.CanEncodeH264)
+        {
+            return false;
+        }
+
+        return _peerCaps.TryGetValue(session.PeerId, out var caps) && caps.CanDecodeH264;
     }
 
     private void OnSessionReady(PeerSession session)
@@ -357,6 +387,14 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
 
             case ScreenStreamMessage info:
                 HandleStreamInfo(session, info);
+                break;
+
+            case ScreenCodecFallbackMessage fallback:
+                if (_sources.TryGetValue(fallback.StreamId, out var fallbackSource) && ReferenceEquals(fallbackSource.Session, session))
+                {
+                    fallbackSource.FallBackToTiles(fallback.Reason);
+                }
+
                 break;
 
             case DeviceCapabilitiesMessage caps:
@@ -408,7 +446,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
                 return;
             }
 
-            var source = ScreenSource.ForMonitor(session, request.StreamId, request.MonitorIndex, _node.Settings.Screen, _logger);
+            var source = ScreenSource.ForMonitor(session, request.StreamId, request.MonitorIndex, _node.Settings.Screen, NegotiateVideo(session), _logger);
             await StartSourceAsync(session, source).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or System.Runtime.InteropServices.COMException or ArgumentException)
@@ -470,7 +508,8 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             return ValueTask.CompletedTask;
         }
 
-        if (type == ScreenMessageType.Frame)
+        // Pictures go to the viewer: changed JPEG tiles, or H.264 video.
+        if (type is ScreenMessageType.Frame or ScreenMessageType.VideoFrame)
         {
             if (_viewers.TryGetValue(streamId, out var viewer) && ReferenceEquals(viewer.Session, session))
             {
@@ -534,6 +573,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
 
         _node.Sessions.SessionReady -= OnSessionReady;
         _node.Sessions.SessionClosed -= OnSessionClosed;
+        WinMirroring.Input.Screen.MonitorCatalog.Changed -= OnMonitorsChanged;
         if (_input is not null)
         {
             _input.FocusChanged -= OnFocusChanged;

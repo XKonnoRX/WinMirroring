@@ -17,6 +17,19 @@ public sealed class ClipboardSettings
     public bool DragDropEnabled { get; set; } = true;
 }
 
+/// <summary>How a shared screen is encoded on the wire.</summary>
+public enum VideoCodec
+{
+    /// <summary>Hardware H.264 when both devices support it, otherwise JPEG tiles.</summary>
+    Auto,
+
+    /// <summary>Always the changed-tile JPEG path.</summary>
+    Jpeg,
+
+    /// <summary>Hardware H.264 when both devices support it (same as <see cref="Auto"/>; forces the preference).</summary>
+    H264,
+}
+
 public sealed class ScreenSettings
 {
     /// <summary>Paired devices may view this device's monitors and windows.</summary>
@@ -29,6 +42,15 @@ public sealed class ScreenSettings
 
     /// <summary>JPEG quality of streamed tiles, 30–95.</summary>
     public int Quality { get; set; } = 70;
+
+    /// <summary>
+    /// How the screen is encoded. <see cref="VideoCodec.Auto"/> uses hardware H.264 when both devices can, and
+    /// falls back to JPEG tiles otherwise; H.264 is a full-frame stream, JPEG sends only the changed tiles.
+    /// </summary>
+    public VideoCodec VideoCodec { get; set; } = VideoCodec.Auto;
+
+    /// <summary>Target H.264 bitrate in kbit/s for a full-screen stream (scaled down for smaller crops).</summary>
+    public int VideoBitrateKbps { get; set; } = 12_000;
 
     /// <summary>Dragging a window by its title bar across a screen edge sends it to that device.</summary>
     public bool WindowDragEnabled { get; set; } = true;

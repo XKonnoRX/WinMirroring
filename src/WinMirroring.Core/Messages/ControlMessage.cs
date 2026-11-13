@@ -20,6 +20,7 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(ScreenRequestMessage), "screen-request")]
 [JsonDerivedType(typeof(ScreenStreamMessage), "screen-stream")]
 [JsonDerivedType(typeof(ScreenStopMessage), "screen-stop")]
+[JsonDerivedType(typeof(ScreenCodecFallbackMessage), "screen-fallback")]
 [JsonDerivedType(typeof(LogRequestMessage), "log-request")]
 [JsonDerivedType(typeof(LogResponseMessage), "log-response")]
 [JsonDerivedType(typeof(AudioRouteRequestMessage), "audio-route")]
@@ -34,11 +35,18 @@ namespace WinMirroring.Core.Messages;
 public abstract record ControlMessage;
 
 /// <summary>
-/// What this device can offer: a virtual display driver (so it can extend its desktop) and its monitors (so the
-/// other side can pick one to view). Sent when a session is ready; a message that is not itself a reply is answered
-/// with the receiver's own, because messages can arrive before the receiver has subscribed and be lost.
+/// What this device can offer: a virtual display driver (so it can extend its desktop), its monitors (so the other
+/// side can pick one to view) and the screen codecs it can use (a source sends H.264 only to a viewer that can decode
+/// it; otherwise JPEG tiles). Sent when a session is ready; a message that is not itself a reply is answered with the
+/// receiver's own, because messages can arrive before the receiver has subscribed and be lost. Sent again, as a
+/// reply, when the device's monitors change.
 /// </summary>
-public sealed record DeviceCapabilitiesMessage(bool HasVirtualDisplay, bool IsReply = false, List<RemoteMonitor>? Monitors = null) : ControlMessage;
+public sealed record DeviceCapabilitiesMessage(
+    bool HasVirtualDisplay,
+    bool IsReply = false,
+    List<RemoteMonitor>? Monitors = null,
+    bool CanEncodeH264 = false,
+    bool CanDecodeH264 = false) : ControlMessage;
 
 /// <summary>One monitor of a device, by the index a <see cref="ScreenRequestMessage"/> uses.</summary>
 public sealed record RemoteMonitor(int Index, string Label, bool Primary);
@@ -108,11 +116,27 @@ public sealed record AudioRouteRequestMessage(bool Listen, bool Refuse = false) 
 /// <summary>Viewer → source: stream monitor <see cref="MonitorIndex"/> as <see cref="StreamId"/> (again with a new index to switch).</summary>
 public sealed record ScreenRequestMessage(uint StreamId, int MonitorIndex) : ControlMessage;
 
-/// <summary>Source → viewer: a stream starts or changes. Kind is "monitor" or "window".</summary>
-public sealed record ScreenStreamMessage(uint StreamId, string Kind, string Title, int MonitorIndex, int MonitorCount, bool ControlAllowed, bool Minimized = false, int ScalePercent = 100) : ControlMessage;
+/// <summary>
+/// Source → viewer: a stream starts or changes. Kind is "monitor", "window" or "display". <see cref="Codec"/>
+/// is the encoding the source will use ("jpeg" changed tiles, or "h264" full-frame video); it defaults to "jpeg"
+/// so a message from an older peer that omits the field is read as the tile path.
+/// </summary>
+public sealed record ScreenStreamMessage(
+    uint StreamId,
+    string Kind,
+    string Title,
+    int MonitorIndex,
+    int MonitorCount,
+    bool ControlAllowed,
+    bool Minimized = false,
+    int ScalePercent = 100,
+    string Codec = "jpeg") : ControlMessage;
 
 /// <summary>Either side: the stream ends.</summary>
 public sealed record ScreenStopMessage(uint StreamId, string? Reason) : ControlMessage;
+
+/// <summary>Viewer → source: H.264 gives no picture here (no decoder, or it stays silent); send JPEG tiles instead.</summary>
+public sealed record ScreenCodecFallbackMessage(uint StreamId, string Reason) : ControlMessage;
 
 /// <summary>Controlled → controller: take your input back (the user pressed "return the cursor" here).</summary>
 public sealed record InputReleaseRequestMessage : ControlMessage;

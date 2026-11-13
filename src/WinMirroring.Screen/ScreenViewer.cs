@@ -30,6 +30,8 @@ public sealed class ScreenViewer : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private Action<FrameUpdate>? _present;
     private TaskCompletionSource? _presented;
+    private H264VideoDecoder? _videoDecoder;
+    private bool _videoDecodeUnavailable;
     private byte[] _image = [];
     private int _width;
     private int _height;
@@ -126,46 +128,13 @@ public sealed class ScreenViewer : IAsyncDisposable
             await _attached.Task.WaitAsync(ct).ConfigureAwait(false);
             await foreach (var message in _frames.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
-                var frame = ScreenCodec.TryDecodeFrame(message);
-                if (frame is null || frame.Width == 0 || frame.Height == 0)
+                if (ScreenCodec.TryReadHeader(message, out var type, out _) && type == ScreenMessageType.VideoFrame)
                 {
+                    await DecodeVideoAsync(message, ct).ConfigureAwait(false);
                     continue;
                 }
 
-                var resized = frame.Width != _width || frame.Height != _height;
-                if (resized)
-                {
-                    _width = frame.Width;
-                    _height = frame.Height;
-                    _image = new byte[_width * _height * 4];
-                }
-
-                Parallel.ForEach(frame.Tiles, tile =>
-                {
-                    try
-                    {
-                        _decoder.DecodeInto(tile, _image, _width, _height);
-                    }
-                    catch (Exception ex) when (ex is InvalidDataException or SharpGen.Runtime.SharpGenException)
-                    {
-                        _logger.LogDebug("Bad tile at {X},{Y}: {Message}", tile.X, tile.Y, ex.Message);
-                    }
-                });
-
-                var presented = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                _presented = presented;
-                var dirty = frame.Tiles.Select(t => new Rectangle(t.X, t.Y, t.Width, t.Height)).ToList();
-                _present?.Invoke(new FrameUpdate(frame.FrameNo, _width, _height, _image, dirty, resized));
-                try
-                {
-                    await presented.Task.WaitAsync(PresentTimeout, ct).ConfigureAwait(false);
-                }
-                catch (TimeoutException)
-                {
-                    // A hidden or stuck window must not stall the source forever.
-                }
-
-                await Session.SendAsync(ChannelId.Screen, ScreenCodec.EncodeAck(StreamId, frame.FrameNo), ct).ConfigureAwait(false);
+                await DecodeTilesAsync(message, ct).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -176,6 +145,134 @@ public sealed class ScreenViewer : IAsyncDisposable
             await CloseAsync(notifySource: false, reason: "соединение потеряно").ConfigureAwait(false);
         }
     }
+
+    private async Task DecodeTilesAsync(byte[] message, CancellationToken ct)
+    {
+        var frame = ScreenCodec.TryDecodeFrame(message);
+        if (frame is null || frame.Width == 0 || frame.Height == 0)
+        {
+            return;
+        }
+
+        var resized = frame.Width != _width || frame.Height != _height;
+        if (resized)
+        {
+            _width = frame.Width;
+            _height = frame.Height;
+            _image = new byte[_width * _height * 4];
+        }
+
+        Parallel.ForEach(frame.Tiles, tile =>
+        {
+            try
+            {
+                _decoder.DecodeInto(tile, _image, _width, _height);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or SharpGen.Runtime.SharpGenException)
+            {
+                _logger.LogDebug("Bad tile at {X},{Y}: {Message}", tile.X, tile.Y, ex.Message);
+            }
+        });
+
+        var dirty = frame.Tiles.Select(t => new Rectangle(t.X, t.Y, t.Width, t.Height)).ToList();
+        await PresentAndAckAsync(frame.FrameNo, _width, _height, dirty, resized, ct).ConfigureAwait(false);
+    }
+
+    private async Task DecodeVideoAsync(byte[] message, CancellationToken ct)
+    {
+        var frame = ScreenCodec.TryDecodeVideoFrame(message);
+        if (frame is null || frame.Width == 0 || frame.Height == 0)
+        {
+            return;
+        }
+
+        if (_videoDecoder is null && !_videoDecodeUnavailable)
+        {
+            _videoDecoder = H264VideoDecoder.TryCreate(frame.Width, frame.Height, _logger);
+            if (_videoDecoder is null)
+            {
+                _videoDecodeUnavailable = true;
+                _logger.LogWarning("No H.264 decoder available for the stream from {Peer}", PeerName);
+                RequestTiles("на этом устройстве нет декодера H.264");
+            }
+        }
+
+        var produced = false;
+        var resized = false;
+        if (_videoDecoder is not null)
+        {
+            try
+            {
+                produced = _videoDecoder.DecodeInto(frame.Data, ref _image, out var width, out var height);
+                if (produced)
+                {
+                    resized = width != _width || height != _height;
+                    _width = width;
+                    _height = height;
+                }
+            }
+            catch (Exception ex) when (ex is SharpGen.Runtime.SharpGenException or System.Runtime.InteropServices.COMException or InvalidOperationException)
+            {
+                _logger.LogDebug("H.264 decode failed: {Message}", ex.Message);
+            }
+        }
+
+        if (!produced)
+        {
+            // Video keeps arriving but nothing comes out: ask for tiles rather than show an empty view.
+            _videoSilentSince ??= Environment.TickCount64;
+            if (Environment.TickCount64 - _videoSilentSince > VideoSilenceBeforeFallbackMs)
+            {
+                RequestTiles("видео H.264 не декодируется");
+            }
+
+            // Still acknowledge so the source's in-flight window does not stall while the decoder primes.
+            await AckAsync(frame.FrameNo, ct).ConfigureAwait(false);
+            return;
+        }
+
+        _videoSilentSince = null;
+        var dirty = new List<Rectangle> { new(0, 0, _width, _height) };
+        await PresentAndAckAsync(frame.FrameNo, _width, _height, dirty, resized, ct).ConfigureAwait(false);
+    }
+
+    private async Task PresentAndAckAsync(uint frameNo, int width, int height, IReadOnlyList<Rectangle> dirty, bool resized, CancellationToken ct)
+    {
+        var presented = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _presented = presented;
+        _present?.Invoke(new FrameUpdate(frameNo, width, height, _image, dirty, resized));
+        try
+        {
+            await presented.Task.WaitAsync(PresentTimeout, ct).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            // A hidden or stuck window must not stall the source forever.
+        }
+
+        await AckAsync(frameNo, ct).ConfigureAwait(false);
+    }
+
+    private const long VideoSilenceBeforeFallbackMs = 3000;
+
+    /// <summary>When video frames started arriving without a picture coming out, or null.</summary>
+    private long? _videoSilentSince;
+    private int _tilesRequested;
+
+    /// <summary>Asks the source, once, to send JPEG tiles instead of H.264.</summary>
+    private void RequestTiles(string reason)
+    {
+        if (Interlocked.Exchange(ref _tilesRequested, 1) != 0)
+        {
+            return;
+        }
+
+        _logger.LogWarning("Asking {Peer} for JPEG tiles instead of H.264: {Reason}", PeerName, reason);
+        _ = SendControlAsync(new ScreenCodecFallbackMessage(StreamId, reason));
+    }
+
+    private Task AckAsync(uint frameNo, CancellationToken ct) =>
+        Session.SendAsync(ChannelId.Screen, ScreenCodec.EncodeAck(StreamId, frameNo), ct).AsTask();
 
     private async Task SendLoopAsync()
     {
@@ -207,5 +304,6 @@ public sealed class ScreenViewer : IAsyncDisposable
     {
         await CloseAsync(notifySource: true, reason: null).ConfigureAwait(false);
         _decoder.Dispose();
+        _videoDecoder?.Dispose();
     }
 }
