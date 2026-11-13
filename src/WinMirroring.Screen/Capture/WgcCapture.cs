@@ -14,8 +14,9 @@ namespace WinMirroring.Screen.Capture;
 
 /// <summary>
 /// Windows.Graphics.Capture of one monitor or one window (a window is captured even while covered by others).
-/// Each frame is copied to a staging texture and read back into a managed BGRA buffer; consumers pull the latest
-/// frame when they are ready, so slow consumers simply skip frames.
+/// Each frame is kept as a texture on the graphics card, where the encoder can take it as it is. Only a consumer
+/// that really needs the pixels in plain memory — the JPEG path — pays for reading them back, and only for the
+/// frames it actually uses: consumers pull the latest frame when they are ready, so slow ones simply skip frames.
 /// </summary>
 internal sealed class WgcCapture : IDisposable
 {
@@ -23,20 +24,24 @@ internal sealed class WgcCapture : IDisposable
 
     private readonly ILogger _logger;
     private readonly object _gate = new();
+    private readonly GraphicsDevice? _shared;
     private readonly ID3D11Device _device;
     private readonly ID3D11DeviceContext _context;
     private readonly IDirect3DDevice _winrtDevice;
+    private readonly object _contextGate;
     private readonly GraphicsCaptureItem _item;
     private readonly Direct3D11CaptureFramePool _pool;
     private readonly GraphicsCaptureSession _session;
     private readonly SemaphoreSlim _frameSignal = new(0, 1);
 
+    private ID3D11Texture2D? _frame;
     private ID3D11Texture2D? _staging;
     private SizeInt32 _poolSize;
     private byte[] _latest = [];
     private int _width;
     private int _height;
     private long _version;
+    private long _readBackVersion;
     private bool _disposed;
 
     private WgcCapture(GraphicsCaptureItem item, ILogger logger)
@@ -44,11 +49,23 @@ internal sealed class WgcCapture : IDisposable
         _logger = logger;
         _item = item;
 
-        D3D11.D3D11CreateDevice(null, DriverType.Hardware, DeviceCreationFlags.BgraSupport, [FeatureLevel.Level_11_0], out ID3D11Device device, out ID3D11DeviceContext context).CheckError();
-        _device = device;
-        _context = context;
-        using (var dxgiDevice = _device.QueryInterface<IDXGIDevice>())
+        _shared = GraphicsDevice.Shared;
+        if (_shared is not null)
         {
+            // The encoder and the colour conversion work on this same device, which is what lets a captured frame
+            // reach them without ever being copied through main memory.
+            _device = _shared.Device;
+            _context = _shared.Context;
+            _winrtDevice = _shared.WinRt;
+            _contextGate = _shared.ContextGate;
+        }
+        else
+        {
+            D3D11.D3D11CreateDevice(null, DriverType.Hardware, DeviceCreationFlags.BgraSupport, [FeatureLevel.Level_11_0], out ID3D11Device device, out ID3D11DeviceContext context).CheckError();
+            _device = device;
+            _context = context;
+            _contextGate = new object();
+            using var dxgiDevice = _device.QueryInterface<IDXGIDevice>();
             Marshal.ThrowExceptionForHR(CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice.NativePointer, out var inspectable));
             _winrtDevice = MarshalInterface<IDirect3DDevice>.FromAbi(inspectable);
             Marshal.Release(inspectable);
@@ -75,6 +92,12 @@ internal sealed class WgcCapture : IDisposable
     public event Action? Closed;
 
     public string Title => _item.DisplayName;
+
+    /// <summary>
+    /// Whether frames live on the one device the whole process shares. Only then can the encoder be handed a frame
+    /// as a texture; otherwise everything goes through plain memory as before.
+    /// </summary>
+    public bool UsesSharedDevice => _shared is not null;
 
     public static WgcCapture ForMonitor(nint monitor, ILogger logger) =>
         new(CreateItem(interop =>
@@ -138,7 +161,35 @@ internal sealed class WgcCapture : IDisposable
         }
     }
 
-    /// <summary>Copies the latest frame into <paramref name="buffer"/> (resized when needed).</summary>
+    /// <summary>
+    /// Size and version of the latest frame, without touching the pixels. The caller decides from this what to
+    /// encode, and only then asks for the frame in the form it needs.
+    /// </summary>
+    public bool TryLatestInfo(out int width, out int height, out long version)
+    {
+        lock (_gate)
+        {
+            width = _width;
+            height = _height;
+            version = _version;
+            return version != 0 && _frame is not null;
+        }
+    }
+
+    /// <summary>
+    /// Runs <paramref name="use"/> on the latest frame while it is held still, and reports what it returned. The
+    /// texture is only valid for the duration of the call.
+    /// </summary>
+    public bool WithLatestFrame(Func<ID3D11Texture2D, bool> use)
+    {
+        lock (_gate)
+        {
+            return !_disposed && _version != 0 && _frame is not null && use(_frame);
+        }
+    }
+
+    /// <summary>Copies the latest frame into <paramref name="buffer"/> (resized when needed), reading it back from
+    /// the graphics card if that has not been done for this frame yet.</summary>
     public bool TryCopyLatest(ref byte[] buffer, out int width, out int height, out long version)
     {
         lock (_gate)
@@ -146,7 +197,12 @@ internal sealed class WgcCapture : IDisposable
             width = _width;
             height = _height;
             version = _version;
-            if (version == 0)
+            if (version == 0 || _frame is null)
+            {
+                return false;
+            }
+
+            if (_readBackVersion != version && !ReadBack(width, height))
             {
                 return false;
             }
@@ -203,7 +259,7 @@ internal sealed class WgcCapture : IDisposable
                     return;
                 }
 
-                ReadBack(frame);
+                Keep(frame);
             }
 
             SignalFrame();
@@ -214,7 +270,12 @@ internal sealed class WgcCapture : IDisposable
         }
     }
 
-    private unsafe void ReadBack(Direct3D11CaptureFrame frame)
+    /// <summary>
+    /// Takes the frame off the capture pool and keeps it as our own texture. The pool hands its surface back as
+    /// soon as this returns, so the picture has to be copied — but it is copied on the card, which costs the
+    /// processor nothing.
+    /// </summary>
+    private void Keep(Direct3D11CaptureFrame frame)
     {
         var access = frame.Surface.As<Native.ScreenNative.IDirect3DDxgiInterfaceAccess>();
         var textureIid = typeof(ID3D11Texture2D).GUID;
@@ -227,37 +288,68 @@ internal sealed class WgcCapture : IDisposable
             return;
         }
 
-        if (_staging is null || _staging.Description.Width != description.Width || _staging.Description.Height != description.Height)
+        if (_frame is null || _frame.Description.Width != description.Width || _frame.Description.Height != description.Height || _frame.Description.Format != description.Format)
         {
+            _frame?.Dispose();
+            _frame = _device.CreateTexture2D(new Texture2DDescription(
+                description.Format, description.Width, description.Height, 1, 1,
+                BindFlags.ShaderResource | BindFlags.RenderTarget, ResourceUsage.Default, CpuAccessFlags.None));
             _staging?.Dispose();
-            _staging = _device.CreateTexture2D(new Texture2DDescription(
-                description.Format, description.Width, description.Height, 1, 1, BindFlags.None, ResourceUsage.Staging, CpuAccessFlags.Read));
+            _staging = null;
+            _readBackVersion = 0;
         }
 
-        _context.CopyResource(_staging, texture);
-        var map = _context.Map(_staging, 0, MapMode.Read);
+        lock (_contextGate)
+        {
+            _context.CopyResource(_frame, texture);
+        }
+
+        _width = width;
+        _height = height;
+        _version++;
+    }
+
+    /// <summary>Brings the kept frame into <see cref="_latest"/> as BGRA. Called under <see cref="_gate"/>.</summary>
+    private unsafe bool ReadBack(int width, int height)
+    {
         try
         {
+            var description = _frame!.Description;
+            _staging ??= _device.CreateTexture2D(new Texture2DDescription(
+                description.Format, description.Width, description.Height, 1, 1, BindFlags.None, ResourceUsage.Staging, CpuAccessFlags.Read));
+
             var size = width * height * 4;
             if (_latest.Length != size)
             {
                 _latest = new byte[size];
             }
 
-            var rowBytes = width * 4;
-            for (var y = 0; y < height; y++)
+            lock (_contextGate)
             {
-                new ReadOnlySpan<byte>((byte*)map.DataPointer + (long)y * map.RowPitch, rowBytes).CopyTo(_latest.AsSpan(y * rowBytes, rowBytes));
+                _context.CopyResource(_staging, _frame);
+                var map = _context.Map(_staging, 0, MapMode.Read);
+                try
+                {
+                    var rowBytes = width * 4;
+                    for (var y = 0; y < height; y++)
+                    {
+                        new ReadOnlySpan<byte>((byte*)map.DataPointer + (long)y * map.RowPitch, rowBytes).CopyTo(_latest.AsSpan(y * rowBytes, rowBytes));
+                    }
+                }
+                finally
+                {
+                    _context.Unmap(_staging, 0);
+                }
             }
-        }
-        finally
-        {
-            _context.Unmap(_staging, 0);
-        }
 
-        _width = width;
-        _height = height;
-        _version++;
+            _readBackVersion = _version;
+            return true;
+        }
+        catch (Exception ex) when (ex is COMException or SharpGen.Runtime.SharpGenException)
+        {
+            _logger.LogDebug(ex, "Reading a captured frame back failed");
+            return false;
+        }
     }
 
     public void Dispose()
@@ -276,8 +368,14 @@ internal sealed class WgcCapture : IDisposable
         _session.Dispose();
         _pool.Dispose();
         _staging?.Dispose();
-        _context.Dispose();
-        _device.Dispose();
+        _frame?.Dispose();
+        if (_shared is null)
+        {
+            // Only our own device is ours to close; the shared one outlives every stream.
+            _context.Dispose();
+            _device.Dispose();
+        }
+
         SignalFrame();
     }
 }

@@ -59,6 +59,9 @@ internal sealed class ScreenSource : IAsyncDisposable
     private readonly bool _useVideo;
     private H264VideoEncoder? _videoEncoder;
     private bool _videoFailed;
+    private GpuNv12Converter? _gpuConverter;
+    private bool _gpuFailed;
+    private bool _gpuReported;
 
     /// <summary>The viewer asked for tiles (its H.264 gives no picture); taken up by the send loop.</summary>
     private volatile string? _tilesRequested;
@@ -440,7 +443,9 @@ internal sealed class ScreenSource : IAsyncDisposable
                 var slotHeld = true;
                 try
                 {
-                    if (!capture.TryCopyLatest(ref frame, out var width, out var height, out var version))
+                    // Only the size and the age of the frame, not its pixels: whether they are needed in memory at
+                    // all depends on which encoder ends up taking this frame.
+                    if (!capture.TryLatestInfo(out var width, out var height, out var version))
                     {
                         continue;
                     }
@@ -448,10 +453,12 @@ internal sealed class ScreenSource : IAsyncDisposable
                     seen = version;
                     var force = Interlocked.Exchange(ref _forceAll, 0) == 1;
                     Rectangle crop;
+                    RectangleF cropFraction;
                     lock (_gate)
                     {
                         _frameSize = new Size(width, height);
-                        crop = ScreenCodec.ToPixels(_crop, width, height);
+                        cropFraction = _crop;
+                        crop = ScreenCodec.ToPixels(cropFraction, width, height);
                     }
 
                     if (_tilesRequested is { } reason && _useVideo && !_videoFailed)
@@ -460,6 +467,8 @@ internal sealed class ScreenSource : IAsyncDisposable
                         _videoFailed = true;
                         _videoEncoder?.Dispose();
                         _videoEncoder = null;
+                        _gpuConverter?.Dispose();
+                        _gpuConverter = null;
                         force = true;
                         _ = Session.SendControlAsync(Describe());
                     }
@@ -467,14 +476,22 @@ internal sealed class ScreenSource : IAsyncDisposable
                     List<byte[]>? messages = null;
                     if (_useVideo && !_videoFailed)
                     {
-                        messages = BuildVideoMessages(frame, width, crop, force);
+                        messages = BuildVideoMessages(capture, ref frame, width, crop, force);
                         if (_videoFailed)
                         {
                             force = true; // just fell back to tiles: make the first JPEG frame complete
                         }
                     }
 
-                    messages ??= BuildJpegMessages(frame, width, height, crop, force);
+                    if (messages is null)
+                    {
+                        if (!capture.TryCopyLatest(ref frame, out width, out height, out _))
+                        {
+                            continue;
+                        }
+
+                        messages = BuildJpegMessages(frame, width, height, ScreenCodec.ToPixels(cropFraction, width, height), force);
+                    }
                     if (messages.Count == 0)
                     {
                         continue;
@@ -530,7 +547,7 @@ internal sealed class ScreenSource : IAsyncDisposable
     /// created (which also sets <see cref="_videoFailed"/> so the whole stream stays on tiles from now on). An
     /// empty list means the encoder pipeline has no output yet; nothing is sent this frame.
     /// </summary>
-    private List<byte[]>? BuildVideoMessages(byte[] frame, int frameWidth, Rectangle crop, bool force)
+    private List<byte[]>? BuildVideoMessages(WgcCapture capture, ref byte[] frame, int frameWidth, Rectangle crop, bool force)
     {
         var videoWidth = Nv12Converter.Even(crop.Width);
         var videoHeight = Nv12Converter.Even(crop.Height);
@@ -558,18 +575,75 @@ internal sealed class ScreenSource : IAsyncDisposable
         IReadOnlyList<VideoAccessUnit> units;
         try
         {
-            units = _videoEncoder.Encode(frame, frameWidth, videoCrop, force);
+            if (!TryEncodeOnGpu(capture, videoCrop, force, out units))
+            {
+                if (!capture.TryCopyLatest(ref frame, out var width, out _, out _))
+                {
+                    return [];
+                }
+
+                units = _videoEncoder.Encode(frame, width, videoCrop, force);
+            }
         }
         catch (Exception ex)
         {
             _logger.LogWarning("H.264 encode failed for {Title}; using JPEG tiles: {Message}", Title, ex.Message);
             _videoEncoder.Dispose();
             _videoEncoder = null;
+            _gpuConverter?.Dispose();
+            _gpuConverter = null;
             _videoFailed = true;
             return null;
         }
 
         return BuildVideoMessages(units);
+    }
+
+    /// <summary>
+    /// Encodes the frame without it ever leaving the graphics card: it is cropped and turned into NV12 there and
+    /// handed to the encoder as a texture. False means this is not possible — then the frame is read back into
+    /// memory and converted by the processor, exactly as before, and that stays the way for this stream.
+    /// </summary>
+    private bool TryEncodeOnGpu(WgcCapture capture, Rectangle crop, bool force, out IReadOnlyList<VideoAccessUnit> units)
+    {
+        units = [];
+        if (_gpuFailed || !capture.UsesSharedDevice || _videoEncoder is not { UsesSharedDevice: true } encoder)
+        {
+            return false;
+        }
+
+        var converter = _gpuConverter ??= GpuNv12Converter.TryCreate(_logger);
+        if (converter is null || converter.NextTarget(crop.Width, crop.Height) is not { } target)
+        {
+            return GiveUpOnGpu();
+        }
+
+        if (!capture.WithLatestFrame(source => converter.TryConvert(source, crop, target)))
+        {
+            return GiveUpOnGpu();
+        }
+
+        units = encoder.EncodeTexture(target, force);
+        if (!_gpuReported)
+        {
+            _gpuReported = true;
+            _logger.LogInformation("{Title} is encoded on the graphics card; frames are not copied through memory", Title);
+        }
+
+        return true;
+    }
+
+    private bool GiveUpOnGpu()
+    {
+        if (!_gpuFailed)
+        {
+            _gpuFailed = true;
+            _logger.LogInformation("{Title} is converted by the processor; the graphics card would not do it", Title);
+        }
+
+        _gpuConverter?.Dispose();
+        _gpuConverter = null;
+        return false;
     }
 
     private List<byte[]> BuildVideoMessages(IReadOnlyList<VideoAccessUnit> units)
@@ -707,6 +781,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         capture.Dispose();
         _encoder.Dispose();
         _videoEncoder?.Dispose();
+        _gpuConverter?.Dispose();
         _injector.ReleaseAll();
         _touch.Dispose();
         _cts.Dispose();

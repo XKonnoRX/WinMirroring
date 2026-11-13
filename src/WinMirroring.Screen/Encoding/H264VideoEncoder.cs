@@ -6,6 +6,7 @@ using SharpGen.Runtime;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.MediaFoundation;
+using WinMirroring.Screen.Capture;
 
 namespace WinMirroring.Screen.Encoding;
 
@@ -32,6 +33,7 @@ internal sealed class H264VideoEncoder : IDisposable
     private readonly IMFMediaEventGenerator _events;
     private readonly IMFDXGIDeviceManager? _deviceManager;
     private readonly ID3D11Device? _device;
+    private readonly bool _sharedDevice;
     private readonly bool _providesSamples;
     private readonly int _outputSize;
     private ICodecAPI? _codecApi;
@@ -55,12 +57,13 @@ internal sealed class H264VideoEncoder : IDisposable
     internal string? DiagLastError;
     internal bool DiagHasDeviceManager => _deviceManager is not null;
 
-    private H264VideoEncoder(IMFTransform transform, IMFMediaEventGenerator events, IMFDXGIDeviceManager? deviceManager, ID3D11Device? device, bool providesSamples, int outputSize, int width, int height, int fps, ILogger logger)
+    private H264VideoEncoder(IMFTransform transform, IMFMediaEventGenerator events, IMFDXGIDeviceManager? deviceManager, ID3D11Device? device, bool sharedDevice, bool providesSamples, int outputSize, int width, int height, int fps, ILogger logger)
     {
         _transform = transform;
         _events = events;
         _deviceManager = deviceManager;
         _device = device;
+        _sharedDevice = sharedDevice;
         _providesSamples = providesSamples;
         _outputSize = outputSize;
         _width = width;
@@ -75,6 +78,12 @@ internal sealed class H264VideoEncoder : IDisposable
     public int Width => _width;
 
     public int Height => _height;
+
+    /// <summary>
+    /// Whether the encoder works on the device the whole process shares. Only then may <see cref="EncodeTexture"/>
+    /// be used: a texture from another device would mean nothing to this one.
+    /// </summary>
+    public bool UsesSharedDevice => _sharedDevice;
 
     /// <summary>Creates a hardware H.264 encoder for the given size, or null when none can be configured.</summary>
     public static H264VideoEncoder? TryCreate(int width, int height, int fps, int bitrateKbps, ILogger logger)
@@ -99,9 +108,10 @@ internal sealed class H264VideoEncoder : IDisposable
         ID3D11Device? device = null;
         IMFDXGIDeviceManager? manager = null;
         var moved = false;
+        var shared = false;
         try
         {
-            CreateDeviceManager(logger, out device, out manager);
+            CreateDeviceManager(logger, out device, out manager, out shared);
 
             var input = new RegisterTypeInfo { GuidMajorType = MediaTypeGuids.Video, GuidSubtype = VideoInterop.Nv12 };
             var output = new RegisterTypeInfo { GuidMajorType = MediaTypeGuids.Video, GuidSubtype = VideoInterop.H264 };
@@ -117,7 +127,7 @@ internal sealed class H264VideoEncoder : IDisposable
                 try
                 {
                     transform = activate.ActivateObject<IMFTransform>();
-                    var encoder = Configure(transform, manager, device, width, height, fps, bitrateKbps, logger);
+                    var encoder = Configure(transform, manager, device, shared, width, height, fps, bitrateKbps, logger);
                     if (encoder is not null)
                     {
                         transform = null; // ownership moved into the encoder
@@ -145,19 +155,34 @@ internal sealed class H264VideoEncoder : IDisposable
             if (!moved)
             {
                 manager?.Dispose();
-                device?.Dispose();
+                if (!shared)
+                {
+                    device?.Dispose();
+                }
             }
         }
 
         return null;
     }
 
-    private static void CreateDeviceManager(ILogger logger, out ID3D11Device? device, out IMFDXGIDeviceManager? manager)
+    private static void CreateDeviceManager(ILogger logger, out ID3D11Device? device, out IMFDXGIDeviceManager? manager, out bool shared)
     {
         device = null;
         manager = null;
+        shared = false;
         try
         {
+            // Preferably the device capture already works on: then a captured frame can be converted and encoded
+            // without ever being copied into main memory.
+            if (GraphicsDevice.Shared is { } graphics)
+            {
+                manager = MediaFactory.MFCreateDXGIDeviceManager();
+                manager.ResetDevice(graphics.Device).CheckError();
+                device = graphics.Device;
+                shared = true;
+                return;
+            }
+
             D3D11.D3D11CreateDevice(
                 null,
                 DriverType.Hardware,
@@ -184,13 +209,18 @@ internal sealed class H264VideoEncoder : IDisposable
         {
             logger.LogDebug("D3D11 device manager not created (encoder will try system memory): {Message}", ex.Message);
             manager?.Dispose();
-            device?.Dispose();
+            if (!shared)
+            {
+                device?.Dispose();
+            }
+
             device = null;
             manager = null;
+            shared = false;
         }
     }
 
-    private static H264VideoEncoder? Configure(IMFTransform transform, IMFDXGIDeviceManager? manager, ID3D11Device? device, int width, int height, int fps, int bitrateKbps, ILogger logger)
+    private static H264VideoEncoder? Configure(IMFTransform transform, IMFDXGIDeviceManager? manager, ID3D11Device? device, bool shared, int width, int height, int fps, int bitrateKbps, ILogger logger)
     {
         var attributes = transform.Attributes;
         attributes.Set(TransformAttributeKeys.TransformAsyncUnlock, true);
@@ -230,7 +260,7 @@ internal sealed class H264VideoEncoder : IDisposable
         var outputSize = Math.Max(streamInfo.Size, width * height * 2);
 
         var events = transform.QueryInterface<IMFMediaEventGenerator>();
-        var encoder = new H264VideoEncoder(transform, events, manager, device, providesSamples, outputSize, width, height, fps, logger);
+        var encoder = new H264VideoEncoder(transform, events, manager, device, shared, providesSamples, outputSize, width, height, fps, logger);
         encoder.TryTuneCodec(fps, bitrateKbps);
 
         transform.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
@@ -302,22 +332,50 @@ internal sealed class H264VideoEncoder : IDisposable
             return DrainOutputs();
         }
 
-        if (forceKeyframe && _codecApi is not null)
+        ForceKeyframe(forceKeyframe);
+        Nv12Converter.BgraCropToNv12(frameBgra, frameWidth, crop, _nv12);
+        return Submit(BuildInputSample());
+    }
+
+    /// <summary>
+    /// Feeds a frame that is already NV12 on the graphics card, where the encoder reads it directly. The texture
+    /// must be exactly the encoder's size and belong to the shared device (see <see cref="UsesSharedDevice"/>).
+    /// Throws nothing the byte path would not: the caller falls back to <see cref="Encode"/> on any failure.
+    /// </summary>
+    public IReadOnlyList<VideoAccessUnit> EncodeTexture(ID3D11Texture2D nv12, bool forceKeyframe)
+    {
+        var description = nv12.Description;
+        if (description.Width != (uint)_width || description.Height != (uint)_height)
         {
-            var api = VideoInterop.AVEncVideoForceKeyFrame;
-            var value = CodecPropVariant.UInt32(1);
-            try
-            {
-                _codecApi.SetValue(ref api, ref value);
-            }
-            catch (Exception ex) when (ex is COMException or InvalidOperationException)
-            {
-                _logger.LogTrace("Force-keyframe ignored: {Message}", ex.Message);
-            }
+            return DrainOutputs();
         }
 
-        Nv12Converter.BgraCropToNv12(frameBgra, frameWidth, crop, _nv12);
-        var sample = BuildInputSample();
+        ForceKeyframe(forceKeyframe);
+        return Submit(BuildTextureSample(nv12));
+    }
+
+    private void ForceKeyframe(bool forceKeyframe)
+    {
+        if (!forceKeyframe || _codecApi is null)
+        {
+            return;
+        }
+
+        var api = VideoInterop.AVEncVideoForceKeyFrame;
+        var value = CodecPropVariant.UInt32(1);
+        try
+        {
+            _codecApi.SetValue(ref api, ref value);
+        }
+        catch (Exception ex) when (ex is COMException or InvalidOperationException)
+        {
+            _logger.LogTrace("Force-keyframe ignored: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>Hands one frame to the encoder and waits briefly for the access unit it produces.</summary>
+    private IReadOnlyList<VideoAccessUnit> Submit(IMFSample sample)
+    {
         var producedBefore = Volatile.Read(ref DiagOutputs);
         _inputs.Enqueue(sample);
 
@@ -356,6 +414,27 @@ internal sealed class H264VideoEncoder : IDisposable
         buffer.Unlock();
         buffer.CurrentLength = _nv12.Length;
 
+        return WrapSample(buffer);
+    }
+
+    /// <summary>
+    /// Wraps the NV12 texture itself as the encoder's input. Nothing is copied: Media Foundation gets a handle to
+    /// the very surface the graphics card just wrote, and the frame reaches the encoder without ever being read
+    /// into main memory.
+    /// </summary>
+    private IMFSample BuildTextureSample(ID3D11Texture2D nv12)
+    {
+        var buffer = MediaFactory.MFCreateDXGISurfaceBuffer(typeof(ID3D11Texture2D).GUID, nv12, 0, false);
+        using (var planar = buffer.QueryInterface<IMF2DBuffer>())
+        {
+            buffer.CurrentLength = planar.ContiguousLength;
+        }
+
+        return WrapSample(buffer);
+    }
+
+    private IMFSample WrapSample(IMFMediaBuffer buffer)
+    {
         var sample = MediaFactory.MFCreateSample();
         sample.AddBuffer(buffer);
         sample.SampleTime = _frameIndex * _frameDurationHns;
@@ -520,7 +599,12 @@ internal sealed class H264VideoEncoder : IDisposable
         _events.Dispose();
         _transform.Dispose();
         _deviceManager?.Dispose();
-        _device?.Dispose();
+        if (!_sharedDevice)
+        {
+            // Only a device of our own is ours to close; the shared one outlives every stream.
+            _device?.Dispose();
+        }
+
         _outputQueued.Dispose();
     }
 }
