@@ -32,8 +32,14 @@ public sealed class InputSettings
     /// </summary>
     public bool ElevatedInjector { get; set; }
 
-    /// <summary>Unix milliseconds of the last layout change; peers adopt the newest layout they see.</summary>
+    /// <summary>
+    /// Version of the layout: the time of the last change in Unix milliseconds, but always above every version seen
+    /// before, so a change wins even on a device whose clock is behind. Peers adopt the newest layout they see.
+    /// </summary>
     public long LayoutVersion { get; set; }
+
+    /// <summary>The device that made the current layout; breaks a tie between two equal versions the same way everywhere.</summary>
+    public string LayoutOrigin { get; set; } = string.Empty;
 
     public List<LayoutCell> Layout { get; set; } = [];
 }

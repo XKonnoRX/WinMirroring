@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using WinMirroring.Core;
@@ -299,14 +299,19 @@ public sealed partial class InputSharingService : IAsyncDisposable
         var list = cells.Where(c => !string.IsNullOrEmpty(c.DeviceId)).ToList();
         var settings = _node.Settings.Input;
         settings.Layout = list;
-        settings.LayoutVersion = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        settings.LayoutVersion = WinMirroring.Input.Layout.LayoutVersion.Next(settings.LayoutVersion, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        settings.LayoutOrigin = _node.Identity.Id;
         _node.SaveSettings();
         _layout = DeviceLayout.FromCells(list);
         LayoutChanged?.Invoke();
+        SendLayoutToAll(except: null);
+    }
 
+    private void SendLayoutToAll(PeerSession? except)
+    {
         foreach (var session in _node.Sessions.Sessions)
         {
-            if (session.State == SessionState.Ready)
+            if (session.State == SessionState.Ready && !ReferenceEquals(session, except))
             {
                 _ = SendLayoutAsync(session);
             }
@@ -408,17 +413,33 @@ public sealed partial class InputSharingService : IAsyncDisposable
 
         var layout = (LayoutMessage)message;
         var settings = _node.Settings.Input;
-        if (layout.Version <= settings.LayoutVersion)
+        var order = WinMirroring.Input.Layout.LayoutVersion.Compare(layout.Version, layout.Origin, settings.LayoutVersion, settings.LayoutOrigin);
+        if (order < 0)
+        {
+            // Theirs is older (or ours never reached them, the session's first messages can be lost): send ours.
+            if (settings.LayoutVersion > 0)
+            {
+                _ = SendLayoutAsync(session);
+            }
+
+            return;
+        }
+
+        if (order == 0)
         {
             return;
         }
 
         settings.Layout = layout.Cells.Where(c => !string.IsNullOrEmpty(c.DeviceId)).ToList();
         settings.LayoutVersion = layout.Version;
+        settings.LayoutOrigin = layout.Origin ?? string.Empty;
         _node.SaveSettings();
         _layout = DeviceLayout.FromCells(settings.Layout);
         _logger.LogInformation("Adopted layout version {Version} from {Peer}", layout.Version, session.PeerName);
         LayoutChanged?.Invoke();
+
+        // Pass it on: a device connected to us but not to the author learns it now, not at its next reconnect.
+        SendLayoutToAll(except: session);
     }
 
     private async Task SendLayoutAsync(PeerSession session)
@@ -426,7 +447,9 @@ public sealed partial class InputSharingService : IAsyncDisposable
         try
         {
             var settings = _node.Settings.Input;
-            await session.SendControlAsync(new LayoutMessage(settings.LayoutVersion, settings.Layout.ToList()), _cts.Token).ConfigureAwait(false);
+            await session.SendControlAsync(
+                new LayoutMessage(settings.LayoutVersion, settings.Layout.ToList(), settings.LayoutOrigin.Length > 0 ? settings.LayoutOrigin : null),
+                _cts.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or OperationCanceledException)
         {

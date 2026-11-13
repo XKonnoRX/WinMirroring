@@ -80,8 +80,12 @@ public sealed record PongMessage(long Timestamp) : ControlMessage;
 
 public sealed record ByeMessage(string? Reason) : ControlMessage;
 
-/// <summary>The device grid, broadcast whenever it changes; the newest version wins everywhere.</summary>
-public sealed record LayoutMessage(long Version, List<LayoutCell> Cells) : ControlMessage;
+/// <summary>
+/// The device grid, broadcast whenever it changes and passed on by every device that adopts it, so it also reaches
+/// devices the author is not connected to. The newest (<see cref="Version"/>, then <see cref="Origin"/>) wins
+/// everywhere; a device that gets an older one answers with its own.
+/// </summary>
+public sealed record LayoutMessage(long Version, List<LayoutCell> Cells, string? Origin = null) : ControlMessage;
 
 /// <summary>
 /// The sender's monitors, for placing them one by one in the layout. Sent when a session starts (the other side
