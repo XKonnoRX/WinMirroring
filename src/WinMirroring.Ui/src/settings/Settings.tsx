@@ -172,6 +172,16 @@ export function Settings() {
               />
             </Section>
 
+            <Section title="Открытые трансляции">
+              <Num
+                label="Закрывать свёрнутый экран через"
+                hint="Свёрнутая трансляция экрана продолжает стоить другому устройству захвата и передачи. Открыть её снова — одно нажатие. 0 — не закрывать. Копии окон и режим второго монитора не трогаются: копия сворачивается вслед за самим окном, а второй монитор отключают явно."
+                suffix="минут"
+                value={state.screen.closeUnusedMinutes}
+                onChange={(v) => void set('screen.closeUnusedMinutes', v)}
+              />
+            </Section>
+
             <Section title="Качество">
               <Choice
                 label="Кодек изображения"

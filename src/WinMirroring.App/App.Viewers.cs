@@ -1,8 +1,11 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Extensions.DependencyInjection;
+using Serilog;
 using WinMirroring.App.Services;
 using WinMirroring.App.Views;
+using WinMirroring.Core;
 using WinMirroring.Screen;
 
 namespace WinMirroring.App;
@@ -18,11 +21,22 @@ public partial class App : IViewerControl
     private void OpenViewerWindow(ScreenViewer viewer)
     {
         var window = new ScreenViewerWindow(viewer, _services!);
-        window.Activated += (_, _) => _activeView = viewer.StreamId;
-        window.StateChanged += (_, _) => UpdateKeepAwake();
+        window.Activated += (_, _) =>
+        {
+            _activeView = viewer.StreamId;
+            _unusedSince.Remove(window);
+        };
+
+        window.StateChanged += (_, _) =>
+        {
+            NoteViewUse(window);
+            UpdateKeepAwake();
+        };
+
         window.Closed += (_, _) =>
         {
             _openViewers.Remove(window);
+            _unusedSince.Remove(window);
             if (_activeView == viewer.StreamId)
             {
                 _activeView = 0;
@@ -38,6 +52,75 @@ public partial class App : IViewerControl
         _activeView = viewer.StreamId;
         KeepFloatingOnTop();
         UpdateKeepAwake();
+        StartUnusedViewWatch();
+    }
+
+    /// <summary>When each minimised view stopped being looked at; a view in front is not in here at all.</summary>
+    private readonly Dictionary<ScreenViewerWindow, long> _unusedSince = [];
+    private System.Windows.Threading.DispatcherTimer? _unusedWatch;
+
+    private void NoteViewUse(ScreenViewerWindow window)
+    {
+        if (window.WindowState == System.Windows.WindowState.Minimized || !window.IsVisible)
+        {
+            _unusedSince.TryAdd(window, Environment.TickCount64);
+        }
+        else
+        {
+            _unusedSince.Remove(window);
+        }
+    }
+
+    private void StartUnusedViewWatch()
+    {
+        _unusedWatch ??= new System.Windows.Threading.DispatcherTimer(
+            TimeSpan.FromSeconds(30),
+            System.Windows.Threading.DispatcherPriority.Background,
+            (_, _) => CloseUnusedViews(),
+            Dispatcher);
+        _unusedWatch.Start();
+    }
+
+    /// <summary>
+    /// A screen left minimised long enough is closed: the other device keeps capturing and sending for a window
+    /// nobody looks at, and opening it again is one press. Only screens — a window copy follows the real window
+    /// and minimises with it, which is not the user walking away, and being someone's second monitor is their
+    /// screen, given up explicitly.
+    /// </summary>
+    private void CloseUnusedViews()
+    {
+        if (_exiting || _services is null)
+        {
+            _unusedWatch?.Stop();
+            return;
+        }
+
+        if (_openViewers.Count == 0)
+        {
+            _unusedWatch?.Stop();
+            return;
+        }
+
+        var minutes = _services.GetRequiredService<MirroringNode>().Settings.Screen.CloseUnusedViewMinutes;
+        if (minutes <= 0)
+        {
+            return;
+        }
+
+        var limit = TimeSpan.FromMinutes(minutes).TotalMilliseconds;
+        foreach (var (window, since) in _unusedSince.ToList())
+        {
+            if (window.Viewer.Info.Kind != "monitor" || Environment.TickCount64 - since < limit)
+            {
+                continue;
+            }
+
+            Log.Information("Closing the view of {Peer} ({Title}): unused for {Minutes} min", window.Viewer.PeerName, window.Viewer.Info.Title, minutes);
+            ShowNotification(
+                "Трансляция закрыта",
+                $"Экран {window.Viewer.PeerName} не использовался {minutes} мин. Откройте его снова, когда понадобится.");
+            window.CloseView();
+        }
     }
 
     /// <summary>

@@ -52,6 +52,12 @@ public sealed class ScreenSettings
     /// <summary>Target H.264 bitrate in kbit/s for a full-screen stream (scaled down for smaller crops).</summary>
     public int VideoBitrateKbps { get; set; } = 12_000;
 
+    /// <summary>
+    /// Close a view that has been left minimised this long, in minutes (0: never). A view nobody looks at still
+    /// costs the other device a capture and a stream, and opening it again is one press.
+    /// </summary>
+    public int CloseUnusedViewMinutes { get; set; } = 5;
+
     /// <summary>Dragging a window by its title bar across a screen edge sends it to that device.</summary>
     public bool WindowDragEnabled { get; set; } = true;
 
