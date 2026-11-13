@@ -338,8 +338,8 @@ public partial class ControlPanelWindow : Window
 
         // ---- Other ----
         Sections.Children.Add(MakeHeader("ПРОЧЕЕ"));
-        Sections.Children.Add(MakeButton("Раскладка экранов…", () => ((App)Application.Current).ShowLayoutEditor(), choosesScreen: true));
-        Sections.Children.Add(MakeButton("Параметры и синхронизация", openSettings));
+        Sections.Children.Add(MakeButton("Устройства и раскладка…", () => ((App)Application.Current).ShowHub(), choosesScreen: true));
+        Sections.Children.Add(MakeButton("Параметры", openSettings));
         Sections.Children.Add(MakeButton("Вернуть окна на место", () => vm.ReturnWindows()));
         Sections.Children.Add(MakeButton("Скрыть кнопку меню", hideButton));
     }

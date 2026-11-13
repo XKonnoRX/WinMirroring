@@ -156,9 +156,11 @@ public partial class App : Application
             peerFiles.Notify = (title, text) => Dispatcher.BeginInvoke(() => ShowNotification(title, text));
             peerFiles.Start();
         });
-        health.Start("Окна на WebView2", () =>
+        health.Start("Главное окно", () =>
         {
-            _services.GetRequiredService<LayoutUi>().Register();
+            var hub = _services.GetRequiredService<HubUi>();
+            hub.OpenSettings = ShowMainWindow;
+            hub.Register();
             if (!Views.WebWindow.IsAvailable)
             {
                 throw new InvalidOperationException($"нет собранного интерфейса в {Views.WebWindow.RootDirectory}");
@@ -247,7 +249,7 @@ public partial class App : Application
 
         if (!e.Args.Contains("--minimized", StringComparer.OrdinalIgnoreCase))
         {
-            ShowMainWindow();
+            ShowHub();
         }
 
         StartUpdateChecks(node);
@@ -448,7 +450,7 @@ public partial class App : Application
         services.AddSingleton<DeviceInfoService>();
         services.AddSingleton<PeerFilesService>();
         services.AddSingleton<UiBridge>();
-        services.AddSingleton<LayoutUi>();
+        services.AddSingleton<HubUi>();
         services.AddSingleton<MainViewModel>();
         return services.BuildServiceProvider();
     }
@@ -465,7 +467,7 @@ public partial class App : Application
             IconSource = new BitmapImage(new Uri("pack://application:,,,/Assets/app.ico")),
             ContextMenu = menu,
         };
-        _trayIcon.TrayLeftMouseUp += (_, _) => ShowMainWindow();
+        _trayIcon.TrayLeftMouseUp += (_, _) => ShowHub();
         _trayIcon.ForceCreate();
     }
 
@@ -728,8 +730,8 @@ public partial class App : Application
 
     private Views.WebWindow? _layoutWindow;
 
-    /// <summary>The layout as a field to arrange devices and monitors on (a React page in WebView2).</summary>
-    public void ShowLayoutEditor()
+    /// <summary>The main window: the devices on a field, what each one can do, and the layout (a React page).</summary>
+    public void ShowHub()
     {
         if (_services is null)
         {
@@ -744,15 +746,12 @@ public partial class App : Application
 
         if (!Views.WebWindow.IsAvailable)
         {
-            MessageBox.Show(
-                "Новое окно раскладки не установлено вместе с приложением. Обновитесь до свежей сборки.",
-                "WinMirroring",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
+            // The new interface is not next to the app (an older build, or npm never ran): fall back to the old window.
+            ShowMainWindow();
             return;
         }
 
-        _layoutWindow = new Views.WebWindow(_services.GetRequiredService<UiBridge>(), "layout", "WinMirroring — раскладка экранов");
+        _layoutWindow = new Views.WebWindow(_services.GetRequiredService<UiBridge>(), "hub", "WinMirroring");
         _layoutWindow.Closed += (_, _) => _layoutWindow = null;
         _layoutWindow.Show();
         _layoutWindow.Activate();

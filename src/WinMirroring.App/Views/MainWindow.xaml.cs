@@ -17,7 +17,7 @@ public partial class MainWindow : Window
     /// <summary>The window normally hides to the tray; the app calls this before a real exit.</summary>
     public void AllowClose() => _allowClose = true;
 
-    private void OnOpenLayoutField(object sender, RoutedEventArgs e) => ((App)Application.Current).ShowLayoutEditor();
+    private void OnOpenLayoutField(object sender, RoutedEventArgs e) => ((App)Application.Current).ShowHub();
 
     protected override void OnClosing(CancelEventArgs e)
     {

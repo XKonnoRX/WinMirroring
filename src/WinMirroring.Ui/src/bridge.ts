@@ -70,39 +70,73 @@ export function on(event: string, handler: (data: unknown) => void): () => void 
 
 // ---- standing in for the app, so the interface can be opened in a browser ----------------------------------
 
+const device = (over: Record<string, unknown>) => ({
+  isThisDevice: false,
+  paired: true,
+  online: true,
+  state: 'на связи',
+  address: '192.168.1.191:47621',
+  rtt: '3 мс',
+  fingerprint: 'AB:CD:EF:01:23:45',
+  lastError: null,
+  version: '1.0.14',
+  canUpdate: false,
+  monitors: [],
+  hasVirtualDisplay: true,
+  sound: { here: 'auto', playing: false, sentTo: false },
+  ...over,
+})
+
 const sample = {
+  self: 'self',
+  inputFocus: 'Ввод: здесь',
+  ownSound: 'Звук играет здесь',
+  network: 'TCP: 192.168.1.156:47621; обнаружение: UDP 47620',
+  manualAddresses: ['192.168.1.191'],
   devices: [
-    {
+    device({
       id: 'self',
       name: 'KONNY',
       isThisDevice: true,
-      online: true,
+      state: 'это устройство',
+      address: '',
+      rtt: '',
+      sound: null,
       monitors: [
-        { key: 'self-1', label: 'Монитор 1', size: '1536×864', width: 1536, height: 864, primary: true },
-        { key: 'self-2', label: 'Монитор 2', size: '1920×1080', width: 1920, height: 1080, primary: false },
+        { key: 'self-1', label: 'Монитор 1 · основной', size: '1536×864', width: 1536, height: 864, left: 0, top: 0, primary: true },
+        { key: 'self-2', label: 'Монитор 2 · слева', size: '1920×1080', width: 1920, height: 1080, left: -1920, top: 0, primary: false },
       ],
-    },
-    {
+    }),
+    device({
       id: 'tablet',
       name: 'DESKTOP-P50HIEF',
-      isThisDevice: false,
-      online: true,
-      monitors: [{ key: 'tab-1', label: 'Монитор 1', size: '1920×1280', width: 1920, height: 1280, primary: true }],
-    },
-    { id: 'pc', name: 'Домашний ПК', isThisDevice: false, online: false, monitors: [] },
+      canUpdate: true,
+      version: '1.0.12',
+      monitors: [{ key: 'tab-1', label: 'Монитор 1 · основной', size: '1920×1280', width: 1920, height: 1280, left: 0, top: 0, primary: true }],
+    }),
+    device({ id: 'pc', name: 'Домашний ПК', online: false, state: 'не на связи', version: null, hasVirtualDisplay: null }),
+    device({ id: 'new', name: 'LAPTOP-X1', paired: false, state: 'найдено рядом', version: null, hasVirtualDisplay: null }),
   ],
   cells: [
     { deviceId: 'self', monitor: 'self-2', column: 0, row: 0 },
     { deviceId: 'self', monitor: 'self-1', column: 1, row: 0 },
-    { deviceId: 'tablet', monitor: null, column: 2, row: 0 },
+    { deviceId: 'tablet', monitor: 'tab-1', column: 2, row: 0 },
   ],
 }
 
 async function mockInvoke<T>(method: string, args?: unknown): Promise<T> {
-  if (method === 'layout.get') return sample as unknown as T
-  if (method === 'layout.save') {
+  if (method === 'hub.get') return sample as unknown as T
+  if (method === 'hub.save') {
     sample.cells = (args as { cells: typeof sample.cells }).cells
-    return undefined as T
+    return 'Раскладка сохранена и отправлена устройствам.' as T
   }
+
+  if (method === 'hub.command') {
+    const call = args as { name: string; deviceId?: string; text?: string }
+    if (call.name === 'addAddress' && call.text) sample.manualAddresses.push(call.text)
+    if (call.name === 'removeAddress') sample.manualAddresses = sample.manualAddresses.filter((a) => a !== call.text)
+    return `Команда «${call.name}» выполнена.` as T
+  }
+
   throw new Error(`нет такого метода: ${method}`)
 }
