@@ -90,7 +90,7 @@ public sealed class ScreenViewer : IAsyncDisposable
     /// <summary>Stream only this normalized part of the source image (the full image is 0,0,1,1).</summary>
     public void SetCrop(RectangleF crop) => _outbox.Writer.TryWrite(ScreenCodec.EncodeCrop(StreamId, ScreenCodec.Normalize(crop)));
 
-    public void SwitchMonitor(int index) => _ = SendControlAsync(new ScreenRequestMessage(StreamId, index));
+    public void SwitchMonitor(int index, string? key = null) => _ = SendControlAsync(new ScreenRequestMessage(StreamId, index, key));
 
     /// <summary>Asks the source to act on its real window (restore it from minimised).</summary>
     public void SendWindowCommand(WindowCommand command) => _outbox.Writer.TryWrite(ScreenCodec.EncodeWindowCommand(StreamId, command));

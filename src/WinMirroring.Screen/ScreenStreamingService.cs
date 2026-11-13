@@ -158,7 +158,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
     }
 
     /// <summary>Asks <paramref name="peerId"/> to stream one of its monitors here.</summary>
-    public async Task<bool> RequestScreenAsync(string peerId, int monitorIndex = 0)
+    public async Task<bool> RequestScreenAsync(string peerId, int monitorIndex = 0, string? monitorKey = null)
     {
         if (!TryGetReady(peerId, out var session))
         {
@@ -169,7 +169,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
         _requested[streamId] = peerId;
         try
         {
-            await session.SendControlAsync(new ScreenRequestMessage(streamId, monitorIndex)).ConfigureAwait(false);
+            await session.SendControlAsync(new ScreenRequestMessage(streamId, monitorIndex, monitorKey)).ConfigureAwait(false);
             return true;
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
@@ -302,7 +302,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
         var virtualDevice = Display.VirtualDisplay.FindDeviceName();
         var monitors = DisplayCatalog.Monitors()
             .Where(m => !string.Equals(m.DeviceName, virtualDevice, StringComparison.OrdinalIgnoreCase))
-            .Select(m => new RemoteMonitor(m.Index, $"{m.Bounds.Width}×{m.Bounds.Height}", m.IsPrimary))
+            .Select(m => new RemoteMonitor(m.Index, $"{m.Bounds.Width}×{m.Bounds.Height}", m.IsPrimary, m.DeviceName))
             .ToList();
         return new DeviceCapabilitiesMessage(virtualDevice is not null, reply, monitors, VideoCodecSupport.CanEncodeH264, VideoCodecSupport.CanDecodeH264);
     }
@@ -440,13 +440,13 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
 
             if (_sources.TryGetValue(request.StreamId, out var existing) && ReferenceEquals(existing.Session, session))
             {
-                existing.SwitchMonitor(request.MonitorIndex);
+                existing.SwitchMonitor(request.MonitorIndex, request.MonitorKey);
                 await session.SendControlAsync(existing.Describe()).ConfigureAwait(false);
                 RaiseSourcesChanged();
                 return;
             }
 
-            var source = ScreenSource.ForMonitor(session, request.StreamId, request.MonitorIndex, _node.Settings.Screen, NegotiateVideo(session), _logger);
+            var source = ScreenSource.ForMonitor(session, request.StreamId, request.MonitorIndex, request.MonitorKey, _node.Settings.Screen, NegotiateVideo(session), _logger);
             await StartSourceAsync(session, source).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or System.Runtime.InteropServices.COMException or ArgumentException)

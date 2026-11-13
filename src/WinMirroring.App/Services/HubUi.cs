@@ -26,6 +26,7 @@ public sealed class HubUi
     private readonly ScreenStreamingService _screen;
     private readonly DeviceInfoService _devices;
     private readonly MainViewModel _vm;
+    private readonly IViewerControl _viewers;
     private readonly UiBridge _bridge;
 
     public HubUi(
@@ -34,6 +35,7 @@ public sealed class HubUi
         ScreenStreamingService screen,
         DeviceInfoService devices,
         MainViewModel vm,
+        IViewerControl viewers,
         UiBridge bridge)
     {
         _node = node;
@@ -41,6 +43,7 @@ public sealed class HubUi
         _screen = screen;
         _devices = devices;
         _vm = vm;
+        _viewers = viewers;
         _bridge = bridge;
     }
 
@@ -128,7 +131,8 @@ public sealed class HubUi
             !self && _devices.CanUpdate(id),
             Monitors(id, self),
             self ? ScreenStreamingService.IsVirtualDisplayAvailable : _screen.PeerVirtualDisplay(id),
-            self ? null : SoundOf(id));
+            self ? null : SoundOf(id),
+            self ? null : _viewers.ShownMonitorOf(id));
     }
 
     private List<MonitorDto> Monitors(string id, bool self)
@@ -195,8 +199,10 @@ public sealed class HubUi
                 return $"Сопряжение с {name} разорвано.";
 
             case "showScreen":
-                await _screen.RequestScreenAsync(id, call.Monitor is { Length: > 0 } ? MonitorIndexOf(id, call.Monitor) : 0);
-                return $"Открываю экран {name}…";
+                // Through the viewer control, so a device that is already shown switches monitor instead of
+                // getting a second stream of its own.
+                _viewers.ShowOrSwitchScreen(id, MonitorIndexOf(id, call.Monitor), call.Monitor);
+                return null;
 
             case "sendWindow":
                 await _vm.SendWindowToPeerAsync(id, name);
@@ -287,12 +293,24 @@ public sealed class HubUi
         return $"{address} добавлен. Устройство появится, когда ответит (это может занять несколько секунд).";
     }
 
-    /// <summary>The viewer asks for a monitor by its index in the peer's list, the field knows it by its key.</summary>
-    private int MonitorIndexOf(string deviceId, string monitorKey)
+    /// <summary>
+    /// The index that goes with a monitor key, for a device too old to understand keys. Matched on the key the
+    /// device itself reports where it sends one, and only otherwise by position in the two lists.
+    /// </summary>
+    private int MonitorIndexOf(string deviceId, string? monitorKey)
     {
-        var monitors = _input.PeerMonitors(deviceId);
-        var position = monitors.ToList().FindIndex(m => m.Key == monitorKey);
+        if (string.IsNullOrEmpty(monitorKey))
+        {
+            return 0;
+        }
+
         var remote = _screen.PeerMonitors(deviceId);
+        if (remote.FirstOrDefault(m => m.Key == monitorKey) is { } named)
+        {
+            return named.Index;
+        }
+
+        var position = _input.PeerMonitors(deviceId).ToList().FindIndex(m => m.Key == monitorKey);
         return position >= 0 && position < remote.Count ? remote[position].Index : 0;
     }
 
@@ -315,7 +333,8 @@ public sealed class HubUi
         bool CanUpdate,
         List<MonitorDto> Monitors,
         bool? HasVirtualDisplay,
-        SoundDto? Sound);
+        SoundDto? Sound,
+        string? ShownMonitor);
 
     private sealed record CellDto(string DeviceId, string? Monitor, int Column, int Row);
 

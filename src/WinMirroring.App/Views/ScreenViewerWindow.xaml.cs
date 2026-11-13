@@ -1141,7 +1141,7 @@ public partial class ScreenViewerWindow : Window
     /// <summary>Gets the view out of the way (back to this device's own desktop) without closing the stream.</summary>
     public void MinimizeView() => WindowState = WindowState.Minimized;
 
-    public void SwitchToMonitor(int index) => _viewer.SwitchMonitor(index);
+    public void SwitchToMonitor(int index, string? key = null) => _viewer.SwitchMonitor(index, key);
 
     public void ToggleOnScreenKeyboard() => OnToggleKeyboard(this, new RoutedEventArgs());
 

@@ -29,6 +29,8 @@ export type Device = {
   monitors: Monitor[]
   hasVirtualDisplay: boolean | null
   sound: Sound | null
+  /** The monitor of this device that is open here right now, if any. */
+  shownMonitor: string | null
 }
 
 /** One square of the grid the cursor crosses between. A cell without a monitor stands for the whole device. */

@@ -84,6 +84,7 @@ const device = (over: Record<string, unknown>) => ({
   monitors: [],
   hasVirtualDisplay: true,
   sound: { here: 'auto', playing: false, sentTo: false },
+  shownMonitor: null,
   ...over,
 })
 
@@ -206,7 +207,7 @@ const samplePanel = {
     {
       id: 'tablet',
       name: 'DESKTOP-P50HIEF',
-      monitors: [{ index: 0, label: '1920×1280', primary: true }],
+      monitors: [{ index: 0, label: '1920×1280', primary: true, key: '\\\\.\\DISPLAY1' }],
       screenOpen: true,
       secondMonitor: false,
       canBecome: true,

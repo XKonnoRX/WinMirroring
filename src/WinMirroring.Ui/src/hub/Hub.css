@@ -260,6 +260,14 @@
   border-color: var(--accent-bright);
 }
 
+/* The monitor that is open here right now stays marked, without hovering. */
+.pane-open.is-shown {
+  opacity: 1;
+  background: #5b6cff2e;
+  border-color: #5b6cff66;
+  color: var(--accent-bright);
+}
+
 .hub-floating {
   position: absolute;
   z-index: 40;

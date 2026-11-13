@@ -483,12 +483,12 @@ function DeviceGroup({
             {pane.size && <div className="pane-size">{pane.size}</div>}
             {onOpenScreen && !device.isThisDevice && device.online && (
               <button
-                className="pane-open"
+                className={`pane-open${device.shownMonitor === pane.key ? ' is-shown' : ''}`}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={() => onOpenScreen(pane.key)}
                 title="Показать этот экран здесь"
               >
-                Показать
+                {device.shownMonitor === pane.key ? 'Показан' : 'Показать'}
               </button>
             )}
           </div>

@@ -125,7 +125,7 @@ export function Panel() {
                 <button
                   key={monitor.index}
                   className="item"
-                  onClick={() => void run('showScreen', { deviceId: device.id, monitor: monitor.index })}
+                  onClick={() => void run('showScreen', { deviceId: device.id, monitor: monitor.index, text: monitor.key })}
                 >
                   {monitor.primary ? 'Основной экран' : `Монитор ${index + 1}`} <span className="dim">{monitor.label}</span>
                 </button>

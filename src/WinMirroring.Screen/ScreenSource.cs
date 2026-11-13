@@ -97,9 +97,9 @@ internal sealed class ScreenSource : IAsyncDisposable
 
     public event Action<ScreenSource, string>? Ended;
 
-    public static ScreenSource ForMonitor(PeerSession session, uint streamId, int monitorIndex, ScreenSettings settings, bool useVideo, ILogger logger)
+    public static ScreenSource ForMonitor(PeerSession session, uint streamId, int monitorIndex, string? monitorKey, ScreenSettings settings, bool useVideo, ILogger logger)
     {
-        var monitor = PickMonitor(monitorIndex);
+        var monitor = PickMonitor(monitorIndex, monitorKey);
         return new ScreenSource(session, streamId, StreamKind.Monitor, WgcCapture.ForMonitor(monitor.Handle, logger), monitor, 0, MonitorTitle(monitor), settings, useVideo, logger);
     }
 
@@ -122,7 +122,8 @@ internal sealed class ScreenSource : IAsyncDisposable
         _settings.AllowControl,
         Kind == StreamKind.Window && IsIconic(Window),
         Kind == StreamKind.Window ? WindowScalePercent(Window) : 100,
-        Codec);
+        Codec,
+        _monitor?.DeviceName ?? string.Empty);
 
     /// <summary>Viewer side runs a copy of the window: carry out a command on this device's real window.</summary>
     public void OnWindowCommand(WindowCommand command)
@@ -177,14 +178,14 @@ internal sealed class ScreenSource : IAsyncDisposable
     }
 
     /// <summary>Viewer asked for another monitor of a monitor stream.</summary>
-    public void SwitchMonitor(int index)
+    public void SwitchMonitor(int index, string? key = null)
     {
         if (Kind != StreamKind.Monitor)
         {
             return;
         }
 
-        var monitor = PickMonitor(index);
+        var monitor = PickMonitor(index, key);
         var capture = WgcCapture.ForMonitor(monitor.Handle, _logger);
         WgcCapture old;
         lock (_gate)
@@ -658,7 +659,11 @@ internal sealed class ScreenSource : IAsyncDisposable
         }
     }
 
-    private static MonitorDescription PickMonitor(int index)
+    /// <summary>
+    /// The monitor the viewer asked for: by its display device name where it gave one (exact, whatever the two
+    /// sides' lists look like), then by the index it carries, and only then by position in the list.
+    /// </summary>
+    internal static MonitorDescription PickMonitor(int index, string? key = null)
     {
         var monitors = DisplayCatalog.Monitors();
         if (monitors.Count == 0)
@@ -666,7 +671,12 @@ internal sealed class ScreenSource : IAsyncDisposable
             throw new InvalidOperationException("No monitors found.");
         }
 
-        return monitors[Math.Clamp(index, 0, monitors.Count - 1)];
+        if (!string.IsNullOrEmpty(key) && monitors.FirstOrDefault(m => m.DeviceName == key) is { } named)
+        {
+            return named;
+        }
+
+        return monitors.FirstOrDefault(m => m.Index == index) ?? monitors[Math.Clamp(index, 0, monitors.Count - 1)];
     }
 
     private static string MonitorTitle(MonitorDescription monitor) =>

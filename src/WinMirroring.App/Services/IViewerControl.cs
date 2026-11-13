@@ -16,8 +16,14 @@ public interface IViewerControl
 {
     bool IsScreenOpen(string peerId);
 
-    /// <summary>Shows <paramref name="monitorIndex"/> of the device: switches the open view to it, or opens one.</summary>
-    void ShowOrSwitchScreen(string peerId, int monitorIndex);
+    /// <summary>The key of the monitor an open view of this device shows, or null when none is open.</summary>
+    string? ShownMonitorOf(string peerId);
+
+    /// <summary>
+    /// Shows a monitor of the device: switches the view that is already open to it, or opens one. The monitor is
+    /// named by <paramref name="monitorKey"/> where it is known, since an index is only a position in a list.
+    /// </summary>
+    void ShowOrSwitchScreen(string peerId, int monitorIndex, string? monitorKey = null);
 
     IReadOnlyList<OpenViewInfo> OpenViews { get; }
 

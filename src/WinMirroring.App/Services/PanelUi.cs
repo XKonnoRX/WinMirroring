@@ -107,7 +107,7 @@ public sealed class PanelUi
                 id = p.Id,
                 name = p.Name,
                 monitors = _screen.PeerMonitors(p.Id)
-                    .Select(m => new { index = m.Index, label = m.Label, primary = m.Primary })
+                    .Select(m => new { index = m.Index, label = m.Label, primary = m.Primary, key = m.Key })
                     .ToList(),
                 screenOpen = _viewers.IsScreenOpen(p.Id),
                 secondMonitor = _vm.IsSecondMonitor(p.Id),
@@ -142,7 +142,7 @@ public sealed class PanelUi
                 break;
 
             case "showScreen":
-                _viewers.ShowOrSwitchScreen(call.DeviceId ?? string.Empty, call.Monitor ?? 0);
+                _viewers.ShowOrSwitchScreen(call.DeviceId ?? string.Empty, call.Monitor ?? 0, call.Text);
                 Hide?.Invoke();
                 return null;
 

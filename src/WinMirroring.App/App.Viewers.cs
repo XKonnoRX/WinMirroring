@@ -151,20 +151,26 @@ public partial class App : IViewerControl
 
     public bool IsScreenOpen(string peerId) => FindScreenView(peerId) is not null;
 
-    public void ShowOrSwitchScreen(string peerId, int monitorIndex)
+    /// <summary>
+    /// One view per device: asking for another of its monitors switches the view that is open instead of starting
+    /// a second stream, which would leave the first one running and showing the same device.
+    /// </summary>
+    public void ShowOrSwitchScreen(string peerId, int monitorIndex, string? monitorKey = null)
     {
         if (FindScreenView(peerId) is { } existing)
         {
-            if (existing.Viewer.Info.MonitorIndex != monitorIndex)
+            var info = existing.Viewer.Info;
+            var showsIt = monitorKey is { Length: > 0 } ? info.MonitorKey == monitorKey : info.MonitorIndex == monitorIndex;
+            if (!showsIt)
             {
-                existing.SwitchToMonitor(monitorIndex);
+                existing.SwitchToMonitor(monitorIndex, monitorKey);
             }
 
             SwitchTo(existing.Viewer.StreamId);
         }
         else if (_services?.GetService<ScreenStreamingService>() is { } screen)
         {
-            _ = screen.RequestScreenAsync(peerId, monitorIndex);
+            _ = screen.RequestScreenAsync(peerId, monitorIndex, monitorKey);
         }
     }
 
@@ -206,6 +212,9 @@ public partial class App : IViewerControl
     public void CloseView(uint streamId) => FindView(streamId)?.CloseView();
 
     public void SwitchMonitor(uint streamId, int index) => FindView(streamId)?.SwitchToMonitor(index);
+
+    /// <summary>The key of the monitor an open view of this device shows, for the field to mark it.</summary>
+    public string? ShownMonitorOf(string peerId) => FindScreenView(peerId)?.Viewer.Info.MonitorKey;
 
     public void ToggleKeyboard(uint streamId) => FindView(streamId)?.ToggleOnScreenKeyboard();
 

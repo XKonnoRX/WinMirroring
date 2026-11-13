@@ -13,7 +13,7 @@ export type PanelView = {
 export type PanelDevice = {
   id: string
   name: string
-  monitors: { index: number; label: string; primary: boolean }[]
+  monitors: { index: number; label: string; primary: boolean; key: string }[]
   screenOpen: boolean
   secondMonitor: boolean
   canBecome: boolean | null

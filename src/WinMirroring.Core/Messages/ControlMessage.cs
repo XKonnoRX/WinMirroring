@@ -55,8 +55,11 @@ public sealed record DeviceCapabilitiesMessage(
 /// </summary>
 public sealed record DeviceInfoMessage(string AppVersion, bool IsReply = false) : ControlMessage;
 
-/// <summary>One monitor of a device, by the index a <see cref="ScreenRequestMessage"/> uses.</summary>
-public sealed record RemoteMonitor(int Index, string Label, bool Primary);
+/// <summary>
+/// One monitor of a device. <see cref="Key"/> is its display device name, which names it exactly; the index is
+/// only a position and is kept for devices that do not send a key.
+/// </summary>
+public sealed record RemoteMonitor(int Index, string Label, bool Primary, string Key = "");
 
 /// <summary>First message in each direction. The server adds a challenge the client must sign.</summary>
 public sealed record HelloMessage(
@@ -133,8 +136,12 @@ public sealed record AudioStopMessage(uint StreamId) : ControlMessage;
 /// </summary>
 public sealed record AudioRouteRequestMessage(bool Listen, bool Refuse = false) : ControlMessage;
 
-/// <summary>Viewer → source: stream monitor <see cref="MonitorIndex"/> as <see cref="StreamId"/> (again with a new index to switch).</summary>
-public sealed record ScreenRequestMessage(uint StreamId, int MonitorIndex) : ControlMessage;
+/// <summary>
+/// Viewer → source: stream this monitor as <see cref="StreamId"/> (again with a different one to switch). The
+/// monitor is named by <see cref="MonitorKey"/> where it is known, because an index is only a position in a list
+/// and the two sides can order or filter theirs differently; the index remains for older devices.
+/// </summary>
+public sealed record ScreenRequestMessage(uint StreamId, int MonitorIndex, string? MonitorKey = null) : ControlMessage;
 
 /// <summary>
 /// Source → viewer: a stream starts or changes. Kind is "monitor", "window" or "display". <see cref="Codec"/>
@@ -150,7 +157,8 @@ public sealed record ScreenStreamMessage(
     bool ControlAllowed,
     bool Minimized = false,
     int ScalePercent = 100,
-    string Codec = "jpeg") : ControlMessage;
+    string Codec = "jpeg",
+    string MonitorKey = "") : ControlMessage;
 
 /// <summary>Either side: the stream ends.</summary>
 public sealed record ScreenStopMessage(uint StreamId, string? Reason) : ControlMessage;
