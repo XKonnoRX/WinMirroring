@@ -106,7 +106,10 @@ public partial class ScreenViewerWindow : Window
 
         _viewer.InfoChanged += _ => Dispatcher.BeginInvoke(UpdateInfo);
         _viewer.Closed += (_, reason) => Dispatcher.BeginInvoke(() => OnRemoteClosed(reason));
-        _viewer.Attach(update => Dispatcher.BeginInvoke(DispatcherPriority.Render, () => Present(update)));
+        // Input priority, not Render: Render sits above Input in WPF, so painting the stream used to overtake the
+        // user's own taps and clicks in this window. A frame that waits its turn behind a tap is not a problem —
+        // the viewer skips frames the window cannot keep up with.
+        _viewer.Attach(update => Dispatcher.BeginInvoke(DispatcherPriority.Input, () => Present(update)));
 
         ScreenImage.MouseMove += OnImageMouseMove;
         ScreenImage.MouseDown += OnImageMouseDown;

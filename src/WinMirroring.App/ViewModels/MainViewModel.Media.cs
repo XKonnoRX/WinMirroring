@@ -99,7 +99,9 @@ public sealed partial class MainViewModel
         foreach (var incoming in status.Receiving)
         {
             lines.Add(string.Create(CultureInfo.CurrentCulture,
-                $"Играет звук с {incoming.PeerName}: в буфере {incoming.BufferedMs:F0} мс, потеряно пакетов {incoming.Lost}, провалов {incoming.Underruns}."));
+                $"Играет звук с {incoming.PeerName}: в буфере {incoming.BufferedMs:F0} из {incoming.AimedMs} мс, " +
+                $"разброс прихода {incoming.JitterMs:F1} мс, потеряно пакетов {incoming.Lost} (восстановлено {incoming.Recovered}), " +
+                $"провалов {incoming.Underruns}."));
         }
 
         AudioStatusText = string.Join(Environment.NewLine, lines);

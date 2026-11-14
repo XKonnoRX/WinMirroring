@@ -159,6 +159,12 @@ public sealed class MirroringNode : IAsyncDisposable
         return true;
     }
 
+    /// <summary>Asks for media going to this peer to travel ahead of bulk traffic such as a screen stream.</summary>
+    public void PrioritizeMedia(IPEndPoint peer) => _media?.Prioritize(peer);
+
+    /// <summary>Gives that priority up again.</summary>
+    public void ReleaseMediaPriority(IPEndPoint peer) => _media?.ReleasePriority(peer);
+
     private void OnMediaPacket(IPEndPoint from, ReadOnlySpan<byte> packet) => MediaPacketReceived?.Invoke(from, packet);
 
     public void SaveSettings() => SettingsStore.Save(Settings);

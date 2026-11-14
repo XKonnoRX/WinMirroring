@@ -26,8 +26,10 @@ internal sealed class H264VideoEncoder : IDisposable
     private readonly ILogger _logger;
     private readonly int _width;
     private readonly int _height;
-    private readonly long _frameDurationHns;
     private readonly byte[] _nv12;
+    private long _frameDurationHns;
+    private int _fps;
+    private int _bitrateKbps;
 
     private readonly IMFTransform _transform;
     private readonly IMFMediaEventGenerator _events;
@@ -48,7 +50,12 @@ internal sealed class H264VideoEncoder : IDisposable
     private readonly Thread _pump;
     private volatile bool _running = true;
     private int _pendingNeedInput;
-    private long _frameIndex;
+
+    /// <summary>
+    /// Where the next frame sits on the encoder's timeline. Accumulated rather than counted, because the frame
+    /// duration changes when the stream slows down and a multiplied count would then jump backwards.
+    /// </summary>
+    private long _sampleTimeHns;
 
     // Diagnostics for the unit test; not used in production paths.
     internal int DiagEvents;
@@ -69,7 +76,8 @@ internal sealed class H264VideoEncoder : IDisposable
         _outputSize = outputSize;
         _width = width;
         _height = height;
-        _frameDurationHns = Math.Max(1, 10_000_000L / Math.Clamp(fps, 1, 60));
+        _fps = Math.Clamp(fps, 1, 60);
+        _frameDurationHns = Math.Max(1, 10_000_000L / _fps);
         _nv12 = new byte[Nv12Converter.Nv12Size(width, height)];
         _logger = logger;
         _pump = new Thread(Pump) { IsBackground = true, Name = "h264-encoder" };
@@ -289,20 +297,56 @@ internal sealed class H264VideoEncoder : IDisposable
 
         Set(VideoInterop.LowLatency, CodecPropVariant.Bool(true));
         Set(VideoInterop.AVEncCommonRateControlMode, CodecPropVariant.UInt32(VideoInterop.RateControlCbr));
-        Set(VideoInterop.AVEncCommonMeanBitRate, CodecPropVariant.UInt32((uint)Math.Clamp(bitrateKbps, 500, 100_000) * 1000u));
         Set(VideoInterop.AVEncMPVDefaultBPictureCount, CodecPropVariant.UInt32(0));
-        Set(VideoInterop.AVEncMPVGOPSize, CodecPropVariant.UInt32((uint)Math.Clamp(fps * 2, 1, 600)));
+        ApplyRate(fps, bitrateKbps);
+    }
 
-        void Set(Guid api, CodecPropVariant value)
+    /// <summary>
+    /// Asks the encoder for a different frame rate and bitrate without rebuilding it, so a stream can be eased
+    /// down when the link is behind and brought back up when it is not. Both are best-effort: an encoder that
+    /// refuses simply keeps what it had, and the frame duration this side stamps on each sample changes anyway,
+    /// which is what rate control works from.
+    /// </summary>
+    public void Retune(int fps, int bitrateKbps)
+    {
+        fps = Math.Clamp(fps, 1, 60);
+        bitrateKbps = Math.Clamp(bitrateKbps, 500, 100_000);
+
+        // Nothing worth a round trip into the driver: a tenth of the bitrate, or a frame either way.
+        if (fps == _fps && Math.Abs(bitrateKbps - _bitrateKbps) * 10 < _bitrateKbps)
         {
-            try
-            {
-                _codecApi!.SetValue(ref api, ref value);
-            }
-            catch (Exception ex) when (ex is COMException or InvalidOperationException)
-            {
-                _logger.LogTrace("Codec setting {Api} ignored: {Message}", api, ex.Message);
-            }
+            return;
+        }
+
+        _frameDurationHns = Math.Max(1, 10_000_000L / fps);
+        ApplyRate(fps, bitrateKbps);
+    }
+
+    private void ApplyRate(int fps, int bitrateKbps)
+    {
+        _fps = fps;
+        _bitrateKbps = bitrateKbps;
+        Set(VideoInterop.AVEncCommonMeanBitRate, CodecPropVariant.UInt32((uint)bitrateKbps * 1000u));
+
+        // Two seconds between key frames: often enough that a viewer joining or recovering sees a picture soon,
+        // rare enough that the big frames do not dominate a thin link.
+        Set(VideoInterop.AVEncMPVGOPSize, CodecPropVariant.UInt32((uint)Math.Clamp(fps * 2, 1, 600)));
+    }
+
+    private void Set(Guid api, CodecPropVariant value)
+    {
+        if (_codecApi is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _codecApi.SetValue(ref api, ref value);
+        }
+        catch (Exception ex) when (ex is COMException or InvalidOperationException)
+        {
+            _logger.LogTrace("Codec setting {Api} ignored: {Message}", api, ex.Message);
         }
     }
 
@@ -438,9 +482,9 @@ internal sealed class H264VideoEncoder : IDisposable
     {
         var sample = MediaFactory.MFCreateSample();
         sample.AddBuffer(buffer);
-        sample.SampleTime = _frameIndex * _frameDurationHns;
+        sample.SampleTime = _sampleTimeHns;
         sample.SampleDuration = _frameDurationHns;
-        _frameIndex++;
+        _sampleTimeHns += _frameDurationHns;
         buffer.Dispose();
         return sample;
     }

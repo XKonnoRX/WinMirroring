@@ -16,6 +16,8 @@ public sealed class PeerConnection : IAsyncDisposable
     private readonly TcpClient _client;
     private readonly SslStream _stream;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly FrameCodec.Reader _reader = new();
+    private int _messageId;
 
     private PeerConnection(TcpClient client, SslStream stream, bool isInitiator, X509Certificate2? remoteCertificate)
     {
@@ -147,21 +149,49 @@ public sealed class PeerConnection : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Sends one message. Everything shares this one connection, so a big payload goes out in parts with the write
+    /// lock released between them: a key frame or half a megabyte of tiles must not keep a key press, a frame
+    /// acknowledgement or the heartbeat waiting behind it (which, with a 20-second idle timeout, could end the
+    /// session over nothing more than a slow link).
+    /// </summary>
     public async ValueTask SendAsync(ChannelId channel, ReadOnlyMemory<byte> payload, CancellationToken ct)
     {
-        await _writeLock.WaitAsync(ct).ConfigureAwait(false);
-        try
+        if (payload.Length <= FrameCodec.MaxUnsplitPayload)
         {
-            await FrameCodec.WriteAsync(_stream, channel, payload, ct).ConfigureAwait(false);
-            await _stream.FlushAsync(ct).ConfigureAwait(false);
+            await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await FrameCodec.WriteAsync(_stream, channel, payload, ct).ConfigureAwait(false);
+                await _stream.FlushAsync(ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
+
+            return;
         }
-        finally
+
+        var messageId = (ushort)Interlocked.Increment(ref _messageId);
+        for (var offset = 0; offset < payload.Length; offset += FrameCodec.MaxUnsplitPayload)
         {
-            _writeLock.Release();
+            var part = payload.Slice(offset, Math.Min(FrameCodec.MaxUnsplitPayload, payload.Length - offset));
+            var last = offset + part.Length >= payload.Length;
+            await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await FrameCodec.WritePartAsync(_stream, channel, messageId, part, last, ct).ConfigureAwait(false);
+                await _stream.FlushAsync(ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
         }
     }
 
-    public ValueTask<Frame?> ReceiveAsync(CancellationToken ct) => FrameCodec.ReadAsync(_stream, ct);
+    public ValueTask<Frame?> ReceiveAsync(CancellationToken ct) => _reader.ReadAsync(_stream, ct);
 
     public async ValueTask DisposeAsync()
     {

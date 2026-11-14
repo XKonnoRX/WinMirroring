@@ -24,33 +24,45 @@ public enum StreamKind
 }
 
 /// <summary>
-/// One outgoing stream of a monitor or a window to one viewer. At most two frame messages are unacknowledged, so
-/// the frame rate follows what the link and the viewer can take and the send queue never grows. Pointer and
-/// keyboard events from the viewer are injected here at the matching screen position.
+/// One outgoing stream of a monitor or a window to one viewer. A few frame messages may be unacknowledged at a time
+/// (see <see cref="SendWindow"/>), and the frame rate and bitrate follow how promptly the viewer acknowledges them
+/// (see <see cref="StreamPacing"/>), so a link that cannot carry the configured bitrate makes the picture coarser
+/// instead of freezing it. Pointer and keyboard events from the viewer are injected here at the matching screen
+/// position.
 /// </summary>
 internal sealed class ScreenSource : IAsyncDisposable
 {
-    private const int MaxInFlight = 2;
+    private const int MaxInFlight = 4;
     private const int PartBytes = 512 * 1024;
     private static readonly TimeSpan IdleWait = TimeSpan.FromMilliseconds(100);
+
+    /// <summary>How long a frame may stay unacknowledged before the stream stops waiting for it.</summary>
+    private static readonly TimeSpan AckGrace = TimeSpan.FromMilliseconds(500);
+
+    private static readonly TimeSpan ReportEvery = TimeSpan.FromSeconds(10);
 
     private readonly ScreenSettings _settings;
     private readonly ILogger _logger;
     private readonly InputInjector _injector = new();
     private readonly Injection.TouchInjector _touch;
     private readonly TileEncoder _encoder = new();
-    private readonly SemaphoreSlim _window = new(MaxInFlight, MaxInFlight);
+    private readonly SendWindow _window = new(MaxInFlight, AckGrace);
+    private readonly StreamPacing _pacing;
     private readonly CancellationTokenSource _cts = new();
     private readonly object _gate = new();
     private long _lastBlockedReport = -10_000;
     private long _monitorCheckedTicks;
+
+    // Diagnostics, written and read by the streaming loop only.
+    private long _reportedTicks;
+    private long _framesSent;
+    private long _bytesSent;
 
     private WgcCapture _capture;
     private MonitorDescription? _monitor;
     private RectangleF _crop = new(0, 0, 1, 1);
     private Size _frameSize;
     private int _forceAll = 1;
-    private int _outstanding;
     private Task? _loop;
     private int _ended;
     private bool _reportedIconic;
@@ -79,6 +91,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         _settings = settings;
         _useVideo = useVideo;
         _logger = logger;
+        _pacing = new StreamPacing(settings.MaxFps);
         _touch = new Injection.TouchInjector(logger);
         _capture.Closed += OnCaptureClosed;
     }
@@ -207,17 +220,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         Volatile.Write(ref _forceAll, 1);
     }
 
-    public void OnAck()
-    {
-        if (Interlocked.Decrement(ref _outstanding) >= 0)
-        {
-            _window.Release();
-        }
-        else
-        {
-            Interlocked.Increment(ref _outstanding);
-        }
-    }
+    public void OnAck() => _window.OnAck();
 
     public void OnCrop(RectangleF crop)
     {
@@ -439,7 +442,7 @@ internal sealed class ScreenSource : IAsyncDisposable
                     continue;
                 }
 
-                await _window.WaitAsync(ct).ConfigureAwait(false);
+                await _window.TakeAsync(ct).ConfigureAwait(false);
                 var slotHeld = true;
                 try
                 {
@@ -501,11 +504,12 @@ internal sealed class ScreenSource : IAsyncDisposable
                     {
                         if (!slotHeld)
                         {
-                            await _window.WaitAsync(ct).ConfigureAwait(false);
+                            await _window.TakeAsync(ct).ConfigureAwait(false);
                         }
 
                         slotHeld = false;
-                        Interlocked.Increment(ref _outstanding);
+                        _framesSent++;
+                        _bytesSent += message.Length;
                         await Session.SendAsync(ChannelId.Screen, message, ct).ConfigureAwait(false);
                     }
                 }
@@ -513,11 +517,11 @@ internal sealed class ScreenSource : IAsyncDisposable
                 {
                     if (slotHeld)
                     {
-                        _window.Release();
+                        _window.Return();
                     }
                 }
 
-                var minimumMs = 1000.0 / Math.Clamp(_settings.MaxFps, 1, 60);
+                var minimumMs = 1000.0 / Observe();
                 var wait = minimumMs - pacing.Elapsed.TotalMilliseconds;
                 if (wait > 1)
                 {
@@ -559,8 +563,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         if (_videoEncoder is null || _videoEncoder.Width != videoWidth || _videoEncoder.Height != videoHeight)
         {
             _videoEncoder?.Dispose();
-            var fps = Math.Clamp(_settings.MaxFps, 1, 60);
-            _videoEncoder = H264VideoEncoder.TryCreate(videoWidth, videoHeight, fps, ScaleBitrate(videoWidth, videoHeight), _logger);
+            _videoEncoder = H264VideoEncoder.TryCreate(videoWidth, videoHeight, _pacing.Fps, ScaleBitrate(videoWidth, videoHeight), _logger);
             if (_videoEncoder is null)
             {
                 _logger.LogInformation("H.264 encoder unavailable for {Title}; using JPEG tiles", Title);
@@ -668,15 +671,61 @@ internal sealed class ScreenSource : IAsyncDisposable
     {
         foreach (var message in messages)
         {
-            await _window.WaitAsync(ct).ConfigureAwait(false);
-            Interlocked.Increment(ref _outstanding);
+            await _window.TakeAsync(ct).ConfigureAwait(false);
+            _framesSent++;
+            _bytesSent += message.Length;
             await Session.SendAsync(ChannelId.Screen, message, ct).ConfigureAwait(false);
         }
     }
 
+    /// <summary>
+    /// Takes the link's measurements, moves the frame rate and bitrate targets and returns the frame rate to pace
+    /// this stream at. Also writes the stream's own line to the log every ten seconds: when a view stutters, the
+    /// numbers that say why — how long acknowledgements take, how many frames the window stopped waiting for, what
+    /// is actually going out — should already be in the log rather than having to be guessed at afterwards.
+    /// </summary>
+    private int Observe()
+    {
+        var now = Environment.TickCount64;
+        _pacing.Observe(_window.DelayMs, _window.GivenUp, _settings.MaxFps, now);
+        var fps = _pacing.Fps;
+        if (_videoEncoder is { } encoder)
+        {
+            encoder.Retune(fps, ScaleBitrate(encoder.Width, encoder.Height));
+        }
+
+        if (_reportedTicks == 0)
+        {
+            _reportedTicks = now;
+        }
+        else if (now - _reportedTicks >= ReportEvery.TotalMilliseconds)
+        {
+            var seconds = (now - _reportedTicks) / 1000.0;
+            _logger.LogInformation(
+                "Stream {Stream} to {Peer}: {Codec}, {Rate:F1} messages/s, {Kbps:F0} kbit/s, aiming at {Fps} fps{Held}, acknowledged in {Delay:F0} ms, {GivenUp} not waited for, {InFlight} in flight",
+                StreamId,
+                Session.PeerName,
+                Codec,
+                _framesSent / seconds,
+                _bytesSent * 8 / 1000.0 / seconds,
+                fps,
+                _pacing.HeldBack ? " (held back)" : string.Empty,
+                _window.DelayMs,
+                _window.GivenUp,
+                _window.InFlight);
+            _reportedTicks = now;
+            _framesSent = 0;
+            _bytesSent = 0;
+        }
+
+        return fps;
+    }
+
     private List<byte[]> BuildJpegMessages(byte[] frame, int frameWidth, int frameHeight, Rectangle crop, bool force)
     {
-        _encoder.Quality = Math.Clamp(_settings.Quality, 30, 95) / 100f;
+        // A link that cannot keep up gets coarser tiles, the same way the video path gets a lower bitrate.
+        var quality = Math.Clamp(_settings.Quality, 30, 95);
+        _encoder.Quality = (float)(30 + ((quality - 30) * _pacing.Share)) / 100f;
         var tiles = _encoder.Encode(frame, frameWidth, frameHeight, crop, force);
         if (tiles.Count == 0)
         {
@@ -692,12 +741,15 @@ internal sealed class ScreenSource : IAsyncDisposable
         return messages;
     }
 
-    /// <summary>Full-screen bitrate scaled down for smaller crops (at least 15% of the configured value).</summary>
+    /// <summary>
+    /// Full-screen bitrate scaled down for smaller crops (at least 15% of the configured value) and again by what
+    /// the link is currently willing to carry (see <see cref="StreamPacing"/>).
+    /// </summary>
     private int ScaleBitrate(int width, int height)
     {
         var baseKbps = Math.Clamp(_settings.VideoBitrateKbps, 500, 100_000);
         var fraction = Math.Clamp(width * (double)height / (1920 * 1080), 0.15, 1.0);
-        return (int)Math.Round(baseKbps * fraction);
+        return (int)Math.Round(baseKbps * fraction * _pacing.Share);
     }
 
     private static IEnumerable<List<EncodedTile>> Split(List<EncodedTile> tiles)
@@ -784,6 +836,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         _gpuConverter?.Dispose();
         _injector.ReleaseAll();
         _touch.Dispose();
+        _window.Dispose();
         _cts.Dispose();
         _logger.LogInformation("Stopped streaming {Title} to {Peer}", Title, Session.PeerName);
     }

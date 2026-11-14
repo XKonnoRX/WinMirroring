@@ -37,9 +37,10 @@ public class CodecTests
         await FrameCodec.WriteAsync(stream, ChannelId.Control, Array.Empty<byte>(), TestContext.Current.CancellationToken);
         stream.Position = 0;
 
-        var first = await FrameCodec.ReadAsync(stream, TestContext.Current.CancellationToken);
-        var second = await FrameCodec.ReadAsync(stream, TestContext.Current.CancellationToken);
-        var end = await FrameCodec.ReadAsync(stream, TestContext.Current.CancellationToken);
+        var reader = new FrameCodec.Reader();
+        var first = await reader.ReadAsync(stream, TestContext.Current.CancellationToken);
+        var second = await reader.ReadAsync(stream, TestContext.Current.CancellationToken);
+        var end = await reader.ReadAsync(stream, TestContext.Current.CancellationToken);
 
         Assert.NotNull(first);
         Assert.Equal(ChannelId.Input, first.Value.Channel);
@@ -56,7 +57,42 @@ public class CodecTests
         using var stream = new MemoryStream([0x7F, 0xFF, 0xFF, 0xFF, 0, 0]);
 
         await Assert.ThrowsAsync<InvalidDataException>(async () =>
-            await FrameCodec.ReadAsync(stream, TestContext.Current.CancellationToken));
+            await new FrameCodec.Reader().ReadAsync(stream, TestContext.Current.CancellationToken));
+    }
+
+    /// <summary>
+    /// The point of writing a message in parts: another message may be written between two of them (that is what
+    /// lets a key press overtake a key frame), and both must come out whole and unmixed.
+    /// </summary>
+    [Fact]
+    public async Task MessagesInPartsSurviveBeingInterleaved()
+    {
+        using var stream = new MemoryStream();
+        var ct = TestContext.Current.CancellationToken;
+        var big = new byte[100];
+        var other = new byte[40];
+        Random.Shared.NextBytes(big);
+        Random.Shared.NextBytes(other);
+
+        await FrameCodec.WritePartAsync(stream, ChannelId.Screen, 7, big.AsMemory(0, 60), last: false, ct);
+        await FrameCodec.WritePartAsync(stream, ChannelId.Screen, 8, other, last: true, ct);
+        await FrameCodec.WriteAsync(stream, ChannelId.Input, new byte[] { 42 }, ct);
+        await FrameCodec.WritePartAsync(stream, ChannelId.Screen, 7, big.AsMemory(60), last: true, ct);
+        stream.Position = 0;
+
+        var reader = new FrameCodec.Reader();
+        var read = new List<Frame>();
+        while (await reader.ReadAsync(stream, ct) is { } frame)
+        {
+            read.Add(frame);
+        }
+
+        Assert.Equal(3, read.Count);
+        Assert.Equal(other, read[0].Payload);
+        Assert.Equal([42], read[1].Payload);
+        Assert.Equal(ChannelId.Input, read[1].Channel);
+        Assert.Equal(big, read[2].Payload);
+        Assert.Equal(ChannelId.Screen, read[2].Channel);
     }
 
     public static TheoryData<ControlMessage> Messages => new()

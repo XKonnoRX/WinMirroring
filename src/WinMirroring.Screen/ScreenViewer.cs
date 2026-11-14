@@ -15,12 +15,24 @@ public sealed record FrameUpdate(uint FrameNo, int Width, int Height, byte[] Ima
 
 /// <summary>
 /// Viewer side of one stream, independent of the UI. Decodes frames into a persistent BGRA image and hands each
-/// update to the UI; only after the UI reports it presented the update is the frame acknowledged, so the source
-/// never runs ahead of what is actually shown. Pointer, keyboard and crop requests go back in order.
+/// update to the UI.
+///
+/// A frame is acknowledged as soon as it has been decoded, before the window has painted anything: the
+/// acknowledgement is the source's flow control, and tying it to the window manager meant that any hiccup here — a
+/// layout pass, a garbage collection, the window hidden or merely busy — stopped the source from capturing at all.
+/// The window now gets whatever it can keep up with: while it still holds the buffer it was given, frames are
+/// decoded but not handed over, so the picture gets older rather than the stream stopping. Pointer, keyboard and
+/// crop requests go back in order.
 /// </summary>
 public sealed class ScreenViewer : IAsyncDisposable
 {
-    private static readonly TimeSpan PresentTimeout = TimeSpan.FromSeconds(5);
+    /// <summary>
+    /// After this long, a window that has not said it finished painting is assumed not to be coming back, and the
+    /// next frame is handed over anyway. Only a safety net: the picture would otherwise stay frozen for good.
+    /// </summary>
+    private static readonly TimeSpan PresentGrace = TimeSpan.FromSeconds(2);
+
+    private static readonly TimeSpan ReportEvery = TimeSpan.FromSeconds(10);
 
     private readonly ILogger _logger;
     private readonly Channel<byte[]> _frames = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
@@ -29,13 +41,31 @@ public sealed class ScreenViewer : IAsyncDisposable
     private readonly TileDecoder _decoder = new();
     private readonly CancellationTokenSource _cts = new();
     private Action<FrameUpdate>? _present;
-    private TaskCompletionSource? _presented;
     private H264VideoDecoder? _videoDecoder;
     private bool _videoDecodeUnavailable;
+
+    /// <summary>The picture the decoder writes into.</summary>
     private byte[] _image = [];
+
+    /// <summary>The buffer to decode into next, once the window takes <see cref="_image"/> off our hands.</summary>
+    private byte[] _spare = [];
+
     private int _width;
     private int _height;
     private int _closed;
+
+    /// <summary>When the buffer the window holds was handed to it, or 0 while it holds none.</summary>
+    private long _presentingSince;
+
+    /// <summary>A frame was decoded but not shown, so the next one the window takes must redraw everything.</summary>
+    private bool _missedFrames;
+
+    // Counters, touched by the decode loop only (and read from anywhere).
+    private long _reportedTicks;
+    private long _decoded;
+    private long _skipped;
+    private long _reportedDecoded;
+    private long _reportedSkipped;
 
     internal ScreenViewer(PeerSession session, ScreenStreamMessage info, ILogger logger)
     {
@@ -54,19 +84,30 @@ public sealed class ScreenViewer : IAsyncDisposable
 
     public string PeerName => Session.PeerName;
 
+    /// <summary>Frames decoded here since the view opened.</summary>
+    public long FramesDecoded => Volatile.Read(ref _decoded);
+
+    /// <summary>...of those, the ones never handed to the window because it was still busy with an earlier one.</summary>
+    public long FramesNotShown => Volatile.Read(ref _skipped);
+
     public event Action<ScreenViewer>? InfoChanged;
 
     /// <summary>The stream ended (closed here or by the source); the reason is for display.</summary>
     public event Action<ScreenViewer, string?>? Closed;
 
-    /// <summary>Starts decoding; <paramref name="present"/> runs on a worker thread and must call <see cref="FramePresented"/>.</summary>
+    /// <summary>
+    /// Starts decoding; <paramref name="present"/> runs on a worker thread and must call
+    /// <see cref="FramePresented"/> when it is done. The update's image belongs to the viewer and is only valid
+    /// until that call: the decoder takes the buffer back then and the next frames go into it.
+    /// </summary>
     public void Attach(Action<FrameUpdate> present)
     {
         _present = present;
         _attached.TrySetResult();
     }
 
-    public void FramePresented() => _presented?.TrySetResult();
+    /// <summary>The window is done with the buffer it was given; the decoder may use it again.</summary>
+    public void FramePresented() => Volatile.Write(ref _presentingSince, 0);
 
     public void SendPointer(PointerAction action, MouseButton button, float x, float y, int wheel = 0) =>
         _outbox.Writer.TryWrite(ScreenCodec.EncodePointer(StreamId, action, button, x, y, wheel));
@@ -115,7 +156,6 @@ public sealed class ScreenViewer : IAsyncDisposable
         _frames.Writer.TryComplete();
         _outbox.Writer.TryComplete();
         _cts.Cancel();
-        _presented?.TrySetResult();
         Closed?.Invoke(this, reason);
         return notifySource ? SendControlAsync(new ScreenStopMessage(StreamId, "closed by viewer")) : Task.CompletedTask;
     }
@@ -174,8 +214,9 @@ public sealed class ScreenViewer : IAsyncDisposable
             }
         });
 
+        await AckAsync(frame.FrameNo, ct).ConfigureAwait(false);
         var dirty = frame.Tiles.Select(t => new Rectangle(t.X, t.Y, t.Width, t.Height)).ToList();
-        await PresentAndAckAsync(frame.FrameNo, _width, _height, dirty, resized, ct).ConfigureAwait(false);
+        Present(frame.FrameNo, dirty, resized, accumulates: true);
     }
 
     private async Task DecodeVideoAsync(byte[] message, CancellationToken ct)
@@ -232,25 +273,90 @@ public sealed class ScreenViewer : IAsyncDisposable
         }
 
         _videoSilentSince = null;
-        var dirty = new List<Rectangle> { new(0, 0, _width, _height) };
-        await PresentAndAckAsync(frame.FrameNo, _width, _height, dirty, resized, ct).ConfigureAwait(false);
+        await AckAsync(frame.FrameNo, ct).ConfigureAwait(false);
+
+        // Video carries the whole picture every time, so nothing has to be carried over between buffers.
+        Present(frame.FrameNo, [new Rectangle(0, 0, _width, _height)], resized, accumulates: false);
     }
 
-    private async Task PresentAndAckAsync(uint frameNo, int width, int height, IReadOnlyList<Rectangle> dirty, bool resized, CancellationToken ct)
+    /// <summary>
+    /// Hands the finished picture to the window, or leaves this frame unshown while the window is still busy with
+    /// the previous one. Nothing waits here: the frame has already been acknowledged, so a slow window costs frames
+    /// rather than stopping the stream at its source.
+    ///
+    /// The buffer the window takes is not written to again until it comes back, so the decoder moves to the spare
+    /// one. The tile path redraws only what changed, so for it the picture is carried across to the spare first;
+    /// video needs no carrying over. A frame that was not shown leaves the window's own bitmap behind what the
+    /// buffer holds, so the next frame it does take is marked as changed all over.
+    /// </summary>
+    private void Present(uint frameNo, IReadOnlyList<Rectangle> dirty, bool resized, bool accumulates)
     {
-        var presented = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        _presented = presented;
-        _present?.Invoke(new FrameUpdate(frameNo, width, height, _image, dirty, resized));
-        try
+        _decoded++;
+        Report();
+        if (_present is not { } present)
         {
-            await presented.Task.WaitAsync(PresentTimeout, ct).ConfigureAwait(false);
-        }
-        catch (TimeoutException)
-        {
-            // A hidden or stuck window must not stall the source forever.
+            return;
         }
 
-        await AckAsync(frameNo, ct).ConfigureAwait(false);
+        var holding = Volatile.Read(ref _presentingSince);
+        if (holding != 0 && Environment.TickCount64 - holding < PresentGrace.TotalMilliseconds)
+        {
+            _missedFrames = true;
+            _skipped++;
+            return;
+        }
+
+        var image = _image;
+        if (_missedFrames)
+        {
+            // Not "resized": that would have the window build a new bitmap and resize itself around it. It only
+            // needs to be told that everything in this frame is new to it.
+            _missedFrames = false;
+            dirty = [new Rectangle(0, 0, _width, _height)];
+        }
+
+        Volatile.Write(ref _presentingSince, Environment.TickCount64);
+
+        // Swap buffers before the window is told, so the decoder can start the next frame while it paints.
+        var pixels = _width * _height * 4;
+        if (_spare.Length != image.Length)
+        {
+            _spare = new byte[image.Length];
+        }
+
+        if (accumulates && pixels > 0 && pixels <= image.Length)
+        {
+            image.AsSpan(0, pixels).CopyTo(_spare);
+        }
+
+        (_image, _spare) = (_spare, image);
+        present(new FrameUpdate(frameNo, _width, _height, image, dirty, resized));
+    }
+
+    /// <summary>Every ten seconds, what this view actually managed: decoded, shown, and how far behind the window is.</summary>
+    private void Report()
+    {
+        var now = Environment.TickCount64;
+        if (_reportedTicks == 0)
+        {
+            _reportedTicks = now;
+            return;
+        }
+
+        if (now - _reportedTicks < ReportEvery.TotalMilliseconds)
+        {
+            return;
+        }
+
+        var seconds = (now - _reportedTicks) / 1000.0;
+        var decoded = _decoded - _reportedDecoded;
+        var skipped = _skipped - _reportedSkipped;
+        _logger.LogInformation(
+            "View of {Peer} (stream {Stream}): {Rate:F1} frames/s decoded, {Shown:F1} shown, {Skipped} not shown while the window was busy",
+            PeerName, StreamId, decoded / seconds, (decoded - skipped) / seconds, skipped);
+        _reportedTicks = now;
+        _reportedDecoded = _decoded;
+        _reportedSkipped = _skipped;
     }
 
     private const long VideoSilenceBeforeFallbackMs = 3000;

@@ -24,6 +24,7 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(LogRequestMessage), "log-request")]
 [JsonDerivedType(typeof(LogResponseMessage), "log-response")]
 [JsonDerivedType(typeof(AudioRouteRequestMessage), "audio-route")]
+[JsonDerivedType(typeof(AudioLossReportMessage), "audio-loss")]
 [JsonDerivedType(typeof(InputReleaseRequestMessage), "input-release")]
 [JsonDerivedType(typeof(InputBlockedMessage), "input-blocked")]
 [JsonDerivedType(typeof(DisplayInviteMessage), "display-invite")]
@@ -161,6 +162,13 @@ public sealed record AudioStopMessage(uint StreamId) : ControlMessage;
 /// send it here" (not even automatically, until asked again); neither: back to automatic.
 /// </summary>
 public sealed record AudioRouteRequestMessage(bool Listen, bool Refuse = false) : ControlMessage;
+
+/// <summary>
+/// Receiver → sender, every couple of seconds: the share of this stream's packets that did not arrive, and how
+/// unevenly the ones that did were spread. The sender uses the loss to decide whether each packet should carry the
+/// previous frame as a spare; the jitter is reported so that both devices' logs tell the same story about a link.
+/// </summary>
+public sealed record AudioLossReportMessage(uint StreamId, double PercentLost, double JitterMs) : ControlMessage;
 
 /// <summary>
 /// Viewer → source: stream this monitor as <see cref="StreamId"/> (again with a different one to switch). The

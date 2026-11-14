@@ -10,7 +10,17 @@ using WinMirroring.Core.Peers;
 
 namespace WinMirroring.Audio;
 
-public sealed record IncomingAudioStatus(string PeerId, string PeerName, double BufferedMs, long Lost, long Underruns);
+/// <param name="AimedMs">What the playout buffer is aiming to hold, which grows with the measured jitter.</param>
+/// <param name="Recovered">Lost packets rebuilt from the spare copy the next packet carried, so never heard.</param>
+public sealed record IncomingAudioStatus(
+    string PeerId,
+    string PeerName,
+    double BufferedMs,
+    long Lost,
+    long Underruns,
+    int AimedMs = 0,
+    double JitterMs = 0,
+    long Recovered = 0);
 
 /// <param name="SendingTo">Name of the device this device's sound plays on, or null when it plays here.</param>
 /// <param name="SpeakersMuted">This app holds this device's speakers muted (its sound plays elsewhere).</param>
@@ -47,6 +57,7 @@ public sealed class AudioService : IAsyncDisposable
     private static readonly TimeSpan StopDelay = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan ReevaluateDelay = TimeSpan.FromMilliseconds(60);
     private static readonly TimeSpan YieldHold = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan ReportEvery = TimeSpan.FromSeconds(10);
 
     private readonly MirroringNode _node;
     private readonly ILogger _logger;
@@ -101,6 +112,52 @@ public sealed class AudioService : IAsyncDisposable
         }
 
         RequestReevaluate();
+        _ = ReportLoopAsync(_cts.Token);
+    }
+
+    /// <summary>
+    /// Writes what the sound is actually doing to the log every ten seconds, for as long as any is flowing. The
+    /// numbers were all there already but only ever shown in a status line, which is no use at all afterwards:
+    /// when the sound breaks up, whether it was losses, an uneven link or a device that could not keep up should
+    /// be in the log of both devices rather than something to be guessed at later.
+    /// </summary>
+    private async Task ReportLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(ReportEvery);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+            {
+                foreach (var stream in _incoming.Values)
+                {
+                    var total = stream.Packets + stream.Lost;
+                    _logger.LogInformation(
+                        "Sound from {Peer}: {Packets} packets, {Percent:F2}% lost ({Recovered} rebuilt), spread {Jitter:F1} ms, buffer {Buffered:F0} of {Aimed} ms, {Underruns} underruns, {Trims} trims",
+                        stream.PeerName,
+                        stream.Packets,
+                        total == 0 ? 0 : stream.Lost * 100.0 / total,
+                        stream.Recovered,
+                        stream.JitterMs,
+                        stream.Buffer.BufferedMs,
+                        stream.Buffer.AimedMs,
+                        stream.Buffer.Underruns,
+                        stream.Buffer.Trims);
+                }
+
+                if (Volatile.Read(ref _sender) is { } sender)
+                {
+                    _logger.LogInformation(
+                        "Sound to {Peer}: {Packets} packets sent, {Dropped} frames dropped before encoding, spare frame {Spare}",
+                        sender.Target.PeerName,
+                        sender.SentPackets,
+                        sender.DroppedFrames,
+                        sender.SendsSpareFrames ? "on" : "off");
+                }
+            }
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
+        {
+        }
     }
 
     /// <summary>Called when another device starts (peer id) or stops (null) controlling this one.</summary>
@@ -268,7 +325,8 @@ public sealed class AudioService : IAsyncDisposable
     {
         var sender = Volatile.Read(ref _sender);
         var receiving = _incoming.Values
-            .Select(s => new IncomingAudioStatus(s.PeerId, s.PeerName, s.Buffer.BufferedMs, s.Lost, s.Buffer.Underruns))
+            .Select(s => new IncomingAudioStatus(
+                s.PeerId, s.PeerName, s.Buffer.BufferedMs, s.Lost, s.Buffer.Underruns, s.Buffer.AimedMs, s.JitterMs, s.Recovered))
             .ToList();
         return new AudioStatus(sender?.Target.PeerName, sender?.Target.PeerId, sender?.Reason, sender?.CaptureDescription, _mute.IsMuted, receiving);
     }
@@ -504,7 +562,26 @@ public sealed class AudioService : IAsyncDisposable
             case AudioRouteRequestMessage route:
                 OnRouteRequest(session, route);
                 break;
+
+            case AudioLossReportMessage report
+                when Volatile.Read(ref _sender) is { } sender && sender.StreamId == report.StreamId && ReferenceEquals(sender.Target, session):
+                sender.OnLossReported(report.PercentLost);
+                break;
         }
+    }
+
+    /// <summary>
+    /// Tells the sender how much of its stream is going missing here, so it can decide whether to carry a spare
+    /// copy of each frame. Raised from the receive path, so the message goes out on a thread of its own.
+    /// </summary>
+    private void OnLossMeasured(IncomingAudioStream stream, double percentLost)
+    {
+        if (stream.Owner is not PeerSession session)
+        {
+            return;
+        }
+
+        _ = SendQuietlyAsync(session, new AudioLossReportMessage(stream.StreamId, percentLost, stream.JitterMs));
     }
 
     private void OnRouteRequest(PeerSession session, AudioRouteRequestMessage route)
@@ -568,9 +645,12 @@ public sealed class AudioService : IAsyncDisposable
             RemoveIncoming(start.StreamId);
         }
 
-        if (start.Codec != AudioFormat.Codec || start.SampleRate != AudioFormat.SampleRate || start.Channels != AudioFormat.Channels)
+        if (start.Codec != AudioFormat.Codec || start.SampleRate != AudioFormat.SampleRate || start.Channels != AudioFormat.Channels
+            || start.FrameMs is < 5 or > 60)
         {
-            _logger.LogWarning("Unsupported sound stream from {Peer}: {Codec} {Rate} Hz x{Channels}", session.PeerName, start.Codec, start.SampleRate, start.Channels);
+            _logger.LogWarning(
+                "Unsupported sound stream from {Peer}: {Codec} {Rate} Hz x{Channels}, {FrameMs} ms frames",
+                session.PeerName, start.Codec, start.SampleRate, start.Channels, start.FrameMs);
             return;
         }
 
@@ -589,12 +669,13 @@ public sealed class AudioService : IAsyncDisposable
             return;
         }
 
-        var stream = new IncomingAudioStream(session, session.RemoteEndPoint.Address, session.PeerName, start.StreamId, key, _node.Settings.Audio.BufferMs)
+        var stream = new IncomingAudioStream(session, session.RemoteEndPoint.Address, session.PeerName, start.StreamId, key, _node.Settings.Audio.BufferMs, start.FrameMs)
         {
             PeerId = session.PeerId,
             Key = start.Key,
             Automatic = start.Automatic,
         };
+        stream.LossMeasured += OnLossMeasured;
         _incoming[start.StreamId] = stream;
         _playback.Add(stream.Buffer);
         _logger.LogInformation("Playing sound from {Peer} (stream {Stream}, {Kind})", session.PeerName, start.StreamId, start.Automatic ? "automatic" : "chosen by a user");
@@ -640,10 +721,12 @@ public sealed class AudioService : IAsyncDisposable
             return;
         }
 
+        stream.LossMeasured -= OnLossMeasured;
         _playback.Remove(stream.Buffer);
         stream.Dispose();
-        _logger.LogInformation("Sound from {Peer} ended ({Packets} packets, {Lost} lost, {Underruns} underruns)",
-            stream.PeerName, stream.Packets, stream.Lost, stream.Buffer.Underruns);
+        _logger.LogInformation(
+            "Sound from {Peer} ended ({Packets} packets, {Lost} lost, {Recovered} of those rebuilt, {Underruns} underruns, {Trims} trims)",
+            stream.PeerName, stream.Packets, stream.Lost, stream.Recovered, stream.Buffer.Underruns, stream.Buffer.Trims);
 
         UpdateMute();
         StatusChanged?.Invoke();

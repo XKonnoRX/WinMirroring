@@ -18,6 +18,7 @@ public sealed class MediaSocket : IAsyncDisposable
     private readonly Socket _socket;
     private readonly ILogger _logger;
     private readonly CancellationTokenSource _cts = new();
+    private readonly MediaPriority _priority;
     private Task? _loop;
 
     public MediaSocket(int port, ILogger logger)
@@ -47,9 +48,16 @@ public sealed class MediaSocket : IAsyncDisposable
         }
 
         Port = ((IPEndPoint)_socket.LocalEndPoint!).Port;
+        _priority = new MediaPriority(_socket, logger);
     }
 
     public int Port { get; }
+
+    /// <summary>Asks for what goes to this peer to travel ahead of bulk traffic (see <see cref="MediaPriority"/>).</summary>
+    public void Prioritize(IPEndPoint peer) => _priority.Add(peer);
+
+    /// <summary>Gives that up again once nothing is sending there.</summary>
+    public void ReleasePriority(IPEndPoint peer) => _priority.Remove(peer);
 
     /// <summary>Raised on the receive loop; handlers must be quick and must not keep the span.</summary>
     public event MediaPacketHandler? PacketReceived;
@@ -123,6 +131,9 @@ public sealed class MediaSocket : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await _cts.CancelAsync().ConfigureAwait(false);
+
+        // Before the socket closes: the flows are held against its handle.
+        _priority.Dispose();
         _socket.Close();
         if (_loop is not null)
         {

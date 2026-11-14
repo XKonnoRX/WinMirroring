@@ -89,12 +89,14 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
         var first = new TaskCompletionSource<FrameUpdate>(TaskCreationOptions.RunContinuationsAsynchronously);
         viewer.Attach(update =>
         {
+            // The image belongs to the viewer and only until FramePresented: copy it before giving it back.
+            var kept = update with { Image = (byte[])update.Image.Clone() };
             lock (updates)
             {
-                updates.Add(update);
+                updates.Add(kept);
             }
 
-            first.TrySetResult(update);
+            first.TrySetResult(kept);
             viewer.FramePresented();
         });
 
@@ -114,11 +116,7 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
 
         // The streamed image must match a direct capture of the same monitor (JPEG is lossy, the screen may change
         // a little in between, so compare the mean error rather than exact pixels).
-        byte[] received;
-        lock (updates)
-        {
-            received = (byte[])frame.Image.Clone();
-        }
+        var received = frame.Image;
 
         using (var direct = WgcCapture.ForMonitor(primary.Handle, NullLogger.Instance))
         {
