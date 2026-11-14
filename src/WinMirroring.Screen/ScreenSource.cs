@@ -32,7 +32,15 @@ public enum StreamKind
 /// </summary>
 internal sealed class ScreenSource : IAsyncDisposable
 {
-    private const int MaxInFlight = 4;
+    /// <summary>
+    /// Frame messages allowed on the wire at once. This is the picture's delay, not a throughput setting: a frame
+    /// waiting its turn here is a frame the far screen is not showing yet, so four of them at twenty-five frames a
+    /// second was a sixth of a second of delay all by itself. Two is enough to keep the link busy — the window
+    /// only limits the rate once a round trip takes longer than half a frame — and the pacing below brings the rate
+    /// down if it ever does.
+    /// </summary>
+    private const int MaxInFlight = 2;
+
     private const int PartBytes = 512 * 1024;
     private static readonly TimeSpan IdleWait = TimeSpan.FromMilliseconds(100);
 
@@ -64,6 +72,7 @@ internal sealed class ScreenSource : IAsyncDisposable
     private Size _frameSize;
     private int _forceAll = 1;
     private Task? _loop;
+    private IDisposable? _timer;
     private int _ended;
     private bool _reportedIconic;
 
@@ -181,6 +190,9 @@ internal sealed class ScreenSource : IAsyncDisposable
 
     public void Start()
     {
+        // Waits shorter than a frame are rounded up to about fifteen milliseconds otherwise, which both slows the
+        // stream below its target and makes the spacing between frames uneven.
+        _timer = MediaTimerResolution.Hold();
         _capture.Start();
         _loop = Task.Run(() => LoopAsync(_cts.Token));
         _logger.LogInformation("Streaming {Title} to {Peer} (stream {Stream})", Title, Session.PeerName, StreamId);
@@ -590,7 +602,9 @@ internal sealed class ScreenSource : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogWarning("H.264 encode failed for {Title}; using JPEG tiles: {Message}", Title, ex.Message);
+            // With the exception, not just its message: this has happened once in the wild (while two monitors were
+            // being streamed at once) and dropped a stream to tiles, and a message alone says nothing about where.
+            _logger.LogWarning(ex, "H.264 encode failed for {Title}; using JPEG tiles", Title);
             _videoEncoder.Dispose();
             _videoEncoder = null;
             _gpuConverter?.Dispose();
@@ -837,6 +851,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         _injector.ReleaseAll();
         _touch.Dispose();
         _window.Dispose();
+        _timer?.Dispose();
         _cts.Dispose();
         _logger.LogInformation("Stopped streaming {Title} to {Peer}", Title, Session.PeerName);
     }

@@ -14,11 +14,15 @@ namespace WinMirroring.Screen;
 /// </summary>
 internal sealed class StreamPacing
 {
-    /// <summary>Acknowledgements slower than this mean the link (or the viewer) is behind.</summary>
-    private const double HighDelayMs = 350;
+    /// <summary>
+    /// Acknowledgements slower than this mean the link (or the viewer) is behind. It is deliberately close to one
+    /// frame's worth of time: the delay a frame waits before being shown is what this number measures, so letting
+    /// it reach a third of a second — as it first did — meant tolerating exactly the lag that was complained about.
+    /// </summary>
+    private const double HighDelayMs = 120;
 
     /// <summary>...and faster than this means there is room to ask for more.</summary>
-    private const double LowDelayMs = 120;
+    private const double LowDelayMs = 55;
 
     private const int MinFps = 8;
     private const double MinShare = 0.15;

@@ -113,6 +113,47 @@ public sealed class NodeIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// A peer starts talking the moment a session is ready, and the features attach their handlers from that same
+    /// event — so its opening statements could be read with nobody listening yet and were logged as unhandled and
+    /// dropped. That is how a device that had never saved a device grid could fail to learn one at all. A handler
+    /// that subscribes now also gets what it missed.
+    /// </summary>
+    [Fact]
+    public async Task AHandlerThatSubscribesLateStillGetsWhatThePeerSaidFirst()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var discoveryA = FreeUdpPort();
+        var discoveryB = FreeUdpPort();
+        var a = CreateNode("HeldA", discoveryA, FreeTcpPort(), [$"127.0.0.1:{discoveryB}"]);
+        var b = CreateNode("HeldB", discoveryB, FreeTcpPort(), [$"127.0.0.1:{discoveryA}"]);
+
+        await a.StartAsync();
+        await b.StartAsync();
+        await WaitUntilAsync(
+            () => a.Peers.TryGet(b.Identity.Id, out var peer) && peer.TransportEndPoint is not null,
+            TimeSpan.FromSeconds(15), "A never discovered B", ct);
+        Assert.True(await a.PairAsync(b.Identity.Id, ct), "A could not pair with B");
+        await WaitUntilAsync(() => IsReady(a, b), TimeSpan.FromSeconds(10), "A has no ready session to B", ct);
+
+        // Each device tells the other who it is paired with as soon as the session is ready. Subscribing now, long
+        // after that message has been read, must still produce it.
+        Assert.True(a.Sessions.TryGetSession(b.Identity.Id, out var session));
+        await WaitUntilAsync(
+            () => Replayed(session).OfType<PeerVouchMessage>().Any(),
+            TimeSpan.FromSeconds(15), "a late handler was told nothing about what B said first", ct);
+    }
+
+    /// <summary>What a handler subscribing right now is handed about the session so far.</summary>
+    private static List<ControlMessage> Replayed(PeerSession session)
+    {
+        var held = new List<ControlMessage>();
+        void Collect(PeerSession _, ControlMessage message) => held.Add(message);
+        session.ControlMessageReceived += Collect;
+        session.ControlMessageReceived -= Collect;
+        return held;
+    }
+
+    /// <summary>
     /// The app disposes its services in order and the service container disposes them again afterwards; a second
     /// dispose that throws used to abort the exit before the app shut down, leaving it running with no windows.
     /// </summary>

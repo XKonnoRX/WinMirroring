@@ -41,6 +41,14 @@ public sealed class PeerSession : IAsyncDisposable
     private readonly object _stateGate = new();
     private readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    /// <summary>How long a peer's opening statements are kept for handlers that have not subscribed yet.</summary>
+    private static readonly TimeSpan OpeningStatementLife = TimeSpan.FromSeconds(30);
+    private const int MaxOpeningStatements = 32;
+
+    private readonly object _openingGate = new();
+    private readonly List<(long Ticks, ControlMessage Message)> _opening = [];
+    private Action<PeerSession, ControlMessage>? _controlHandlers;
+
     private TaskCompletionSource<ControlMessage>? _pairingReply;
     private CancellationTokenSource? _incomingConfirmation;
     private Task? _run;
@@ -106,8 +114,52 @@ public sealed class PeerSession : IAsyncDisposable
 
     public event Action<PeerSession, Exception?>? Closed;
 
-    /// <summary>Control messages the session itself does not consume (feature-level messages such as the layout).</summary>
-    public event Action<PeerSession, ControlMessage>? ControlMessageReceived;
+    /// <summary>
+    /// Control messages the session itself does not consume (feature-level messages such as the layout).
+    ///
+    /// A handler that subscribes also receives the peer's opening statements, even the ones that arrived before it
+    /// did. A peer starts talking the instant the session turns Ready and the features attach their handlers from
+    /// that same event, so its first messages could be read with nobody listening yet and were simply logged as
+    /// unhandled — which is how a device that had never saved a layout could fail to learn one at all. Each
+    /// handler sees each held message once, replayed only to whoever was not there for it.
+    /// </summary>
+    public event Action<PeerSession, ControlMessage>? ControlMessageReceived
+    {
+        add
+        {
+            if (value is null)
+            {
+                return;
+            }
+
+            List<ControlMessage> held;
+            lock (_openingGate)
+            {
+                _controlHandlers += value;
+                held = PruneOpeningStatements();
+            }
+
+            foreach (var message in held)
+            {
+                try
+                {
+                    value(this, message);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Held control message handler failed for {Message}", message.GetType().Name);
+                }
+            }
+        }
+
+        remove
+        {
+            lock (_openingGate)
+            {
+                _controlHandlers -= value;
+            }
+        }
+    }
 
     public Task WaitForCloseAsync() => _closed.Task;
 
@@ -487,24 +539,55 @@ public sealed class PeerSession : IAsyncDisposable
                 return false;
 
             default:
-                if (ControlMessageReceived is { } handlers)
+                Action<PeerSession, ControlMessage>? handlers;
+                lock (_openingGate)
                 {
-                    try
+                    handlers = _controlHandlers;
+                    if (IsOpeningStatement(message))
                     {
-                        handlers(this, message);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Control message handler failed for {Message}", message.GetType().Name);
+                        PruneOpeningStatements();
+                        if (_opening.Count < MaxOpeningStatements)
+                        {
+                            _opening.Add((Environment.TickCount64, message));
+                        }
                     }
                 }
-                else
+
+                if (handlers is null)
                 {
-                    _logger.LogDebug("Unhandled control message {Message} from {Peer}", message.GetType().Name, PeerName);
+                    _logger.LogDebug("Nothing is listening for {Message} from {Peer} yet", message.GetType().Name, PeerName);
+                    return false;
+                }
+
+                try
+                {
+                    handlers(this, message);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Control message handler failed for {Message}", message.GetType().Name);
                 }
 
                 return false;
         }
+    }
+
+    /// <summary>
+    /// What a peer says about itself the moment a session is ready: the device grid, its monitors, what it can do,
+    /// which version it runs, who it knows. These are the messages that can be read before the feature that wants
+    /// them is listening, and all of them are small and may be applied more than once without harm, which is what
+    /// makes them safe to hold and replay. Everything else follows a user's action, by which time every handler is
+    /// long attached.
+    /// </summary>
+    private static bool IsOpeningStatement(ControlMessage message) =>
+        message is LayoutMessage or InputMonitorsMessage or DeviceCapabilitiesMessage or DeviceInfoMessage or PeerVouchMessage;
+
+    /// <summary>Drops the ones that are too old to matter and returns what is left. Call under the gate.</summary>
+    private List<ControlMessage> PruneOpeningStatements()
+    {
+        var cutoff = Environment.TickCount64 - (long)OpeningStatementLife.TotalMilliseconds;
+        _opening.RemoveAll(held => held.Ticks < cutoff);
+        return _opening.Select(held => held.Message).ToList();
     }
 
     private async Task GuardAsync(Func<Task> action)

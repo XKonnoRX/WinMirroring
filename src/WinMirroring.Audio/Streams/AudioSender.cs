@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Concentus;
 using Concentus.Enums;
 using Microsoft.Extensions.Logging;
@@ -68,6 +69,8 @@ internal sealed class AudioSender : IAsyncDisposable
     private int _silentFrames;
     private long _sentPackets;
     private long _droppedFrames;
+    private long _encodeTicks;
+    private long _encodedFrames;
     private long _cleanSinceTicks;
     private volatile bool _sendSpare;
 
@@ -115,6 +118,20 @@ internal sealed class AudioSender : IAsyncDisposable
 
     /// <summary>Frames the encoding thread never got to, because it could not keep up with capture.</summary>
     public long DroppedFrames => Interlocked.Read(ref _droppedFrames);
+
+    /// <summary>
+    /// Average milliseconds spent encoding one frame, against a budget of <see cref="AudioFormat.FrameMs"/>. Worth
+    /// having in the log of every device: Opus here is a managed implementation, and whether that is fast enough on
+    /// a given machine is the one thing that decides if a native library would be worth carrying.
+    /// </summary>
+    public double EncodeMeanMs
+    {
+        get
+        {
+            var frames = Interlocked.Read(ref _encodedFrames);
+            return frames == 0 ? 0 : Interlocked.Read(ref _encodeTicks) * 1000.0 / Stopwatch.Frequency / frames;
+        }
+    }
 
     /// <summary>Each packet currently carries the previous frame as well (the receiver reported losses).</summary>
     public bool SendsSpareFrames => _sendSpare;
@@ -293,6 +310,7 @@ internal sealed class AudioSender : IAsyncDisposable
     private void Send(float[] frame, uint timestamp)
     {
         int encoded;
+        var started = Stopwatch.GetTimestamp();
         try
         {
             encoded = _encoder.Encode(frame, AudioFormat.FrameSamples, _plain.AsSpan(AudioPacket.HeaderSize), AudioFormat.MaxOpusPacket);
@@ -302,6 +320,9 @@ internal sealed class AudioSender : IAsyncDisposable
             _logger.LogWarning("Opus encode failed: {Message}", ex.Message);
             return;
         }
+
+        Interlocked.Add(ref _encodeTicks, Stopwatch.GetTimestamp() - started);
+        Interlocked.Increment(ref _encodedFrames);
 
         if (encoded <= 0)
         {

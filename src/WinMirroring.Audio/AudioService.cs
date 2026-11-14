@@ -147,10 +147,12 @@ public sealed class AudioService : IAsyncDisposable
                 if (Volatile.Read(ref _sender) is { } sender)
                 {
                     _logger.LogInformation(
-                        "Sound to {Peer}: {Packets} packets sent, {Dropped} frames dropped before encoding, spare frame {Spare}",
+                        "Sound to {Peer}: {Packets} packets sent, {Dropped} frames dropped before encoding, {Encode:F2} ms to encode a {FrameMs} ms frame, spare frame {Spare}",
                         sender.Target.PeerName,
                         sender.SentPackets,
                         sender.DroppedFrames,
+                        sender.EncodeMeanMs,
+                        AudioFormat.FrameMs,
                         sender.SendsSpareFrames ? "on" : "off");
                 }
             }

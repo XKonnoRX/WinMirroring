@@ -40,6 +40,7 @@ public sealed class ScreenViewer : IAsyncDisposable
     private readonly TaskCompletionSource _attached = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TileDecoder _decoder = new();
     private readonly CancellationTokenSource _cts = new();
+    private readonly IDisposable _timer;
     private Action<FrameUpdate>? _present;
     private H264VideoDecoder? _videoDecoder;
     private bool _videoDecodeUnavailable;
@@ -72,6 +73,10 @@ public sealed class ScreenViewer : IAsyncDisposable
         Session = session;
         Info = info;
         _logger = logger;
+
+        // The window paints on the dispatcher, whose timing is as coarse as the system timer; while a view is open
+        // that is worth making fine (see MediaTimerResolution).
+        _timer = MediaTimerResolution.Hold();
         _ = Task.Run(DecodeLoopAsync);
         _ = Task.Run(SendLoopAsync);
     }
@@ -411,5 +416,6 @@ public sealed class ScreenViewer : IAsyncDisposable
         await CloseAsync(notifySource: true, reason: null).ConfigureAwait(false);
         _decoder.Dispose();
         _videoDecoder?.Dispose();
+        _timer.Dispose();
     }
 }
