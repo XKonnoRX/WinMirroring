@@ -17,11 +17,21 @@ public class ConversionCostProbe
     public void HowLongAFrameTakes()
     {
         File.WriteAllText(Report, $"cores {Environment.ProcessorCount}{Environment.NewLine}");
+        Sized(1920, 1080);
 
-        // What a 1080p stream really hands the viewer: the coded picture is a multiple of 16 rows tall.
-        const int Width = 1920;
-        const int Height = 1080;
-        const int CodedHeight = 1088;
+        // The same screen sent at the size a smaller window shows it: a quarter of the pixels, and every step
+        // from the decoder to the glass costs by the pixel.
+        Sized(960, 540);
+        Assert.True(File.Exists(Report));
+    }
+
+    private static void Sized(int width, int height)
+    {
+        // What a stream really hands the viewer: the coded picture is a multiple of 16 rows tall.
+        var Width = width;
+        var Height = height;
+        var CodedHeight = (height + 15) / 16 * 16;
+        File.AppendAllText(Report, $"-- {Width}×{Height} --{Environment.NewLine}");
 
         var nv12 = new byte[Nv12Converter.Nv12Size(Width, CodedHeight)];
         Random.Shared.NextBytes(nv12);
@@ -32,7 +42,6 @@ public class ConversionCostProbe
 
         Measure("Nv12ToBgra (viewer, every frame)", () => Nv12Converter.Nv12ToBgra(nv12, Width, Height, bgra, Width * CodedHeight));
         Measure("BgraCropToNv12 (source, only without the graphics card)", () => Nv12Converter.BgraCropToNv12(frame, Width, new Rectangle(0, 0, Width, Height), nv12Out));
-        Assert.True(File.Exists(Report));
     }
 
     private static void Measure(string what, Action once)

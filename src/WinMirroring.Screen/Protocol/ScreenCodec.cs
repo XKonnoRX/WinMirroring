@@ -41,6 +41,9 @@ public enum ScreenMessageType : byte
 
     /// <summary>Source → viewer: one H.264 access unit (the hardware-video path; <see cref="Frame"/> is the fallback).</summary>
     VideoFrame = 9,
+
+    /// <summary>Viewer → source: the size the picture is actually being shown at, so it can be encoded at that size.</summary>
+    Size = 10,
 }
 
 /// <summary>What a <see cref="ScreenMessageType.Window"/> message asks the captured window to do.</summary>
@@ -304,6 +307,36 @@ public static class ScreenCodec
         BinaryPrimitives.WriteSingleLittleEndian(message.AsSpan(13), crop.Width);
         BinaryPrimitives.WriteSingleLittleEndian(message.AsSpan(17), crop.Height);
         return message;
+    }
+
+    /// <summary>
+    /// Size: u16 width, u16 height — how large the viewer is actually drawing the picture, in real pixels. The
+    /// source has no other way to know: it would otherwise encode, send and decode a full screen for a window
+    /// showing it at half that, and every one of those steps costs by the pixel.
+    /// </summary>
+    public static byte[] EncodeSize(uint streamId, int width, int height)
+    {
+        var message = new byte[9];
+        message[0] = (byte)ScreenMessageType.Size;
+        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(1), streamId);
+        BinaryPrimitives.WriteUInt16LittleEndian(message.AsSpan(5), (ushort)Math.Clamp(width, 0, ushort.MaxValue));
+        BinaryPrimitives.WriteUInt16LittleEndian(message.AsSpan(7), (ushort)Math.Clamp(height, 0, ushort.MaxValue));
+        return message;
+    }
+
+    /// <summary>A size of zero means "whatever you have": the viewer does not know yet, or does not care.</summary>
+    public static bool TryDecodeSize(ReadOnlySpan<byte> message, out Size size)
+    {
+        size = default;
+        if (message.Length < 9 || message[0] != (byte)ScreenMessageType.Size)
+        {
+            return false;
+        }
+
+        size = new Size(
+            BinaryPrimitives.ReadUInt16LittleEndian(message[5..]),
+            BinaryPrimitives.ReadUInt16LittleEndian(message[7..]));
+        return true;
     }
 
     public static bool TryReadHeader(ReadOnlySpan<byte> message, out ScreenMessageType type, out uint streamId)

@@ -138,6 +138,10 @@ public partial class ScreenViewerWindow : Window
         {
             StatsText.Text = $"{_framesSinceTick} кадр/с";
             _framesSinceTick = 0;
+
+            // Once a second is the throttle on this: the source rebuilds its encoder when the size changes, and
+            // a window being dragged by its edge must not have it do that over and over.
+            ReportShownSize();
         }, Dispatcher);
         _statsTimer.Start();
 
@@ -358,12 +362,36 @@ public partial class ScreenViewerWindow : Window
                 }
             }
 
+            if (update.Resized)
+            {
+                // The first frame, and every change of size: say how large it is shown here without waiting for
+                // the next tick, so a view opens at the right size rather than switching a second later.
+                ReportShownSize();
+            }
+
             _framesSinceTick++;
         }
         finally
         {
             _viewer.FramePresented();
         }
+    }
+
+    /// <summary>
+    /// Tells the stream how large its picture is on this screen, in real pixels — the element's size in
+    /// device-independent units is not it, because a tablet at 150% draws half as many again.
+    /// </summary>
+    private void ReportShownSize()
+    {
+        if (ScreenImage.ActualWidth < 1 || ScreenImage.ActualHeight < 1)
+        {
+            return;
+        }
+
+        var dpi = VisualTreeHelper.GetDpi(this);
+        _viewer.SetShownSize(
+            (int)Math.Round(ScreenImage.ActualWidth * dpi.DpiScaleX),
+            (int)Math.Round(ScreenImage.ActualHeight * dpi.DpiScaleY));
     }
 
     /// <summary>First frame of a window stream (and after a crop): size the viewer to the content, as large as fits.</summary>

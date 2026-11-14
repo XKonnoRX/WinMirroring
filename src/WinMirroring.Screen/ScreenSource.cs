@@ -71,6 +71,9 @@ internal sealed class ScreenSource : IAsyncDisposable
     private MonitorDescription? _monitor;
     private RectangleF _crop = new(0, 0, 1, 1);
     private Size _frameSize;
+
+    /// <summary>How large the viewer says it is drawing this stream; empty until it has said (see OnViewerSize).</summary>
+    private Size _viewerSize;
     private int _forceAll = 1;
     private Task? _loop;
     private IDisposable? _timer;
@@ -243,6 +246,67 @@ internal sealed class ScreenSource : IAsyncDisposable
         }
 
         Volatile.Write(ref _forceAll, 1);
+    }
+
+    /// <summary>
+    /// The viewer says how large it is actually drawing the picture. It is worth listening to: a device showing a
+    /// full screen in a smaller window pays for every pixel it never shows — once in the decoder and once turning
+    /// the result into pixels — and those two are the most expensive things it does per frame.
+    /// </summary>
+    public void OnViewerSize(Size size)
+    {
+        // This comes off the wire, so it is clamped here as well as rounded by the viewer.
+        var wanted = new Size(Math.Clamp(size.Width, 0, 7680), Math.Clamp(size.Height, 0, 4320));
+        lock (_gate)
+        {
+            if (_viewerSize == wanted)
+            {
+                return;
+            }
+
+            _viewerSize = wanted;
+        }
+
+        // Nothing is encoded until the screen changes, so without this a window resized over a still picture
+        // would keep the old size until something moved.
+        Volatile.Write(ref _forceAll, 1);
+    }
+
+    /// <summary>
+    /// What size to encode this crop at: what the viewer says it is showing, fitted to the shape of the crop so
+    /// the picture is not distorted, and never larger than the crop itself — making a picture bigger than it was
+    /// captured would cost everything and show nothing. A viewer that has not said, or is showing it near enough
+    /// its own size, gets the crop as it is.
+    /// </summary>
+    private Size OutputSize(Rectangle crop, bool canScale)
+    {
+        Size wanted;
+        lock (_gate)
+        {
+            wanted = _viewerSize;
+        }
+
+        return FitOutput(crop, wanted, canScale);
+    }
+
+    /// <summary>The size rule itself, apart from the stream, so it can be read and tested on its own.</summary>
+    internal static Size FitOutput(Rectangle crop, Size wanted, bool canScale)
+    {
+        var native = new Size(crop.Width, crop.Height);
+        if (!canScale || wanted.Width < 16 || wanted.Height < 16 || crop.Width < 16 || crop.Height < 16)
+        {
+            return native;
+        }
+
+        var scale = Math.Min(wanted.Width / (double)crop.Width, wanted.Height / (double)crop.Height);
+        if (scale >= 0.95)
+        {
+            return native; // near enough that scaling would cost more in sharpness than it saves
+        }
+
+        return new Size(
+            Math.Max(16, Nv12Converter.Even((int)Math.Round(crop.Width * scale))),
+            Math.Max(16, Nv12Converter.Even((int)Math.Round(crop.Height * scale))));
     }
 
     public void OnPointer(PointerAction action, MouseButton button, float x, float y, int wheel)
@@ -566,17 +630,20 @@ internal sealed class ScreenSource : IAsyncDisposable
     /// </summary>
     private List<byte[]>? BuildVideoMessages(WgcCapture capture, ref byte[] frame, int frameWidth, Rectangle crop, bool force)
     {
-        var videoWidth = Nv12Converter.Even(crop.Width);
-        var videoHeight = Nv12Converter.Even(crop.Height);
-        if (videoWidth < 16 || videoHeight < 16)
+        var videoCrop = new Rectangle(crop.X, crop.Y, Nv12Converter.Even(crop.Width), Nv12Converter.Even(crop.Height));
+        if (videoCrop.Width < 16 || videoCrop.Height < 16)
         {
             return null; // too small for H.264 this frame; the tile path handles it
         }
 
-        if (_videoEncoder is null || _videoEncoder.Width != videoWidth || _videoEncoder.Height != videoHeight)
+        // Only the graphics card can scale on the way; when the processor is doing the conversion the crop is
+        // encoded at its own size. Guessing here is safe: if the card turns out not to do it after all, the next
+        // frame works it out again and the encoder is rebuilt once.
+        var output = OutputSize(videoCrop, !_gpuFailed && capture.UsesSharedDevice);
+        if (_videoEncoder is null || _videoEncoder.Width != output.Width || _videoEncoder.Height != output.Height)
         {
             _videoEncoder?.Dispose();
-            _videoEncoder = H264VideoEncoder.TryCreate(videoWidth, videoHeight, _pacing.Fps, ScaleBitrate(videoWidth, videoHeight), _logger);
+            _videoEncoder = H264VideoEncoder.TryCreate(output.Width, output.Height, _pacing.Fps, ScaleBitrate(output.Width, output.Height), _logger);
             if (_videoEncoder is null)
             {
                 _logger.LogInformation("H.264 encoder unavailable for {Title}; using JPEG tiles", Title);
@@ -584,20 +651,28 @@ internal sealed class ScreenSource : IAsyncDisposable
                 return null;
             }
 
+            if (output.Width != videoCrop.Width || output.Height != videoCrop.Height)
+            {
+                _logger.LogInformation(
+                    "{Title} is sent to {Peer} at {Width}×{Height}: that is the size it is shown at there",
+                    Title, Session.PeerName, output.Width, output.Height);
+            }
+
             force = true; // a fresh encoder emits a key frame anyway
         }
 
-        var videoCrop = new Rectangle(crop.X, crop.Y, videoWidth, videoHeight);
         IReadOnlyList<VideoAccessUnit> units;
         try
         {
-            if (!TryEncodeOnGpu(capture, videoCrop, force, out units))
+            if (!TryEncodeOnGpu(capture, videoCrop, output, force, out units))
             {
                 if (!capture.TryCopyLatest(ref frame, out var width, out _, out _))
                 {
                     return [];
                 }
 
+                // The processor path cannot scale, so this only produces anything when the sizes already agree;
+                // when they do not, the frame is skipped and the next one is encoded at the crop's own size.
                 units = _videoEncoder.Encode(frame, width, videoCrop, force);
             }
         }
@@ -622,7 +697,7 @@ internal sealed class ScreenSource : IAsyncDisposable
     /// handed to the encoder as a texture. False means this is not possible — then the frame is read back into
     /// memory and converted by the processor, exactly as before, and that stays the way for this stream.
     /// </summary>
-    private bool TryEncodeOnGpu(WgcCapture capture, Rectangle crop, bool force, out IReadOnlyList<VideoAccessUnit> units)
+    private bool TryEncodeOnGpu(WgcCapture capture, Rectangle crop, Size output, bool force, out IReadOnlyList<VideoAccessUnit> units)
     {
         units = [];
         if (_gpuFailed || !capture.UsesSharedDevice || _videoEncoder is not { UsesSharedDevice: true } encoder)
@@ -631,7 +706,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         }
 
         var converter = _gpuConverter ??= GpuNv12Converter.TryCreate(_logger);
-        if (converter is null || converter.NextTarget(crop.Width, crop.Height) is not { } target)
+        if (converter is null || converter.NextTarget(output.Width, output.Height) is not { } target)
         {
             return GiveUpOnGpu();
         }

@@ -150,7 +150,7 @@ internal sealed class GpuNv12Converter : IDisposable
             try
             {
                 Prepare(inputSize, outputSize);
-                return Blit(_videoDevice, _videoContext, _enumerator!, _processor!, source, crop, target);
+                return Blit(_videoDevice, _videoContext, _enumerator!, _processor!, source, crop, outputSize, target);
             }
             catch (Exception ex) when (ex is COMException or SharpGen.Runtime.SharpGenException or InvalidOperationException)
             {
@@ -237,7 +237,12 @@ internal sealed class GpuNv12Converter : IDisposable
             MiscFlags = ResourceOptionFlags.None,
         });
 
-    private static bool Blit(ID3D11VideoDevice videoDevice, ID3D11VideoContext videoContext, ID3D11VideoProcessorEnumerator enumerator, ID3D11VideoProcessor processor, ID3D11Texture2D source, Rectangle crop, ID3D11Texture2D target)
+    /// <summary>
+    /// Copies <paramref name="crop"/> of the source into the target at <paramref name="outputSize"/>. The two
+    /// sizes are deliberately separate: the card scales on the way for nothing, which is how a picture is sent at
+    /// the size the viewer is actually showing it rather than the size it was captured at.
+    /// </summary>
+    private static bool Blit(ID3D11VideoDevice videoDevice, ID3D11VideoContext videoContext, ID3D11VideoProcessorEnumerator enumerator, ID3D11VideoProcessor processor, ID3D11Texture2D source, Rectangle crop, Size outputSize, ID3D11Texture2D target)
     {
         using var input = videoDevice.CreateVideoProcessorInputView(
             source,
@@ -249,7 +254,7 @@ internal sealed class GpuNv12Converter : IDisposable
             new VideoProcessorOutputViewDescription { ViewDimension = VideoProcessorOutputViewDimension.Texture2D });
 
         videoContext.VideoProcessorSetStreamSourceRect(processor, 0, true, new RawRect(crop.Left, crop.Top, crop.Right, crop.Bottom));
-        videoContext.VideoProcessorSetStreamDestRect(processor, 0, true, new RawRect(0, 0, crop.Width, crop.Height));
+        videoContext.VideoProcessorSetStreamDestRect(processor, 0, true, new RawRect(0, 0, outputSize.Width, outputSize.Height));
         var result = videoContext.VideoProcessorBlt(processor, output, 0, [new VideoProcessorStream { Enable = true, InputSurface = input }]);
         return result.Success;
     }
@@ -364,7 +369,7 @@ internal sealed class GpuNv12Converter : IDisposable
         {
             ApplyColourMode(videoContext, processor, mode);
             videoContext.VideoProcessorSetStreamFrameFormat(processor, 0, VideoFrameFormat.Progressive);
-            if (!Blit(videoDevice, videoContext, enumerator, processor, source, new Rectangle(0, 0, size, size), target))
+            if (!Blit(videoDevice, videoContext, enumerator, processor, source, new Rectangle(0, 0, size, size), new Size(size, size), target))
             {
                 return false;
             }

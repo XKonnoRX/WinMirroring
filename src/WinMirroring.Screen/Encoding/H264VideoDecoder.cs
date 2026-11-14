@@ -138,13 +138,11 @@ internal sealed class H264VideoDecoder : IDisposable
             {
                 if (candidate.GetGUID(MediaTypeAttributeKeys.Subtype) == VideoInterop.Nv12)
                 {
+                    // Deliberately not taking the size from the type it offers: for H.264 that is the coded size,
+                    // rounded up to whole macroblocks — 1088 rows for a 1080-line screen — and what is wanted here
+                    // is the size of the picture itself. The source says that in every frame message, which is
+                    // where it comes from (see Expect).
                     _transform.SetOutputType(0, candidate, 0);
-                    if (candidate.GetUInt32(MediaTypeAttributeKeys.FrameSize, out var packed).Success && packed != 0)
-                    {
-                        _width = (int)(packed >> 32);
-                        _height = (int)(packed & 0xFFFFFFFF);
-                    }
-
                     return;
                 }
             }
@@ -155,6 +153,24 @@ internal sealed class H264VideoDecoder : IDisposable
     {
         var info = _transform.GetOutputStreamInfo(0);
         _outputSize = Math.Max(info.Size, _width * _height * 2);
+    }
+
+    /// <summary>
+    /// The size the pictures in this stream are from now on, as the source announces it with every frame. A
+    /// stream changes size while it is running when the viewer's window does — the picture is encoded at the size
+    /// it is shown at — and the decoder cannot be asked for that size itself: what it offers is the coded size,
+    /// rounded up to whole macroblocks.
+    /// </summary>
+    public void Expect(int width, int height)
+    {
+        if (width < 16 || height < 16 || (width == _width && height == _height))
+        {
+            return;
+        }
+
+        _width = width;
+        _height = height;
+        RefreshOutputSize();
     }
 
     /// <summary>

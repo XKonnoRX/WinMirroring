@@ -55,6 +55,87 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
         return StreamThePrimaryMonitorAsync(Core.Settings.VideoCodec.Auto, "h264");
     }
 
+    /// <summary>
+    /// The picture is encoded at the size the viewer says it is showing, not the size of the screen. A view at
+    /// half the size costs the far device a quarter of the decoding and a quarter of the colour conversion, which
+    /// on a tablet are the two most expensive things it does per frame. Needs a hardware encoder and a graphics
+    /// card that will do the conversion — the processor path cannot scale.
+    /// </summary>
+    [Fact(Explicit = true)]
+    public async Task ThePictureIsSentAtTheSizeTheViewerSaysItShowsIt()
+    {
+        if (!VideoCodecSupport.CanEncodeH264 || !VideoCodecSupport.CanDecodeH264)
+        {
+            Assert.Skip("No hardware H.264 encoder (or no decoder) on this machine.");
+        }
+
+        var ct = TestContext.Current.CancellationToken;
+        var discoveryA = FreeUdpPort();
+        var discoveryB = FreeUdpPort();
+        var a = CreateNode("SizeA", discoveryA, $"127.0.0.1:{discoveryB}");
+        var b = CreateNode("SizeB", discoveryB, $"127.0.0.1:{discoveryA}");
+        a.Settings.Screen.VideoCodec = Core.Settings.VideoCodec.Auto;
+        await a.StartAsync();
+        await b.StartAsync();
+
+        var log = Path.Combine(Path.GetTempPath(), "winmirroring-stream-size.log");
+        File.WriteAllText(log, string.Empty);
+        await using var screenA = new ScreenStreamingService(a, new FileLogger<ScreenStreamingService>(log));
+        await using var screenB = new ScreenStreamingService(b, new FileLogger<ScreenStreamingService>(log));
+        screenA.Start();
+        screenB.Start();
+
+        await WaitUntilAsync(() => b.Peers.TryGet(a.Identity.Id, out var peer) && peer.TransportEndPoint is not null, ct);
+        Assert.True(await b.PairAsync(a.Identity.Id, ct));
+        await WaitUntilAsync(() => a.Sessions.TryGetSession(b.Identity.Id, out var s) && s.State == SessionState.Ready, ct);
+        await WaitUntilAsync(() => screenA.PeerVirtualDisplay(b.Identity.Id) is not null, ct);
+
+        var opened = new TaskCompletionSource<ScreenViewer>(TaskCreationOptions.RunContinuationsAsynchronously);
+        screenB.ViewerOpened += viewer => opened.TrySetResult(viewer);
+        Assert.True(await screenB.RequestScreenAsync(a.Identity.Id, 0));
+        var viewer = await opened.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        var sizes = new List<(int Width, int Height)>();
+        viewer.Attach(update =>
+        {
+            lock (sizes)
+            {
+                sizes.Add((update.Width, update.Height));
+            }
+
+            viewer.FramePresented();
+        });
+
+        await WaitUntilAsync(() => Seen(sizes).Count > 0, ct);
+        var full = Seen(sizes)[0];
+        var primary = DisplayCatalog.Monitors()[0];
+        Assert.True(full.Width >= primary.Bounds.Width, "the first frames should be the screen's own size");
+
+        // Half the width, and a height that is not what limits it: the source fits it to the shape of the screen.
+        viewer.SetShownSize(full.Width / 2, full.Height);
+
+        await WaitUntilAsync(() => Seen(sizes).Any(s => s.Width < full.Width), ct);
+        var scaled = Seen(sizes).Last(s => s.Width < full.Width);
+
+        Assert.InRange(scaled.Width, (full.Width / 2) - 160, (full.Width / 2) + 160);
+        Assert.Equal(full.Width / (double)full.Height, scaled.Width / (double)scaled.Height, 1);
+
+        // And asking for the screen's own size again brings it back.
+        viewer.SetShownSize(full.Width, full.Height);
+        await WaitUntilAsync(() => Seen(sizes).Last().Width >= full.Width, ct);
+
+        viewer.Close();
+        await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
+    }
+
+    private static List<(int Width, int Height)> Seen(List<(int Width, int Height)> sizes)
+    {
+        lock (sizes)
+        {
+            return [.. sizes];
+        }
+    }
+
     private async Task StreamThePrimaryMonitorAsync(Core.Settings.VideoCodec codec, string expectedCodec)
     {
         var ct = TestContext.Current.CancellationToken;
@@ -123,17 +204,41 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
             direct.Start();
             Assert.True(await direct.WaitForFrameAsync(0, TimeSpan.FromSeconds(5), ct));
             var reference = Array.Empty<byte>();
-            Assert.True(direct.TryCopyLatest(ref reference, out var width, out var height, out _));
+            Assert.True(direct.TryCopyLatest(ref reference, out var width, out var height, out var version));
             Assert.Equal((frame.Width, frame.Height), (width, height));
 
+            // The screen goes on living while a frame travels, and a desktop with anything moving on it — a
+            // clock, a window redrawing, this test's own console — makes a comparison against a later capture
+            // meaningless. So take a second capture and compare only where the two agree: whatever stood still
+            // is what the streamed picture can honestly be held to.
+            await Task.Delay(300, ct);
+            var later = Array.Empty<byte>();
+            await direct.WaitForFrameAsync(version, TimeSpan.FromSeconds(2), ct);
+            Assert.True(direct.TryCopyLatest(ref later, out _, out _, out _));
+
+            // Not exact equality: a capture of the same still screen wobbles by a unit or two, and holding it to
+            // the letter would call the whole screen moving.
+            const int Still = 2;
             long error = 0;
+            var compared = 0;
             for (var i = 0; i < reference.Length; i += 4)
             {
+                if (Math.Abs(reference[i] - later[i]) > Still
+                    || Math.Abs(reference[i + 1] - later[i + 1]) > Still
+                    || Math.Abs(reference[i + 2] - later[i + 2]) > Still)
+                {
+                    continue; // that pixel was changing anyway
+                }
+
                 error += Math.Abs(reference[i] - received[i]) + Math.Abs(reference[i + 1] - received[i + 1]) + Math.Abs(reference[i + 2] - received[i + 2]);
+                compared++;
             }
 
-            var meanError = error / (reference.Length / 4.0 * 3);
-            TestContext.Current.TestOutputHelper?.WriteLine($"mean error {meanError:F2}");
+            var still = compared / (reference.Length / 4.0);
+            Assert.SkipWhen(still < 0.5, $"only {still:P0} of the screen stood still; nothing to compare against");
+
+            var meanError = error / (compared * 3.0);
+            TestContext.Current.TestOutputHelper?.WriteLine($"mean error {meanError:F2} over {still:P0} of the screen");
             Assert.InRange(meanError, 0, 12);
         }
 

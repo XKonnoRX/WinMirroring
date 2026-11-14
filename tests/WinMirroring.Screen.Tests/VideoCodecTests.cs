@@ -159,6 +159,55 @@ public class VideoCodecTests
         Assert.InRange(MeanColorError(source, output), 0, 24);
     }
 
+    /// <summary>
+    /// A stream changes size while it is running now — the picture is sent at the size the viewer is showing it
+    /// at — and the decoder has to follow. It cannot be asked what that size is: what a decoder offers is the
+    /// coded size, rounded up to whole macroblocks (1088 rows for a 1080-line picture), so the size comes from
+    /// the source with every frame.
+    /// </summary>
+    [Fact]
+    public void TheDecoderFollowsAStreamThatChangesSize()
+    {
+        Assert.SkipUnless(VideoCodecSupport.CanEncodeH264 && VideoCodecSupport.CanDecodeH264, "No hardware H.264 encoder on this machine.");
+
+        using var decoder = H264VideoDecoder.TryCreate(1280, 720, NullLogger.Instance)!;
+        var output = Array.Empty<byte>();
+
+        Assert.Equal((1280, 720), Through(decoder, ref output, 1280, 720));
+        var big = output;
+
+        // The source rebuilds its encoder at the new size and sends a key frame.
+        Assert.Equal((640, 360), Through(decoder, ref output, 640, 360));
+        Assert.InRange(MeanColorError(ColourBands(640, 360), output.AsSpan(0, 640 * 360 * 4).ToArray()), 0, 24);
+
+        // And back up again, because a window can be made larger as easily as smaller.
+        Assert.Equal((1280, 720), Through(decoder, ref output, 1280, 720));
+        Assert.InRange(MeanColorError(big.AsSpan(0, 1280 * 720 * 4).ToArray(), output.AsSpan(0, 1280 * 720 * 4).ToArray()), 0, 24);
+    }
+
+    /// <summary>Encodes a picture of this size and decodes it; returns the size that came out.</summary>
+    private static (int Width, int Height) Through(H264VideoDecoder decoder, ref byte[] output, int width, int height)
+    {
+        var source = ColourBands(width, height);
+        using var encoder = H264VideoEncoder.TryCreate(width, height, 30, 8000, NullLogger.Instance)!;
+        var seen = (Width: 0, Height: 0);
+
+        // A hardware encoder may take a frame or two to hand the first one back.
+        for (var attempt = 0; attempt < 5 && seen.Width == 0; attempt++)
+        {
+            foreach (var unit in encoder.Encode(source, width, new Rectangle(0, 0, width, height), forceKeyframe: attempt == 0))
+            {
+                decoder.Expect(width, height);
+                if (decoder.DecodeInto(unit.Data, ref output, out var w, out var h))
+                {
+                    seen = (w, h);
+                }
+            }
+        }
+
+        return seen;
+    }
+
     /// <summary>Wide bands of saturated colour: a chroma plane read at the wrong offset shows up immediately.</summary>
     private static byte[] ColourBands(int width, int height)
     {

@@ -136,6 +136,37 @@ public sealed class ScreenViewer : IAsyncDisposable
     /// <summary>Stream only this normalized part of the source image (the full image is 0,0,1,1).</summary>
     public void SetCrop(RectangleF crop) => _outbox.Writer.TryWrite(ScreenCodec.EncodeCrop(StreamId, ScreenCodec.Normalize(crop)));
 
+    /// <summary>
+    /// Tells the source how large the picture is actually being drawn here, in real pixels, so it can encode it
+    /// at that size instead of its own. A window showing a full screen at half its size otherwise pays for every
+    /// pixel it never shows, twice: once in the decoder, once turning the result into pixels.
+    ///
+    /// Rounded up to a step, and only sent when the rounded answer changes, so dragging a window's edge does not
+    /// have the source rebuild its encoder on every pixel of the drag.
+    /// </summary>
+    public void SetShownSize(int width, int height)
+    {
+        if (width < 1 || height < 1)
+        {
+            return;
+        }
+
+        var rounded = new System.Drawing.Size(RoundUp(width), RoundUp(height));
+        if (rounded == _shownSize)
+        {
+            return;
+        }
+
+        _shownSize = rounded;
+        _outbox.Writer.TryWrite(ScreenCodec.EncodeSize(StreamId, rounded.Width, rounded.Height));
+    }
+
+    /// <summary>Up, not down: asking for a little more than is shown costs little and never softens the picture.</summary>
+    private static int RoundUp(int value) => Math.Clamp((value + SizeStep - 1) / SizeStep * SizeStep, 320, 7680);
+
+    private const int SizeStep = 160;
+    private System.Drawing.Size _shownSize;
+
     public void SwitchMonitor(int index, string? key = null) => _ = SendControlAsync(new ScreenRequestMessage(StreamId, index, key));
 
     /// <summary>Asks the source to act on its real window (restore it from minimised).</summary>
@@ -247,6 +278,9 @@ public sealed class ScreenViewer : IAsyncDisposable
         var resized = false;
         if (_videoDecoder is not null)
         {
+            // The source says how large each picture is, and it changes while the stream runs: it sends the
+            // picture at the size this window is showing it at.
+            _videoDecoder.Expect(frame.Width, frame.Height);
             try
             {
                 produced = _videoDecoder.DecodeInto(frame.Data, ref _image, out var width, out var height);
