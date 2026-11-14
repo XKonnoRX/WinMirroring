@@ -61,7 +61,8 @@ public sealed record ScreenVideoFrame(uint StreamId, uint FrameNo, int Width, in
 /// Screen channel, little-endian, first byte <see cref="ScreenMessageType"/>, then u32 stream id.
 /// Frame: u32 frame no, u16 width, u16 height, u16 tile count, tiles (u16 x, y, w, h, i32 length, JPEG).
 /// VideoFrame: u32 frame no, u16 width, u16 height, u8 flags (bit0 keyframe), u16 reserved, H.264 access unit.
-/// Ack: u32 frame no. Pointer: u8 action, u8 button, f32 x, f32 y, i16 wheel. Key: u16 vk, u16 scan, u8 flags.
+/// Ack: u32 frame no, u16 milliseconds the viewer held the frame (absent from an older peer's acks).
+/// Pointer: u8 action, u8 button, f32 x, f32 y, i16 wheel. Key: u16 vk, u16 scan, u8 flags.
 /// Crop: f32 x, y, w, h.
 /// </summary>
 public static class ScreenCodec
@@ -168,12 +169,18 @@ public static class ScreenCodec
         return new ScreenVideoFrame(streamId, frameNo, width, height, keyframe, data);
     }
 
-    public static byte[] EncodeAck(uint streamId, uint frameNo)
+    /// <summary>
+    /// A frame came back. <paramref name="viewerMs"/> is how long this device held the frame — queued, decoded and
+    /// turned into pixels — so the source can tell a slow link from a busy viewer instead of guessing which of the
+    /// two the round trip it measures belongs to.
+    /// </summary>
+    public static byte[] EncodeAck(uint streamId, uint frameNo, int viewerMs = 0)
     {
-        var message = new byte[9];
+        var message = new byte[11];
         message[0] = (byte)ScreenMessageType.Ack;
         BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(1), streamId);
         BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(5), frameNo);
+        BinaryPrimitives.WriteUInt16LittleEndian(message.AsSpan(9), (ushort)Math.Clamp(viewerMs, 0, ushort.MaxValue));
         return message;
     }
 
@@ -353,9 +360,14 @@ public static class ScreenCodec
         return true;
     }
 
-    public static bool TryDecodeAck(ReadOnlySpan<byte> message, out uint frameNo)
+    /// <summary>
+    /// Reads an acknowledgement. <paramref name="viewerMs"/> comes back as -1 when the acknowledgement carries no
+    /// time at all — which is what a peer running an older build sends.
+    /// </summary>
+    public static bool TryDecodeAck(ReadOnlySpan<byte> message, out uint frameNo, out int viewerMs)
     {
         frameNo = message.Length >= 9 ? BinaryPrimitives.ReadUInt32LittleEndian(message[5..]) : 0;
+        viewerMs = message.Length >= 11 ? BinaryPrimitives.ReadUInt16LittleEndian(message[9..]) : -1;
         return message.Length >= 9 && message[0] == (byte)ScreenMessageType.Ack;
     }
 

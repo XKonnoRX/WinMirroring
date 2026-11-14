@@ -527,7 +527,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
         switch (type)
         {
             case ScreenMessageType.Ack:
-                source.OnAck();
+                source.OnAck(ScreenCodec.TryDecodeAck(span, out _, out var viewerMs) ? viewerMs : -1);
                 break;
 
             case ScreenMessageType.Pointer when ScreenCodec.TryDecodePointer(span, out var action, out var button, out var x, out var y, out var wheel):

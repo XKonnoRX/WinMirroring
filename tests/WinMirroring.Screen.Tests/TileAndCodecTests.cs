@@ -106,8 +106,13 @@ public class TileAndCodecTests
         Assert.Equal(0.1f, crop.X, 4);
         Assert.Equal(0.3f, crop.Height, 4);
 
-        Assert.True(ScreenCodec.TryDecodeAck(ScreenCodec.EncodeAck(3, 99), out var frameNo));
-        Assert.Equal(99u, frameNo);
+        Assert.True(ScreenCodec.TryDecodeAck(ScreenCodec.EncodeAck(3, 99, 42), out var frameNo, out var viewerMs));
+        Assert.Equal((99u, 42), (frameNo, viewerMs));
+
+        // A peer on an older build sends the acknowledgement two bytes shorter, with no time in it at all. It is
+        // still an acknowledgement, and the stream it belongs to must not stall over the missing number.
+        Assert.True(ScreenCodec.TryDecodeAck(ScreenCodec.EncodeAck(3, 99, 42).AsSpan(0, 9), out frameNo, out viewerMs));
+        Assert.Equal((99u, -1), (frameNo, viewerMs));
     }
 
     [Fact]

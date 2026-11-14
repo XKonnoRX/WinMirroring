@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
@@ -34,8 +35,11 @@ public sealed class ScreenViewer : IAsyncDisposable
 
     private static readonly TimeSpan ReportEvery = TimeSpan.FromSeconds(10);
 
+    /// <summary>One frame message and when it got here, so its acknowledgement can say how long it was held.</summary>
+    private readonly record struct Incoming(byte[] Message, long Arrived);
+
     private readonly ILogger _logger;
-    private readonly Channel<byte[]> _frames = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
+    private readonly Channel<Incoming> _frames = Channel.CreateUnbounded<Incoming>(new UnboundedChannelOptions { SingleReader = true });
     private readonly Channel<byte[]> _outbox = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
     private readonly TaskCompletionSource _attached = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TileDecoder _decoder = new();
@@ -180,7 +184,7 @@ public sealed class ScreenViewer : IAsyncDisposable
         InfoChanged?.Invoke(this);
     }
 
-    internal void Enqueue(byte[] message) => _frames.Writer.TryWrite(message);
+    internal void Enqueue(byte[] message) => _frames.Writer.TryWrite(new Incoming(message, Stopwatch.GetTimestamp()));
 
     internal Task CloseAsync(bool notifySource, string? reason)
     {
@@ -202,15 +206,15 @@ public sealed class ScreenViewer : IAsyncDisposable
         try
         {
             await _attached.Task.WaitAsync(ct).ConfigureAwait(false);
-            await foreach (var message in _frames.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+            await foreach (var incoming in _frames.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
-                if (ScreenCodec.TryReadHeader(message, out var type, out _) && type == ScreenMessageType.VideoFrame)
+                if (ScreenCodec.TryReadHeader(incoming.Message, out var type, out _) && type == ScreenMessageType.VideoFrame)
                 {
-                    await DecodeVideoAsync(message, ct).ConfigureAwait(false);
+                    await DecodeVideoAsync(incoming, ct).ConfigureAwait(false);
                     continue;
                 }
 
-                await DecodeTilesAsync(message, ct).ConfigureAwait(false);
+                await DecodeTilesAsync(incoming, ct).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -222,9 +226,9 @@ public sealed class ScreenViewer : IAsyncDisposable
         }
     }
 
-    private async Task DecodeTilesAsync(byte[] message, CancellationToken ct)
+    private async Task DecodeTilesAsync(Incoming incoming, CancellationToken ct)
     {
-        var frame = ScreenCodec.TryDecodeFrame(message);
+        var frame = ScreenCodec.TryDecodeFrame(incoming.Message);
         if (frame is null || frame.Width == 0 || frame.Height == 0)
         {
             return;
@@ -250,14 +254,14 @@ public sealed class ScreenViewer : IAsyncDisposable
             }
         });
 
-        await AckAsync(frame.FrameNo, ct).ConfigureAwait(false);
+        await AckAsync(frame.FrameNo, incoming.Arrived, ct).ConfigureAwait(false);
         var dirty = frame.Tiles.Select(t => new Rectangle(t.X, t.Y, t.Width, t.Height)).ToList();
         Present(frame.FrameNo, dirty, resized, accumulates: true);
     }
 
-    private async Task DecodeVideoAsync(byte[] message, CancellationToken ct)
+    private async Task DecodeVideoAsync(Incoming incoming, CancellationToken ct)
     {
-        var frame = ScreenCodec.TryDecodeVideoFrame(message);
+        var frame = ScreenCodec.TryDecodeVideoFrame(incoming.Message);
         if (frame is null || frame.Width == 0 || frame.Height == 0)
         {
             return;
@@ -307,12 +311,12 @@ public sealed class ScreenViewer : IAsyncDisposable
             }
 
             // Still acknowledge so the source's in-flight window does not stall while the decoder primes.
-            await AckAsync(frame.FrameNo, ct).ConfigureAwait(false);
+            await AckAsync(frame.FrameNo, incoming.Arrived, ct).ConfigureAwait(false);
             return;
         }
 
         _videoSilentSince = null;
-        await AckAsync(frame.FrameNo, ct).ConfigureAwait(false);
+        await AckAsync(frame.FrameNo, incoming.Arrived, ct).ConfigureAwait(false);
 
         // Video carries the whole picture every time, so nothing has to be carried over between buffers.
         Present(frame.FrameNo, [new Rectangle(0, 0, _width, _height)], resized, accumulates: false);
@@ -416,8 +420,16 @@ public sealed class ScreenViewer : IAsyncDisposable
         _ = SendControlAsync(new ScreenCodecFallbackMessage(StreamId, reason));
     }
 
-    private Task AckAsync(uint frameNo, CancellationToken ct) =>
-        Session.SendAsync(ChannelId.Screen, ScreenCodec.EncodeAck(StreamId, frameNo), ct).AsTask();
+    /// <summary>
+    /// Acknowledges a frame, saying how long it was held here: from arriving on the connection to this moment, so
+    /// it covers waiting its turn, decoding and being turned into pixels. The source measures a round trip and
+    /// cannot otherwise tell how much of it was the link and how much was this device.
+    /// </summary>
+    private Task AckAsync(uint frameNo, long arrived, CancellationToken ct)
+    {
+        var held = (int)Math.Round(Stopwatch.GetElapsedTime(arrived).TotalMilliseconds);
+        return Session.SendAsync(ChannelId.Screen, ScreenCodec.EncodeAck(StreamId, frameNo, held), ct).AsTask();
+    }
 
     private async Task SendLoopAsync()
     {

@@ -1,83 +1,91 @@
 namespace WinMirroring.Screen;
 
 /// <summary>
-/// Keeps one stream inside what the link can actually carry.
+/// Keeps one stream inside what the link can actually carry, by moving one number: the share of the configured
+/// bitrate it asks for. Wi-Fi that cannot carry twelve megabits a second makes TCP queue up, which delays the
+/// acknowledgements, which stalls the send window — so without this the picture froze rather than getting coarser.
 ///
-/// It watches a single number — how long the viewer takes to acknowledge a frame — and moves the frame rate and the
-/// bitrate to hold that number inside a band. Without this a stream simply asked for its configured bitrate
-/// (12 Mbit/s for a full screen) whatever the link was willing to give: Wi-Fi that could not carry it made TCP
-/// queue up, which delayed the acknowledgements, which stalled the send window — so the picture froze rather than
-/// getting coarser.
+/// It no longer touches the frame rate. The send window is already the rate controller — a stream can only go as
+/// fast as its frames are acknowledged — and a second, slower limiter on top of it could only ever take away rate
+/// the link was willing to carry. Worse, the two argued: the window would find thirty frames a second while this
+/// was asking for fourteen.
 ///
-/// The first version of this moved far too eagerly. One frame the window stopped waiting for — a single hiccup
-/// anywhere, which happens a few times a minute on Wi-Fi — cut the frame rate by a third at once, and climbing back
-/// took three seconds a step. The log of a real session shows what that looks like: a target walking 30, 22, 19,
-/// 13, 22, 21, 23, 30 while acknowledgements were coming back in forty to seventy milliseconds the whole time.
-/// A picture whose rate lurches like that stutters about once a second, which is exactly what it was reported to
-/// do. So: a single hiccup is now worth one small step, trouble has to persist to be taken seriously, and getting
-/// back up is nearly as quick as coming down.
+/// And it judges on a count, not on a smoothed delay. The smoothed round trip of a real session sits around
+/// seventy milliseconds while individual frames come back anywhere between thirty and two hundred, so a smoothed
+/// value compared against thresholds crosses them several times a second: the earlier version of this moved its
+/// target up or down about once a second, every second, for hours, and each move changed the encoder's bitrate.
+/// A bitrate change makes a hardware encoder restart its rate control and emit a big frame, and a big frame on a
+/// loaded link is a visible hitch — which is exactly the once-or-twice-a-second stutter that was reported. Now it
+/// asks a question a single late frame cannot answer: of the frames acknowledged in the last three seconds, how
+/// many were late? Only a quarter of them being late moves anything.
 /// </summary>
 internal sealed class StreamPacing
 {
+    /// <summary>Steps are small and rare on purpose: it is the lurching between settings that is seen.</summary>
+    private const double Down = 0.8;
+    private const double Up = 1.1;
+
     /// <summary>
-    /// Acknowledgements slower than this mean the link (or the viewer) is behind. It is deliberately close to one
-    /// frame's worth of time: the delay a frame waits before being shown is what this number measures, so letting
-    /// it reach a third of a second — as it first did — meant tolerating exactly the lag that was complained about.
+    /// Except when there is nothing to weigh up. A link where most frames come back late is not marginal, and
+    /// stepping down a fifth at a time would spend fifteen seconds walking to a bitrate it could have had in six.
     /// </summary>
-    private const double HighDelayMs = 120;
+    private const double FarDown = 0.6;
 
-    /// <summary>...and faster than this means there is room to ask for more.</summary>
-    private const double LowDelayMs = 55;
+    /// <summary>
+    /// Never below a third of what was configured. Below that the picture is mush, and a stream nobody can read is
+    /// not a better outcome than a stream that drops a frame now and then.
+    /// </summary>
+    private const double MinShare = 1.0 / 3;
 
-    private const int MinFps = 12;
-    private const double MinShare = 0.2;
+    /// <summary>This many of the last window's frames coming back late means the link is loaded...</summary>
+    private const double TooManyLate = 0.25;
 
-    /// <summary>Steps are small on purpose: it is the lurching between rates that is seen, not the rate itself.</summary>
-    private const double Down = 0.85;
-    private const double Up = 1.15;
+    /// <summary>...and this many means it is not a close call (see <see cref="FarDown"/>).</summary>
+    private const double FarTooLate = 0.5;
 
-    private static readonly TimeSpan AdjustEvery = TimeSpan.FromSeconds(1);
+    /// <summary>...and this few means there is room to ask for more.</summary>
+    private const double FewLate = 0.05;
 
-    private double _fps;
+    /// <summary>Fewer acknowledgements than this in a window says nothing; wait for more rather than guess.</summary>
+    private const int EnoughAcks = 8;
+
+    private static readonly TimeSpan AdjustEvery = TimeSpan.FromSeconds(3);
+
     private double _share = 1;
     private int _ceiling;
     private long _changedTicks;
-    private long _seenGivenUp;
     private long _changes;
+    private LinkReading _seen;
     private bool _started;
 
-    public StreamPacing(int maxFps)
-    {
-        _ceiling = Math.Clamp(maxFps, 1, 60);
-        _fps = _ceiling;
-    }
+    public StreamPacing(int maxFps) => _ceiling = Math.Clamp(maxFps, 1, 60);
 
-    /// <summary>Frames per second the stream should aim for right now.</summary>
-    public int Fps => Math.Max(1, (int)Math.Round(_fps));
+    /// <summary>
+    /// Frames per second the stream should aim for: what it was configured for. The window decides what actually
+    /// goes out — see the remarks above on why nothing else should.
+    /// </summary>
+    public int Fps => _ceiling;
 
     /// <summary>Fraction of the configured bitrate (and of the tile quality range) to ask for right now.</summary>
     public double Share => _share;
 
     /// <summary>True while the stream is running below what it was configured for.</summary>
-    public bool HeldBack => Fps < _ceiling || _share < 0.99;
+    public bool HeldBack => _share < 0.99;
 
     /// <summary>How many times the target has moved, so a log line can show whether it is settled or hunting.</summary>
     public long Changes => _changes;
 
     /// <summary>
-    /// Takes the window's view of the link and moves the targets. <paramref name="maxFps"/> comes in every time
-    /// because the setting can change under a running stream.
+    /// Takes the window's view of the link and moves the bitrate target. <paramref name="maxFps"/> comes in every
+    /// time because the setting can change under a running stream.
     /// </summary>
-    public void Observe(double ackDelayMs, long givenUp, int maxFps, long nowTicks)
+    public void Observe(LinkReading reading, int maxFps, long nowTicks)
     {
         _ceiling = Math.Clamp(maxFps, 1, 60);
-        _fps = Math.Min(_fps, _ceiling);
-        var stalls = givenUp - _seenGivenUp;
-        _seenGivenUp = givenUp;
-
         if (!_started)
         {
             _started = true;
+            _seen = reading;
             _changedTicks = nowTicks;
             return;
         }
@@ -87,25 +95,43 @@ internal sealed class StreamPacing
             return;
         }
 
-        // Frames the window gave up on are the strongest signal there is, but one of them is a hiccup, not a trend:
-        // it is worth one step down, the same as a delay over the band, and no more.
-        var behind = stalls > 0 || ackDelayMs > HighDelayMs;
-        var room = stalls == 0 && ackDelayMs > 0 && ackDelayMs < LowDelayMs;
-        if (!behind && !room)
+        var acks = reading.Acks - _seen.Acks;
+        var late = reading.LateAcks - _seen.LateAcks;
+
+        // A frame the window stopped waiting for is a frame that was later than late, and it never shows up as an
+        // acknowledgement at all, so it is counted on both sides of the fraction.
+        var stalls = reading.GivenUp - _seen.GivenUp;
+        if (acks + stalls < EnoughAcks)
         {
-            return;
+            return; // not enough to judge yet; the next frame asks again
         }
 
+        _seen = reading;
         _changedTicks = nowTicks;
-        _changes++;
-        if (behind)
+        var lateShare = (late + stalls) / (double)(acks + stalls);
+        if (lateShare > TooManyLate)
         {
-            _fps = Math.Max(MinFps, _fps * Down);
-            _share = Math.Max(MinShare, _share * Down);
+            Move(lateShare > FarTooLate ? FarDown : Down);
             return;
         }
 
-        _fps = Math.Min(_ceiling, _fps * Up);
-        _share = Math.Min(1, _share * Up);
+        if (lateShare < FewLate && _share < 1)
+        {
+            Move(Up);
+        }
+    }
+
+    /// <summary>Moves the share, and only counts a change that actually changed something: a stream sitting on its
+    /// floor is settled, and a log line saying it moved thirty times would say the opposite.</summary>
+    private void Move(double by)
+    {
+        var next = Math.Clamp(_share * by, MinShare, 1);
+        if (Math.Abs(next - _share) < 0.0001)
+        {
+            return;
+        }
+
+        _changes++;
+        _share = next;
     }
 }

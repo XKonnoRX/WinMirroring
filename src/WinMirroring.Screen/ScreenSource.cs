@@ -24,28 +24,43 @@ public enum StreamKind
 }
 
 /// <summary>
-/// One outgoing stream of a monitor or a window to one viewer. A few frame messages may be unacknowledged at a time
-/// (see <see cref="SendWindow"/>), and the frame rate and bitrate follow how promptly the viewer acknowledges them
-/// (see <see cref="StreamPacing"/>), so a link that cannot carry the configured bitrate makes the picture coarser
-/// instead of freezing it. Pointer and keyboard events from the viewer are injected here at the matching screen
-/// position.
+/// One outgoing stream of a monitor or a window to one viewer. A few frame messages may be on the wire
+/// unacknowledged at a time (see <see cref="SendWindow"/>) and that is what sets the rate the stream actually runs
+/// at; the bitrate follows how promptly the viewer acknowledges them (see <see cref="StreamPacing"/>), so a link
+/// that cannot carry the configured bitrate makes the picture coarser instead of freezing it. Pointer and keyboard
+/// events from the viewer are injected here at the matching screen position.
 /// </summary>
 internal sealed class ScreenSource : IAsyncDisposable
 {
     /// <summary>
-    /// Frame messages allowed on the wire at once. This is the picture's delay, not a throughput setting: a frame
-    /// waiting its turn here is a frame the far screen is not showing yet, so four of them at twenty-five frames a
-    /// second was a sixth of a second of delay all by itself. Two is enough to keep the link busy — the window
-    /// only limits the rate once a round trip takes longer than half a frame — and the pacing below brings the rate
-    /// down if it ever does.
+    /// Frame messages allowed on the wire at once, which is also the most picture that can be in the air unseen —
+    /// so it is kept as small as the arithmetic allows. The arithmetic: a stream can only run at the window
+    /// divided by the round trip, and a round trip on this link is seventy milliseconds, so thirty frames a second
+    /// needs 30 × 0.070 ≈ 2.1 of them outstanding. Two therefore capped the stream at twenty-eight frames a second
+    /// however good everything else was — and with a slot held across the encoder as well, as it used to be, at
+    /// nineteen. Three clears thirty with a little to spare and nothing more; when the link cannot carry it the
+    /// bitrate comes down (see <see cref="StreamPacing"/>) and the grace below bounds the worst case.
     /// </summary>
-    private const int MaxInFlight = 2;
+    private const int MaxInFlight = 3;
 
     private const int PartBytes = 512 * 1024;
     private static readonly TimeSpan IdleWait = TimeSpan.FromMilliseconds(100);
 
-    /// <summary>How long a frame may stay unacknowledged before the stream stops waiting for it.</summary>
-    private static readonly TimeSpan AckGrace = TimeSpan.FromMilliseconds(500);
+    /// <summary>
+    /// How long a frame may stay unacknowledged before the stream stops waiting for it. Whatever this is, it is
+    /// also how long the picture stands still when it happens, so half a second — which is what it was — was half
+    /// a second of frozen picture every time a frame went missing, about once a minute on this link. It only has
+    /// to be comfortably longer than a real round trip, and a real round trip here is seventy milliseconds with
+    /// spikes to a hundred and fifty.
+    /// </summary>
+    private static readonly TimeSpan AckGrace = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
+    /// An acknowledgement slower than this counts as late. Deliberately close to one frame's worth of time: the
+    /// delay a frame waits before being shown is what it measures, and a stream whose frames are routinely later
+    /// than their own interval is a stream asking for more than the link will give.
+    /// </summary>
+    private static readonly TimeSpan LateAbove = TimeSpan.FromMilliseconds(120);
 
     private static readonly TimeSpan ReportEvery = TimeSpan.FromSeconds(10);
 
@@ -54,7 +69,7 @@ internal sealed class ScreenSource : IAsyncDisposable
     private readonly InputInjector _injector = new();
     private readonly Injection.TouchInjector _touch;
     private readonly TileEncoder _encoder = new();
-    private readonly SendWindow _window = new(MaxInFlight, AckGrace);
+    private readonly SendWindow _window = new(MaxInFlight, AckGrace, LateAbove);
     private readonly StreamPacing _pacing;
     private readonly CancellationTokenSource _cts = new();
     private readonly object _gate = new();
@@ -64,6 +79,8 @@ internal sealed class ScreenSource : IAsyncDisposable
     // Diagnostics, written and read by the streaming loop only.
     private long _reportedTicks;
     private long _reportedChanges;
+    private long _reportedAcks;
+    private long _reportedLate;
     private long _framesSent;
     private long _bytesSent;
 
@@ -236,7 +253,8 @@ internal sealed class ScreenSource : IAsyncDisposable
         Volatile.Write(ref _forceAll, 1);
     }
 
-    public void OnAck() => _window.OnAck();
+    /// <summary>A frame came back; <paramref name="viewerMs"/> is how long the viewer held it, or -1 if it did not say.</summary>
+    public void OnAck(int viewerMs = -1) => _window.OnAck(viewerMs);
 
     public void OnCrop(RectangleF crop)
     {
@@ -519,84 +537,59 @@ internal sealed class ScreenSource : IAsyncDisposable
                     continue;
                 }
 
-                await _window.TakeAsync(ct).ConfigureAwait(false);
-                var slotHeld = true;
-                try
+                // Only the size and the age of the frame, not its pixels: whether they are needed in memory at
+                // all depends on which encoder ends up taking this frame.
+                if (!capture.TryLatestInfo(out var width, out var height, out var version))
                 {
-                    // Only the size and the age of the frame, not its pixels: whether they are needed in memory at
-                    // all depends on which encoder ends up taking this frame.
-                    if (!capture.TryLatestInfo(out var width, out var height, out var version))
+                    continue;
+                }
+
+                seen = version;
+                var force = Interlocked.Exchange(ref _forceAll, 0) == 1;
+                Rectangle crop;
+                RectangleF cropFraction;
+                lock (_gate)
+                {
+                    _frameSize = new Size(width, height);
+                    cropFraction = _crop;
+                    crop = ScreenCodec.ToPixels(cropFraction, width, height);
+                }
+
+                if (_tilesRequested is { } reason && _useVideo && !_videoFailed)
+                {
+                    _logger.LogInformation("{Peer} gets no picture from H.264 ({Reason}); sending JPEG tiles", Session.PeerName, reason);
+                    _videoFailed = true;
+                    _videoEncoder?.Dispose();
+                    _videoEncoder = null;
+                    _gpuConverter?.Dispose();
+                    _gpuConverter = null;
+                    force = true;
+                    _ = Session.SendControlAsync(Describe());
+                }
+
+                List<byte[]>? messages = null;
+                if (_useVideo && !_videoFailed)
+                {
+                    messages = BuildVideoMessages(capture, ref frame, width, crop, force);
+                    if (_videoFailed)
+                    {
+                        force = true; // just fell back to tiles: make the first JPEG frame complete
+                    }
+                }
+
+                if (messages is null)
+                {
+                    if (!capture.TryCopyLatest(ref frame, out width, out height, out _))
                     {
                         continue;
                     }
 
-                    seen = version;
-                    var force = Interlocked.Exchange(ref _forceAll, 0) == 1;
-                    Rectangle crop;
-                    RectangleF cropFraction;
-                    lock (_gate)
-                    {
-                        _frameSize = new Size(width, height);
-                        cropFraction = _crop;
-                        crop = ScreenCodec.ToPixels(cropFraction, width, height);
-                    }
-
-                    if (_tilesRequested is { } reason && _useVideo && !_videoFailed)
-                    {
-                        _logger.LogInformation("{Peer} gets no picture from H.264 ({Reason}); sending JPEG tiles", Session.PeerName, reason);
-                        _videoFailed = true;
-                        _videoEncoder?.Dispose();
-                        _videoEncoder = null;
-                        _gpuConverter?.Dispose();
-                        _gpuConverter = null;
-                        force = true;
-                        _ = Session.SendControlAsync(Describe());
-                    }
-
-                    List<byte[]>? messages = null;
-                    if (_useVideo && !_videoFailed)
-                    {
-                        messages = BuildVideoMessages(capture, ref frame, width, crop, force);
-                        if (_videoFailed)
-                        {
-                            force = true; // just fell back to tiles: make the first JPEG frame complete
-                        }
-                    }
-
-                    if (messages is null)
-                    {
-                        if (!capture.TryCopyLatest(ref frame, out width, out height, out _))
-                        {
-                            continue;
-                        }
-
-                        messages = BuildJpegMessages(frame, width, height, ScreenCodec.ToPixels(cropFraction, width, height), force);
-                    }
-                    if (messages.Count == 0)
-                    {
-                        continue;
-                    }
-
-                    foreach (var message in messages)
-                    {
-                        if (!slotHeld)
-                        {
-                            await _window.TakeAsync(ct).ConfigureAwait(false);
-                        }
-
-                        slotHeld = false;
-                        _framesSent++;
-                        _bytesSent += message.Length;
-                        await Session.SendAsync(ChannelId.Screen, message, ct).ConfigureAwait(false);
-                    }
+                    messages = BuildJpegMessages(frame, width, height, ScreenCodec.ToPixels(cropFraction, width, height), force);
                 }
-                finally
-                {
-                    if (slotHeld)
-                    {
-                        _window.Return();
-                    }
-                }
+
+                // The window is taken inside here, one slot per message and not a moment before it goes out: a slot
+                // stands for a frame on the wire, and capturing and encoding this one happened above, off the link.
+                await SendAsync(messages, ct).ConfigureAwait(false);
 
                 var minimumMs = 1000.0 / Observe();
                 var wait = minimumMs - pacing.Elapsed.TotalMilliseconds;
@@ -777,7 +770,8 @@ internal sealed class ScreenSource : IAsyncDisposable
     private int Observe()
     {
         var now = Environment.TickCount64;
-        _pacing.Observe(_window.DelayMs, _window.GivenUp, _settings.MaxFps, now);
+        var reading = _window.Reading;
+        _pacing.Observe(reading, _settings.MaxFps, now);
         var fps = _pacing.Fps;
         if (_videoEncoder is { } encoder)
         {
@@ -792,21 +786,29 @@ internal sealed class ScreenSource : IAsyncDisposable
         {
             var seconds = (now - _reportedTicks) / 1000.0;
             _logger.LogInformation(
-                "Stream {Stream} to {Peer}: {Codec}, {Rate:F1} messages/s, {Kbps:F0} kbit/s, aiming at {Fps} fps{Held}, "
-                + "target moved {Changes} times, acknowledged in {Delay:F0} ms, {GivenUp} not waited for, {InFlight} in flight",
+                "Stream {Stream} to {Peer}: {Codec}, {Rate:F1} messages/s, {Kbps:F0} kbit/s at {Share:P0} of the "
+                + "configured bitrate{Held}, {Fps} fps asked for, bitrate moved {Changes} times, acknowledged in "
+                + "{Delay:F0} ms of which the viewer spent {Viewer:F0} ms, {Late} of {Acks} late, {GivenUp} not "
+                + "waited for, {InFlight} in flight",
                 StreamId,
                 Session.PeerName,
                 Codec,
                 _framesSent / seconds,
                 _bytesSent * 8 / 1000.0 / seconds,
-                fps,
+                _pacing.Share,
                 _pacing.HeldBack ? " (held back)" : string.Empty,
+                fps,
                 _pacing.Changes - _reportedChanges,
-                _window.DelayMs,
-                _window.GivenUp,
+                reading.DelayMs,
+                reading.ViewerMs,
+                reading.LateAcks - _reportedLate,
+                reading.Acks - _reportedAcks,
+                reading.GivenUp,
                 _window.InFlight);
             _reportedTicks = now;
             _reportedChanges = _pacing.Changes;
+            _reportedAcks = reading.Acks;
+            _reportedLate = reading.LateAcks;
             _framesSent = 0;
             _bytesSent = 0;
         }
