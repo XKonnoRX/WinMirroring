@@ -21,6 +21,8 @@ export type Device = {
   online: boolean
   state: string
   address: string
+  /** The address without a port: empty when this device has not been seen on the network yet. */
+  host: string
   rtt: string
   fingerprint: string
   lastError: string | null

@@ -55,22 +55,9 @@ public sealed partial class MainViewModel
     [RelayCommand(CanExecute = nameof(SelectedIsReady))]
     private async Task FetchPeerLogAsync()
     {
-        if (SelectedPeer is not { } peer)
+        if (SelectedPeer is { } peer)
         {
-            return;
-        }
-
-        StatusText = $"Запрашиваю журнал {peer.Name}…";
-        try
-        {
-            var path = await _diagnostics.FetchLogAsync(peer.Id);
-            StatusText = $"Журнал {peer.Name} сохранён: {path}";
-            Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
-        }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or TimeoutException or System.ComponentModel.Win32Exception)
-        {
-            _logger.LogInformation("Log of {Peer} not fetched: {Message}", peer.Name, ex.Message);
-            StatusText = $"Журнал {peer.Name} не получен: {ex.Message}";
+            await FetchLogOfAsync(peer.Id);
         }
     }
 }

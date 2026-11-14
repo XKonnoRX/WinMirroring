@@ -128,6 +128,7 @@ public sealed class HubUi
         $"известно через {via.ViaName}",
         via.Addresses.FirstOrDefault() ?? string.Empty,
         string.Empty,
+        string.Empty,
         Core.Identity.CertificateFingerprint.ToDisplay(via.Fingerprint),
         null,
         null,
@@ -154,6 +155,7 @@ public sealed class HubUi
             self || online,
             self ? "это устройство" : item?.StateText ?? peer!.State.ToString(),
             self ? string.Empty : item?.Address ?? peer!.TransportEndPoint?.ToString() ?? string.Empty,
+            self ? string.Empty : _vm.HostOf(id),
             self ? string.Empty : item?.RttText ?? string.Empty,
             self ? Core.Identity.CertificateFingerprint.ToDisplay(_node.Identity.Fingerprint) : item?.FingerprintDisplay ?? string.Empty,
             self ? null : peer!.LastError,
@@ -307,6 +309,28 @@ public sealed class HubUi
                 OpenSettings?.Invoke();
                 return null;
 
+            // The tools that were in the old window's context menu and nowhere else after it.
+            case "copyAddress":
+                return _vm.CopyAddressOf(id);
+
+            case "openShare":
+                return _vm.OpenShareOf(id);
+
+            case "remoteDesktop":
+                return _vm.RemoteDesktopTo(id);
+
+            case "ping":
+                return _vm.PingTo(id);
+
+            case "latency":
+                return await _vm.MeasureLatencyToAsync(id);
+
+            case "peerLog":
+                return await _vm.FetchLogOfAsync(id);
+
+            case "reconnect":
+                return await _vm.ReconnectToAsync(id);
+
             default:
                 return $"Непонятная команда: {call.Name}";
         }
@@ -364,6 +388,9 @@ public sealed class HubUi
         bool Online,
         string State,
         string Address,
+
+        /// <summary>The address without a port: what RDP, a shared folder and a ping need, empty when unknown.</summary>
+        string Host,
         string Rtt,
         string Fingerprint,
         string? LastError,

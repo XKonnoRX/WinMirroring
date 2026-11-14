@@ -307,6 +307,30 @@ button {
   letter-spacing: 0.07em;
 }
 
+/* The main window: a row of tabs over whichever page is showing. Both pages stay in the document, so switching
+   a tab costs nothing and neither of them ever has to load again. */
+.shell {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+  min-height: 0;
+}
+
+.shell-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 18px 0;
+}
+
+.shell-page {
+  min-height: 0;
+  height: 100%;
+}
+
+.shell-page[hidden] {
+  display: none;
+}
+
 /* The scrollbars Windows draws are too pale on this background. */
 ::-webkit-scrollbar {
   width: 10px;

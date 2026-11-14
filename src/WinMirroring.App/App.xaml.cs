@@ -174,6 +174,9 @@ public partial class App : Application
             {
                 throw new InvalidOperationException($"нет собранного интерфейса в {Views.WebWindow.RootDirectory}");
             }
+
+            // Start the browser runtime now, in the background, so the first window does not wait for it.
+            Views.WebWindow.WarmUp();
         });
         health.Start("Перетаскивание файлов", () =>
         {
@@ -583,7 +586,6 @@ public partial class App : Application
         }
     }
 
-    private Views.WebWindow? _settingsWindow;
 
     /// <summary>The settings. The new window when the built interface is there, the old tabbed one otherwise.</summary>
     private void ShowMainWindow()
@@ -595,16 +597,10 @@ public partial class App : Application
 
         if (Views.WebWindow.IsAvailable)
         {
-            if (_settingsWindow is { IsLoaded: true } open)
-            {
-                open.Activate();
-                return;
-            }
-
-            _settingsWindow = new Views.WebWindow(_services.GetRequiredService<UiBridge>(), "settings", "WinMirroring — параметры");
-            _settingsWindow.Closed += (_, _) => _settingsWindow = null;
-            _settingsWindow.Show();
-            _settingsWindow.Activate();
+            // The settings are a tab of the main window rather than a window of their own: one less thing to
+            // forget to close, and nothing to load when they are opened.
+            ShowHub();
+            _services.GetRequiredService<UiBridge>().Push("hub.openSettings");
             return;
         }
 
@@ -752,7 +748,7 @@ public partial class App : Application
                 return;
             }
 
-            _webPanel ??= new Views.WebWindow(_services.GetRequiredService<UiBridge>(), "panel", "WinMirroring", panel: true);
+            _webPanel ??= new Views.WebWindow(_services.GetRequiredService<UiBridge>(), "panel", "WinMirroring", panel: true) { KeepLoaded = true };
             _webPanel.ShowDocked();
             KeepFloatingOnTop();
             return;
@@ -797,8 +793,15 @@ public partial class App : Application
             return;
         }
 
-        if (_layoutWindow is { IsLoaded: true } open)
+        if (_layoutWindow is { } open)
         {
+            // Kept loaded, so this is only putting it back on screen.
+            open.Show();
+            if (open.WindowState == WindowState.Minimized)
+            {
+                open.WindowState = WindowState.Normal;
+            }
+
             open.Activate();
             return;
         }
@@ -806,11 +809,11 @@ public partial class App : Application
         if (!Views.WebWindow.IsAvailable)
         {
             // The new interface is not next to the app (an older build, or npm never ran): fall back to the old window.
-            ShowMainWindow();
+            ShowOldSettings();
             return;
         }
 
-        _layoutWindow = new Views.WebWindow(_services.GetRequiredService<UiBridge>(), "hub", "WinMirroring");
+        _layoutWindow = new Views.WebWindow(_services.GetRequiredService<UiBridge>(), "hub", "WinMirroring") { KeepLoaded = true };
         _layoutWindow.Closed += (_, _) => _layoutWindow = null;
         _layoutWindow.Show();
         _layoutWindow.Activate();
@@ -873,7 +876,11 @@ public partial class App : Application
 
     private void CloseWindows()
     {
-        var windows = new List<Window?> { _fileTransfer, _controlPanel, _floatingMenu, _buttonEditor, _layoutWindow, _webPanel, _settingsWindow };
+        // The windows that only hide when closed have to be told that this time it is for good.
+        _layoutWindow?.CloseForGood();
+        _webPanel?.CloseForGood();
+
+        var windows = new List<Window?> { _fileTransfer, _controlPanel, _floatingMenu, _buttonEditor, _layoutWindow, _webPanel };
         windows.AddRange(_openViewers);
         _mainWindow?.AllowClose();
         windows.Add(_mainWindow);

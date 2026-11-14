@@ -126,6 +126,43 @@ export function Inspector({
             )}
 
             <section>
+              <h3>Инструменты</h3>
+              <div className="inspector-row">
+                <button className="btn wide" disabled={!device.host} onClick={() => run('copyAddress')}>
+                  Копировать IP
+                </button>
+                <button className="btn wide" disabled={!device.host} onClick={() => run('openShare')}>
+                  Сетевая папка
+                </button>
+              </div>
+              <div className="inspector-row">
+                <button className="btn wide" disabled={!device.host} onClick={() => run('remoteDesktop')}>
+                  Рабочий стол (RDP)
+                </button>
+                <button className="btn wide" disabled={!device.host} onClick={() => run('ping')}>
+                  Ping в консоли
+                </button>
+              </div>
+              <div className="inspector-row">
+                <button className="btn wide" disabled={!device.online} onClick={() => run('latency')}>
+                  Проверить задержку
+                </button>
+                <button className="btn wide" disabled={!device.online} onClick={() => run('peerLog')}>
+                  Забрать журнал
+                </button>
+              </div>
+              <button className="btn wide" disabled={!device.online} onClick={() => run('reconnect')}>
+                Переподключить
+              </button>
+              {!device.host && (
+                <p className="inspector-note">
+                  Адрес этого устройства пока неизвестен — оно ещё не отвечало в сети, поэтому папку, RDP и ping
+                  открыть не по чему.
+                </p>
+              )}
+            </section>
+
+            <section>
               <h3>Устройство</h3>
               {device.canUpdate && (
                 <button className="btn btn-accent wide" onClick={() => run('updateDevice')}>

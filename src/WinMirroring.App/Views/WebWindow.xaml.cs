@@ -55,6 +55,56 @@ public partial class WebWindow : Window
     }
 
     private readonly bool _panel;
+    private bool _closingForGood;
+
+    /// <summary>
+    /// Closing this window only puts it away. Building a WebView2 and loading a page into it takes a noticeable
+    /// moment, and a window that is thrown away on closing pays that again every single time it is opened; this one
+    /// is built once and kept, so opening it again is immediate and it keeps where it was scrolled to. The
+    /// application closes it for real on the way out, through <see cref="CloseForGood"/>.
+    /// </summary>
+    public bool KeepLoaded { get; init; }
+
+    /// <summary>Closes the window for good, however <see cref="KeepLoaded"/> is set.</summary>
+    public void CloseForGood()
+    {
+        _closingForGood = true;
+        Close();
+    }
+
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        if (KeepLoaded && !_closingForGood)
+        {
+            e.Cancel = true;
+            Hide();
+            return;
+        }
+
+        base.OnClosing(e);
+    }
+
+    /// <summary>
+    /// Starts the WebView2 runtime before any window needs it. Most of the wait on first opening a window is this
+    /// much, and doing it while the application is starting anyway means the first window does not have to.
+    /// </summary>
+    public static void WarmUp()
+    {
+        if (!IsAvailable)
+        {
+            return;
+        }
+
+        _ = EnvironmentAsync().ContinueWith(
+            task =>
+            {
+                if (task.IsFaulted)
+                {
+                    Log.Debug(task.Exception, "WebView2 did not warm up");
+                }
+            },
+            TaskScheduler.Default);
+    }
 
     /// <summary>Puts the panel against the right edge of the work area and shows it.</summary>
     public void ShowDocked()

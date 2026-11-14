@@ -26,6 +26,17 @@ const MIN_ZOOM = 0.3
 const MAX_ZOOM = 1.8
 const TRAY_H = 164
 
+/**
+ * How far a press has to travel before it counts as carrying a device rather than just picking it. Until it does,
+ * a press only opens the panel beside the field: the field does not go into its moving state, the card does not
+ * lift off and the tray does not turn into a place to drop things. Without it every single tap did all of that
+ * for the instant between pressing and letting go, which is nothing but a twitch.
+ *
+ * A finger is given more room than a mouse because it wobbles more; a couple of pixels of mouse movement is
+ * already deliberate, a couple of pixels of finger movement is not.
+ */
+const dragStartsAfter = (pointerType: string) => (pointerType === 'touch' ? 8 : 3)
+
 type View = { x: number; y: number; zoom: number }
 type Anchor = { column: number; row: number }
 
@@ -35,6 +46,13 @@ type Drag = {
   y: number
   grabX: number
   grabY: number
+
+  /** Where the press began, to measure how far it has travelled since.  */
+  fromX: number
+  fromY: number
+  threshold: number
+
+  /** The press has travelled far enough to be a move rather than a pick. */
   moved: boolean
   fromTray: boolean
 }
@@ -263,7 +281,10 @@ export function Hub() {
 
     if (drag) {
       const point = toSurface(event.clientX, event.clientY)
-      setDrag({ ...drag, x: point.x, y: point.y, moved: true })
+
+      // Once it is a move it stays one: coming back towards where the press began must not put the card down.
+      const moved = drag.moved || Math.hypot(point.x - drag.fromX, point.y - drag.fromY) > drag.threshold
+      setDrag({ ...drag, x: point.x, y: point.y, moved })
       return
     }
 
@@ -331,6 +352,9 @@ export function Hub() {
       y: point.y,
       grabX: fromTray ? CARD_W / 2 : (event.clientX - card.left) / view.zoom,
       grabY: fromTray ? CARD_H / 2 : (event.clientY - card.top) / view.zoom,
+      fromX: point.x,
+      fromY: point.y,
+      threshold: dragStartsAfter(event.pointerType),
       moved: false,
       fromTray,
     })
@@ -352,14 +376,13 @@ export function Hub() {
     <div className="hub">
       <header className="hub-head">
         <div className="hub-title">
-          <h1>Устройства</h1>
+          {/* The window's tabs name this page; here it is what is going on that is worth the room. */}
           <span className="hub-sub">{hub.inputFocus} · {hub.ownSound}</span>
         </div>
         <div className="hub-actions">
           <button className="btn btn-ghost btn-icon" onClick={() => zoomBy(1 / 1.25)} title="Отдалить">−</button>
           <button className="btn btn-ghost btn-icon" onClick={() => zoomBy(1.25)} title="Приблизить">+</button>
           <button className="btn btn-ghost" onClick={() => fitTo(cells)}>По центру</button>
-          <button className="btn btn-ghost" onClick={() => void run('openSettings')}>Параметры</button>
           <button className="btn" onClick={() => setCells(saved)} disabled={!dirty || busy}>Отменить</button>
           <button className="btn btn-accent" onClick={() => void save()} disabled={!dirty || busy}>
             {busy ? 'Сохраняю…' : 'Сохранить раскладку'}
@@ -370,7 +393,7 @@ export function Hub() {
       <div className="hub-body">
         <div
           ref={surface}
-          className={`hub-field${drag ? ' is-dragging' : ''}`}
+          className={`hub-field${drag?.moved ? ' is-dragging' : ''}`}
           onPointerDownCapture={onPointerDownCapture}
           onPointerDown={onSurfaceDown}
           onPointerMove={onSurfaceMove}
@@ -434,7 +457,7 @@ export function Hub() {
             unplaced={unplaced}
             discovered={discovered}
             addresses={hub.manualAddresses}
-            dragging={drag !== null && !drag.fromTray}
+            dragging={drag !== null && drag.moved && !drag.fromTray}
             onDragDevice={(group, event) => startDrag(group, event, true)}
             onCommand={run}
           />
