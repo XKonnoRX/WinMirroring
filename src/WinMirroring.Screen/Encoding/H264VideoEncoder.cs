@@ -298,39 +298,37 @@ internal sealed class H264VideoEncoder : IDisposable
         Set(VideoInterop.LowLatency, CodecPropVariant.Bool(true));
         Set(VideoInterop.AVEncCommonRateControlMode, CodecPropVariant.UInt32(VideoInterop.RateControlCbr));
         Set(VideoInterop.AVEncMPVDefaultBPictureCount, CodecPropVariant.UInt32(0));
-        ApplyRate(fps, bitrateKbps);
+
+        // Two seconds between key frames: often enough that a viewer joining or recovering sees a picture soon,
+        // rare enough that the big frames do not dominate a thin link. Set once, here, and never touched again —
+        // changing it on a running encoder makes it start a fresh key frame, and doing that whenever the frame
+        // rate was nudged put a visible hitch in the picture about once a second.
+        Set(VideoInterop.AVEncMPVGOPSize, CodecPropVariant.UInt32((uint)Math.Clamp(fps * 2, 1, 600)));
+        ApplyBitrate(bitrateKbps);
     }
 
     /// <summary>
-    /// Asks the encoder for a different frame rate and bitrate without rebuilding it, so a stream can be eased
-    /// down when the link is behind and brought back up when it is not. Both are best-effort: an encoder that
-    /// refuses simply keeps what it had, and the frame duration this side stamps on each sample changes anyway,
-    /// which is what rate control works from.
+    /// Follows a change of pace without rebuilding the encoder. The frame rate only changes how long each sample
+    /// says it lasts, which costs nothing; the bitrate is a call into the driver, so it is only made when the
+    /// target has really moved. Best-effort throughout: an encoder that refuses keeps what it had.
     /// </summary>
     public void Retune(int fps, int bitrateKbps)
     {
         fps = Math.Clamp(fps, 1, 60);
-        bitrateKbps = Math.Clamp(bitrateKbps, 500, 100_000);
-
-        // Nothing worth a round trip into the driver: a tenth of the bitrate, or a frame either way.
-        if (fps == _fps && Math.Abs(bitrateKbps - _bitrateKbps) * 10 < _bitrateKbps)
-        {
-            return;
-        }
-
+        _fps = fps;
         _frameDurationHns = Math.Max(1, 10_000_000L / fps);
-        ApplyRate(fps, bitrateKbps);
+
+        bitrateKbps = Math.Clamp(bitrateKbps, 500, 100_000);
+        if (Math.Abs(bitrateKbps - _bitrateKbps) * 5 >= _bitrateKbps)
+        {
+            ApplyBitrate(bitrateKbps);
+        }
     }
 
-    private void ApplyRate(int fps, int bitrateKbps)
+    private void ApplyBitrate(int bitrateKbps)
     {
-        _fps = fps;
         _bitrateKbps = bitrateKbps;
         Set(VideoInterop.AVEncCommonMeanBitRate, CodecPropVariant.UInt32((uint)bitrateKbps * 1000u));
-
-        // Two seconds between key frames: often enough that a viewer joining or recovering sees a picture soon,
-        // rare enough that the big frames do not dominate a thin link.
-        Set(VideoInterop.AVEncMPVGOPSize, CodecPropVariant.UInt32((uint)Math.Clamp(fps * 2, 1, 600)));
     }
 
     private void Set(Guid api, CodecPropVariant value)
@@ -353,9 +351,13 @@ internal sealed class H264VideoEncoder : IDisposable
     /// <summary>
     /// How long <see cref="Encode"/> waits for the access unit of the frame it was just given. The hardware encoder
     /// works on its own thread and, in low-latency mode, emits each frame a few milliseconds after it gets it; not
-    /// waiting would leave every frame queued until the next capture, which on a still screen never comes.
+    /// waiting at all would leave every frame queued until the next capture, which on a still screen never comes.
+    ///
+    /// Roughly one frame at thirty a second, not a tenth of a second as it was: waiting longer than that holds up
+    /// the capture loop for a frame that is going to arrive late anyway, and a late one is picked up on the next
+    /// turn through the loop (see HasPendingOutput) rather than being lost.
     /// </summary>
-    private static readonly TimeSpan OutputWait = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan OutputWait = TimeSpan.FromMilliseconds(35);
 
     /// <summary>Access units are waiting to be sent (produced after <see cref="Encode"/> stopped waiting).</summary>
     public bool HasPendingOutput => !_outputs.IsEmpty;

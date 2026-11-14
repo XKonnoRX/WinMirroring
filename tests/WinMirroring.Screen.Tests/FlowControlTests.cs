@@ -74,8 +74,9 @@ public class FlowControlTests
         Assert.InRange(window.DelayMs, 30, 400);
     }
 
+    /// <summary>Inside the band there is nothing to decide, and deciding anyway is what made the picture lurch.</summary>
     [Fact]
-    public void PacingHoldsStillWhileAcknowledgementsArePrompt()
+    public void PacingHoldsStillWhileAcknowledgementsAreInTheBand()
     {
         var pacing = new StreamPacing(30);
         var now = 0L;
@@ -83,16 +84,17 @@ public class FlowControlTests
         pacing.Observe(0, 0, 30, now);
         for (var i = 0; i < 20; i++)
         {
-            pacing.Observe(40, 0, 30, now += 1000);
+            pacing.Observe(80, 0, 30, now += 1100);
         }
 
         Assert.Equal(30, pacing.Fps);
         Assert.Equal(1, pacing.Share);
         Assert.False(pacing.HeldBack);
+        Assert.Equal(0, pacing.Changes);
     }
 
     [Fact]
-    public void PacingBacksOffWhenAcknowledgementsLagAndRecoversSlowly()
+    public void PacingBacksOffWhenAcknowledgementsLagAndClimbsBackWhenTheyStop()
     {
         var pacing = new StreamPacing(30);
         var now = 0L;
@@ -103,13 +105,13 @@ public class FlowControlTests
             pacing.Observe(800, 0, 30, now += 1100);
         }
 
-        Assert.InRange(pacing.Fps, 8, 12);
-        Assert.InRange(pacing.Share, 0.15, 0.25);
+        Assert.InRange(pacing.Fps, 12, 16);
+        Assert.InRange(pacing.Share, 0.35, 0.5);
         Assert.True(pacing.HeldBack);
 
-        for (var i = 0; i < 20; i++)
+        for (var i = 0; i < 10; i++)
         {
-            pacing.Observe(30, 0, 30, now += 3100);
+            pacing.Observe(30, 0, 30, now += 1100);
         }
 
         Assert.Equal(30, pacing.Fps);
@@ -117,18 +119,44 @@ public class FlowControlTests
         Assert.False(pacing.HeldBack);
     }
 
-    /// <summary>A frame the window stopped waiting for is a stall even if the measured delay still looks fine.</summary>
+    /// <summary>
+    /// The regression that made the picture stutter: one frame the window stopped waiting for — a hiccup that
+    /// happens a few times a minute on Wi-Fi — used to take a third of the frame rate away at once, and climbing
+    /// back took three seconds a step. It is worth exactly one small step.
+    /// </summary>
     [Fact]
-    public void PacingBacksOffWhenTheWindowStopsWaiting()
+    public void OneHiccupCostsOneSmallStep()
     {
-        var pacing = new StreamPacing(60);
+        var pacing = new StreamPacing(30);
         var now = 0L;
-        pacing.Observe(0, 0, 60, now);
+        pacing.Observe(0, 0, 30, now);
 
-        pacing.Observe(10, 1, 60, now += 1100);
+        pacing.Observe(40, 1, 30, now += 1100);
 
+        Assert.InRange(pacing.Fps, 24, 28);
+        Assert.Equal(1, pacing.Changes);
+
+        // And a couple of prompt seconds bring it straight back.
+        pacing.Observe(40, 1, 30, now += 1100);
+        pacing.Observe(40, 1, 30, now += 1100);
+        Assert.Equal(30, pacing.Fps);
+    }
+
+    /// <summary>Several hiccups in a row do mean trouble, and then it does come down.</summary>
+    [Fact]
+    public void RepeatedHiccupsDoBringTheRateDown()
+    {
+        var pacing = new StreamPacing(30);
+        var now = 0L;
+        pacing.Observe(0, 0, 30, now);
+
+        for (var i = 1; i <= 6; i++)
+        {
+            pacing.Observe(40, i, 30, now += 1100);
+        }
+
+        Assert.InRange(pacing.Fps, 12, 15);
         Assert.True(pacing.HeldBack);
-        Assert.InRange(pacing.Fps, 8, 45);
     }
 
     [Fact]

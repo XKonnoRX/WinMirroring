@@ -63,6 +63,7 @@ internal sealed class ScreenSource : IAsyncDisposable
 
     // Diagnostics, written and read by the streaming loop only.
     private long _reportedTicks;
+    private long _reportedChanges;
     private long _framesSent;
     private long _bytesSent;
 
@@ -716,7 +717,8 @@ internal sealed class ScreenSource : IAsyncDisposable
         {
             var seconds = (now - _reportedTicks) / 1000.0;
             _logger.LogInformation(
-                "Stream {Stream} to {Peer}: {Codec}, {Rate:F1} messages/s, {Kbps:F0} kbit/s, aiming at {Fps} fps{Held}, acknowledged in {Delay:F0} ms, {GivenUp} not waited for, {InFlight} in flight",
+                "Stream {Stream} to {Peer}: {Codec}, {Rate:F1} messages/s, {Kbps:F0} kbit/s, aiming at {Fps} fps{Held}, "
+                + "target moved {Changes} times, acknowledged in {Delay:F0} ms, {GivenUp} not waited for, {InFlight} in flight",
                 StreamId,
                 Session.PeerName,
                 Codec,
@@ -724,10 +726,12 @@ internal sealed class ScreenSource : IAsyncDisposable
                 _bytesSent * 8 / 1000.0 / seconds,
                 fps,
                 _pacing.HeldBack ? " (held back)" : string.Empty,
+                _pacing.Changes - _reportedChanges,
                 _window.DelayMs,
                 _window.GivenUp,
                 _window.InFlight);
             _reportedTicks = now;
+            _reportedChanges = _pacing.Changes;
             _framesSent = 0;
             _bytesSent = 0;
         }
