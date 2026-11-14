@@ -168,17 +168,35 @@ export function Hub() {
     return { x: clientX - box.left, y: clientY - box.top }
   }, [])
 
-  const hoveredAnchor = useMemo<Anchor | null>(() => {
-    if (!drag || !surface.current) return null
-    const box = surface.current.getBoundingClientRect()
-    const centreX = drag.x - drag.grabX + CARD_W / 2
-    const centreY = drag.y - drag.grabY + CARD_H / 2
-    if (centreY > box.height - TRAY_H) return null
+  /**
+   * Where the dragged device's first cell is being held, in field coordinates: the cursor, less the point inside
+   * the card that was taken hold of, plus half a card — because a cell is placed by its centre. Both the carried
+   * card and the outline of where it would land come from this one point, so they cannot drift apart, and the grab
+   * is in field units while the cursor is in pixels on screen, so the zoom belongs on exactly one of them.
+   */
+  const heldAt = useMemo(() => {
+    if (!drag) return null
     return {
-      column: Math.round((centreX - view.x) / view.zoom / PITCH_X),
-      row: Math.round((centreY - view.y) / view.zoom / PITCH_Y),
+      x: (drag.x - view.x) / view.zoom - drag.grabX + CARD_W / 2,
+      y: (drag.y - view.y) / view.zoom - drag.grabY + CARD_H / 2,
     }
   }, [drag, view])
+
+  /** The same point back in pixels on the field, which is what the carried card is positioned by. */
+  const heldOnScreen = useMemo(() => {
+    if (!heldAt) return null
+    return { x: view.x + heldAt.x * view.zoom, y: view.y + heldAt.y * view.zoom }
+  }, [heldAt, view])
+
+  const hoveredAnchor = useMemo<Anchor | null>(() => {
+    if (!heldAt || !heldOnScreen || !surface.current) return null
+    const box = surface.current.getBoundingClientRect()
+    if (heldOnScreen.y > box.height - TRAY_H) return null
+    return {
+      column: Math.round(heldAt.x / PITCH_X),
+      row: Math.round(heldAt.y / PITCH_Y),
+    }
+  }, [heldAt, heldOnScreen])
 
   /** A device may stand here only if none of its monitors would land on another device. */
   const canDrop = useMemo(() => {
@@ -398,12 +416,13 @@ export function Hub() {
             })}
           </div>
 
-          {drag && drag.moved && (
+          {drag && drag.moved && heldOnScreen && (
             <div
               className="hub-floating"
               style={{
-                left: drag.x - drag.grabX * view.zoom,
-                top: drag.y - drag.grabY * view.zoom,
+                // The card inside is drawn around this point, not from it, the same way a placed one is.
+                left: heldOnScreen.x,
+                top: heldOnScreen.y,
                 transform: `scale(${view.zoom})`,
               }}
             >
