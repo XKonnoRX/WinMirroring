@@ -5,7 +5,11 @@ using WinMirroring.Clipboard;
 
 namespace WinMirroring.App.Views;
 
-/// <summary>A small bottom-right indicator with a progress bar while files are received from another device.</summary>
+/// <summary>
+/// A small bottom-right indicator with a progress bar for something that takes a while: files arriving from
+/// another device, or an update being downloaded. It never takes the focus and is kept out of screen capture, so
+/// a device watching this screen does not see it.
+/// </summary>
 public partial class FileTransferWindow : Window
 {
     private readonly DispatcherTimer _hideTimer;
@@ -23,36 +27,43 @@ public partial class FileTransferWindow : Window
     }
 
     /// <summary>Shows the window (first time), updates the bar, and auto-hides a short while after it finishes.</summary>
-    public void Update(FileTransferProgress p)
+    public void Update(FileTransferProgress p) =>
+        Report("Передача файлов", p.Ok ? "Файлы получены" : "Передача не удалась", p.What, p.Done, p.Total, p.Finished, p.Ok);
+
+    /// <summary>
+    /// The same indicator for any long job. <paramref name="total"/> zero runs the bar as a plain "working", for a
+    /// job whose size is not known; <paramref name="finished"/> swaps the title and starts the auto-hide.
+    /// </summary>
+    public void Report(string title, string doneTitle, string what, long done, long total, bool finished, bool ok)
     {
         _hideTimer.Stop();
-        WhatText.Text = p.What;
+        WhatText.Text = what;
 
-        if (p.Total > 0)
+        if (total > 0)
         {
             Bar.IsIndeterminate = false;
-            var percent = (int)Math.Clamp(p.Done * 100.0 / p.Total, 0, 100);
+            var percent = (int)Math.Clamp(done * 100.0 / total, 0, 100);
             Bar.Value = percent;
-            PercentText.Text = $"{FormatSize(p.Done)} из {FormatSize(p.Total)} · {percent}%";
+            PercentText.Text = $"{FormatSize(done)} из {FormatSize(total)} · {percent}%";
         }
         else
         {
-            Bar.IsIndeterminate = !p.Finished;
-            PercentText.Text = string.Empty;
+            Bar.IsIndeterminate = !finished;
+            PercentText.Text = done > 0 ? FormatSize(done) : string.Empty;
         }
 
-        if (p.Finished)
+        if (finished)
         {
-            TitleText.Text = p.Ok ? "Файлы получены" : "Передача не удалась";
+            TitleText.Text = doneTitle;
             Bar.IsIndeterminate = false;
-            Bar.Value = p.Ok ? 100 : Bar.Value;
-            PercentText.Text = p.Ok ? "Готово" : "Ошибка";
-            _hideTimer.Interval = TimeSpan.FromSeconds(p.Ok ? 2 : 5);
+            Bar.Value = ok ? 100 : Bar.Value;
+            PercentText.Text = ok ? "Готово" : "Ошибка";
+            _hideTimer.Interval = TimeSpan.FromSeconds(ok ? 2 : 5);
             _hideTimer.Start();
         }
         else
         {
-            TitleText.Text = "Передача файлов";
+            TitleText.Text = title;
         }
 
         if (!IsVisible)

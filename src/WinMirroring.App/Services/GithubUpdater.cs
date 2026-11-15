@@ -10,6 +10,12 @@ namespace WinMirroring.App.Services;
 /// <summary>A release newer than the running app, with the download URL of its Windows build.</summary>
 public sealed record AvailableUpdate(Version Version, string Tag, string ZipUrl);
 
+/// <summary>
+/// How far the download has got. <see cref="Total"/> is zero when the server did not say how big the file is,
+/// which is the one case the bar cannot show a share of and runs as a plain "working" instead.
+/// </summary>
+public readonly record struct UpdateProgress(long Done, long Total);
+
 public enum UpdateCheckStatus
 {
     UpToDate,
@@ -177,8 +183,10 @@ public sealed class GithubUpdater
     /// <summary>
     /// Downloads the update's zip to a temporary file; null when it could not be fetched. GitHub's asset CDN
     /// sometimes answers a 504 Gateway Timeout for a short while after a release, so transient failures are retried.
+    /// <paramref name="progress"/> is told how far it has got, which is worth showing: the build is seventy
+    /// megabytes, so this is the part anyone waits through.
     /// </summary>
-    public async Task<string?> DownloadAsync(AvailableUpdate update, CancellationToken ct)
+    public async Task<string?> DownloadAsync(AvailableUpdate update, IProgress<UpdateProgress>? progress, CancellationToken ct)
     {
         var path = Path.Combine(Path.GetTempPath(), $"WinMirroring-{update.Tag}.zip");
         const int attempts = 4;
@@ -199,9 +207,28 @@ public sealed class GithubUpdater
                     return null;
                 }
 
+                var total = response.Content.Headers.ContentLength ?? 0;
+                progress?.Report(new UpdateProgress(0, total));
                 await using (var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None))
+                await using (var source = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false))
                 {
-                    await response.Content.CopyToAsync(file, ct).ConfigureAwait(false);
+                    var buffer = new byte[128 * 1024];
+                    long done = 0;
+                    var toldAt = 0L;
+                    int read;
+                    while ((read = await source.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+                    {
+                        await file.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+                        done += read;
+
+                        // Ten times a second at most: there are hundreds of these blocks and nothing on a screen
+                        // moves usefully faster than that.
+                        if (progress is not null && (Environment.TickCount64 - toldAt >= 100 || done == total))
+                        {
+                            toldAt = Environment.TickCount64;
+                            progress.Report(new UpdateProgress(done, total));
+                        }
+                    }
                 }
 
                 return path;
@@ -236,9 +263,15 @@ public sealed class GithubUpdater
         try
         {
             Process.Start(new ProcessStartInfo("powershell.exe",
-                $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{script}\" -Source \"{zipPath}\"")
+                $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{script}\" -Source \"{zipPath}\"")
             {
-                UseShellExecute = true,
+                // Not through the shell, and with no window of its own. Through the shell a console appears and is
+                // only hidden a moment later by the script's own -WindowStyle, which is the black box that used to
+                // flash up over whatever was on the screen; CreateNoWindow is ignored in that mode, and only works
+                // when the process is started directly. The script says nothing anyone needs to read — what it is
+                // doing is on the screen already, in the app's own indicator.
+                UseShellExecute = false,
+                CreateNoWindow = true,
             });
             return true;
         }

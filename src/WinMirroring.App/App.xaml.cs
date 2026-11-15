@@ -323,7 +323,7 @@ public partial class App : Application
             // A previously downloaded update that was waiting for the app to become idle: install it now.
             if (_pendingUpdateZip is { } pending && File.Exists(pending) && (manual || IsIdleForUpdate()))
             {
-                ShowNotification("WinMirroring: обновление", $"Устанавливаю {_pendingUpdateTag}. Приложение перезапустится.");
+                Installing(_pendingUpdateTag ?? "обновление");
                 _updater.Apply(pending);
                 return;
             }
@@ -355,10 +355,16 @@ public partial class App : Application
             }
 
             ShowNotification("WinMirroring: обновление", $"Скачиваю версию {update.Tag}…");
-            var zip = await _updater.DownloadAsync(update, cts.Token);
+
+            // On the screen rather than only in a notification: the build is seventy megabytes, so this is the part
+            // that is actually waited through, and a notification cannot say how far it has got.
+            var progress = new Progress<UpdateProgress>(p =>
+                ShowProgress($"Обновление {update.Tag}", "Обновление скачано", "Скачиваю с GitHub", p.Done, p.Total, finished: false, ok: true));
+            var zip = await _updater.DownloadAsync(update, progress, cts.Token);
             if (zip is null)
             {
                 ScheduleNextUpdateCheck(failed: true);
+                ShowProgress($"Обновление {update.Tag}", "Обновление не скачалось", "GitHub не отдал файл", 0, 0, finished: true, ok: false);
                 ShowNotification("WinMirroring: обновление", $"Не удалось скачать {update.Tag} с GitHub, попробую ещё раз через 30 минут.");
                 return;
             }
@@ -367,11 +373,12 @@ public partial class App : Application
             {
                 _pendingUpdateZip = zip;
                 _pendingUpdateTag = update.Tag;
+                ShowProgress($"Обновление {update.Tag}", "Обновление готово", "Установится, когда устройство освободится", 1, 1, finished: true, ok: true);
                 ShowNotification("WinMirroring: обновление", $"Версия {update.Tag} готова — установится, когда устройство освободится или при следующем запуске.");
                 return;
             }
 
-            ShowNotification("WinMirroring: обновление", $"Устанавливаю {update.Tag}. Приложение перезапустится.");
+            Installing(update.Tag);
             _updater.Apply(zip);
         }
         finally
@@ -641,9 +648,39 @@ public partial class App : Application
 
     private void ShowFileTransfer(WinMirroring.Clipboard.FileTransferProgress p)
     {
+        if (Indicator() is { } window)
+        {
+            window.Update(p);
+        }
+    }
+
+    /// <summary>The same small indicator, for the update: on the screen rather than only in a notification.</summary>
+    private void ShowProgress(string title, string doneTitle, string what, long done, long total, bool finished, bool ok)
+    {
+        if (Dispatcher.CheckAccess())
+        {
+            Indicator()?.Report(title, doneTitle, what, done, total, finished, ok);
+            return;
+        }
+
+        Dispatcher.BeginInvoke(() => Indicator()?.Report(title, doneTitle, what, done, total, finished, ok));
+    }
+
+    /// <summary>
+    /// What is on the screen while the files are swapped. The app itself closes a moment later, so this is the last
+    /// thing it says — and with the updater no longer putting a console window up, it is the only thing that does.
+    /// </summary>
+    private void Installing(string tag)
+    {
+        ShowProgress($"Обновление {tag}", $"Обновление {tag}", "Устанавливаю, приложение перезапустится", 0, 0, finished: false, ok: true);
+        ShowNotification("WinMirroring: обновление", $"Устанавливаю {tag}. Приложение перезапустится.");
+    }
+
+    private Views.FileTransferWindow? Indicator()
+    {
         if (_exiting)
         {
-            return;
+            return null;
         }
 
         if (_fileTransfer is null)
@@ -652,7 +689,7 @@ public partial class App : Application
             _fileTransfer.Closed += (_, _) => _fileTransfer = null;
         }
 
-        _fileTransfer.Update(p);
+        return _fileTransfer;
     }
 
     private Views.FloatingMenuWindow? _floatingMenu;
