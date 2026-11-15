@@ -252,3 +252,22 @@ async function mockInvoke<T>(method: string, args?: unknown): Promise<T> {
 
   throw new Error(`нет такого метода: ${method}`)
 }
+
+/**
+ * A way to stand in for the app from the browser's own console, and only where there is no app: `wm.invoke` to
+ * change what the sample holds, `wm.push` to say that something changed, exactly as the app does through
+ * WebView2. Without it a page opened in a browser can only ever be loaded afresh, so anything the app pushes —
+ * a layout another device changed, for one — could not be tried out at all without building the whole app.
+ */
+if (!host) {
+  Object.assign(window, {
+    wm: {
+      invoke,
+      push: (event: string, data?: unknown) => {
+        for (const handler of listeners.get(event) ?? []) {
+          handler(data)
+        }
+      },
+    },
+  })
+}

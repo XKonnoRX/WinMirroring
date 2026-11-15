@@ -102,13 +102,32 @@ export function Hub() {
 
   // ---- loading ------------------------------------------------------------------------------------------
 
+  /**
+   * What the app last told us the layout is, or what we last saved — the same thing as `saved`, kept in a ref so
+   * that a state updater can read it. It has to be read before the new snapshot replaces it, because an updater
+   * runs later than the call that queues it.
+   */
+  const savedRef = useRef<Cell[]>([])
+  const remember = useCallback((list: Cell[]) => {
+    savedRef.current = list
+    setSaved(list)
+  }, [])
+
   const load = useCallback(async (recentre: boolean) => {
     const state = await invoke<HubState>('hub.get')
+    const wasSaved = savedRef.current
     setHub(state)
-    setCells((current) => (recentre || current.length === 0 ? state.cells : current))
-    setSaved(state.cells)
+
+    // A layout changed on another device arrives here as an ordinary update, and this is where it used to stop:
+    // the grid kept whatever it was showing, so the new arrangement only appeared when the window was opened
+    // again — which is exactly what one had to do to see it. Now it follows, unless this grid is mid-edit, in
+    // which case what is on the screen is the user's own unsaved arrangement and must not be pulled out from
+    // under them. "Отменить" then takes the new one, since that is what is saved.
+    setCells((current) =>
+      recentre || current.length === 0 || sameCells(current, wasSaved) ? state.cells : current)
+    remember(state.cells)
     if (recentre) fitTo(state.cells)
-  }, [])
+  }, [remember])
 
   const fitTo = useCallback((list: Cell[]) => {
     const box = surface.current?.getBoundingClientRect()
@@ -171,7 +190,7 @@ export function Hub() {
     setBusy(true)
     try {
       setStatus(await invoke<string>('hub.save', { cells }))
-      setSaved(cells)
+      remember(cells)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Не удалось сохранить.')
     } finally {
