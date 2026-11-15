@@ -68,6 +68,13 @@ internal sealed class VideoReassembly
     /// <summary>Pictures given up on: more than one piece of them was lost.</summary>
     public long Lost => _lost;
 
+    /// <summary>
+    /// Whether any picture is still in pieces here. While nothing is, there is nothing for <see cref="Tick"/> to
+    /// decide and the clock need not be watched closely — which is the usual state of a view of a screen that is
+    /// not changing.
+    /// </summary>
+    public bool Waiting => _pictures.Count > 0;
+
     /// <summary>One datagram. Not thread-safe: it is called from the one loop that receives them.</summary>
     public void Add(in VideoDatagram.Header header, ReadOnlySpan<byte> payload)
     {

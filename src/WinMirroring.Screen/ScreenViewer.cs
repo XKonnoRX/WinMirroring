@@ -231,23 +231,37 @@ public sealed class ScreenViewer : IAsyncDisposable
     private Task? _mediaTicks;
     private int _udpReported;
 
+    /// <summary>Half a frame at sixty a second: how closely the clock is watched while a picture is in pieces.</summary>
+    private static readonly TimeSpan TickWhileWaiting = TimeSpan.FromMilliseconds(8);
+
+    /// <summary>And how often the same loop so much as wakes while no picture is waiting for anything.</summary>
+    private static readonly TimeSpan TickWhileIdle = TimeSpan.FromMilliseconds(50);
+
     /// <summary>
     /// Everything about putting pictures together happens because a datagram arrived, which is enough while they
     /// keep arriving. This is for when they stop: a picture lost at the very moment the screen stopped changing
     /// would otherwise hold back the one after it — the one showing what the screen settled on — until something
-    /// moved again. Half a frame's worth of waking up, only while a stream is on UDP at all.
+    /// moved again.
+    ///
+    /// So it watches closely only while there is something to watch. With nothing in pieces there is nothing this
+    /// can decide, and a screen that is not changing sends nothing at all — which is most of the time a view is
+    /// open, and was a hundred and twenty-five wake-ups a second spent on deciding nothing. The device watching
+    /// is usually the one on a battery.
     /// </summary>
     private async Task TickMediaAsync()
     {
         try
         {
-            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(8));
-            while (await timer.WaitForNextTickAsync(_cts.Token).ConfigureAwait(false))
+            while (!_cts.Token.IsCancellationRequested)
             {
+                bool waiting;
                 lock (_mediaGate)
                 {
                     _reassembly?.Tick();
+                    waiting = _reassembly?.Waiting == true;
                 }
+
+                await Task.Delay(waiting ? TickWhileWaiting : TickWhileIdle, _cts.Token).ConfigureAwait(false);
             }
         }
         catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
