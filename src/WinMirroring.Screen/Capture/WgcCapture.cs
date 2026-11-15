@@ -113,6 +113,26 @@ internal sealed class WgcCapture : IDisposable
             return interop.CreateForWindow(window, ref iid);
         }), logger);
 
+    /// <summary>
+    /// Whether the pointer is drawn into the captured frames. Off when the viewer draws it itself: a pointer in the
+    /// picture is a change in the picture, so moving the mouse becomes a video frame — encoded, sent, decoded and
+    /// drawn — instead of a dozen bytes the far side can act on at once.
+    /// </summary>
+    public bool CaptureCursor
+    {
+        set
+        {
+            try
+            {
+                _session.IsCursorCaptureEnabled = value;
+            }
+            catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or InvalidCastException)
+            {
+                _logger.LogDebug("The pointer stays in the picture: {Message}", ex.Message);
+            }
+        }
+    }
+
     public void Start() => _session.StartCapture();
 
     /// <summary>Waits until a frame newer than <paramref name="seenVersion"/> exists (or the timeout).</summary>

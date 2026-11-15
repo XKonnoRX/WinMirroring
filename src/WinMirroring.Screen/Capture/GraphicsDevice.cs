@@ -27,6 +27,23 @@ internal sealed class GraphicsDevice
     /// <summary>Null when Direct3D is unavailable; everything then falls back to the paths that use the processor.</summary>
     public static GraphicsDevice? Shared => Instance.Value;
 
+    /// <summary>
+    /// A device of this caller's own, to be given back with <see cref="DisposeIfOwned"/>. For work that must not
+    /// queue behind the shared one: a device context serves one thread at a time, so a machine that is sending one
+    /// screen and watching another had the viewer's decoding and the source's encoder waiting on each other — and
+    /// the encoder waits for its frame with a deadline, which it then started to miss.
+    /// </summary>
+    public static GraphicsDevice? CreateOwn()
+    {
+        var device = TryCreate();
+        if (device is not null)
+        {
+            device._owned = true;
+        }
+
+        return device;
+    }
+
     public ID3D11Device Device { get; }
 
     public ID3D11DeviceContext Context { get; }
@@ -36,6 +53,24 @@ internal sealed class GraphicsDevice
 
     /// <summary>Held around every use of <see cref="Context"/>: a device context serves one thread at a time.</summary>
     public object ContextGate { get; } = new();
+
+    private bool _owned;
+
+    /// <summary>Gives back a device from <see cref="CreateOwn"/>; the shared one is never given back.</summary>
+    public void DisposeIfOwned()
+    {
+        if (!_owned)
+        {
+            return;
+        }
+
+        _owned = false;
+        lock (ContextGate)
+        {
+            Context.Dispose();
+            Device.Dispose();
+        }
+    }
 
     private static GraphicsDevice? TryCreate()
     {

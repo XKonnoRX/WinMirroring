@@ -206,7 +206,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             ScreenSource source;
             try
             {
-                source = ScreenSource.ForWindow(session, NewStreamId(), window, _node.Settings.Screen, NegotiateVideo(session), _logger);
+                source = ScreenSource.ForWindow(session, NewStreamId(), window, _node.Settings.Screen, NegotiateVideo(session), PeerDrawsPointer(session), _logger);
             }
             catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or ArgumentException or InvalidOperationException)
             {
@@ -304,7 +304,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             .Where(m => !string.Equals(m.DeviceName, virtualDevice, StringComparison.OrdinalIgnoreCase))
             .Select(m => new RemoteMonitor(m.Index, $"{m.Bounds.Width}×{m.Bounds.Height}", m.IsPrimary, m.DeviceName))
             .ToList();
-        return new DeviceCapabilitiesMessage(virtualDevice is not null, reply, monitors, VideoCodecSupport.CanEncodeH264, VideoCodecSupport.CanDecodeH264);
+        return new DeviceCapabilitiesMessage(virtualDevice is not null, reply, monitors, VideoCodecSupport.CanEncodeH264, VideoCodecSupport.CanDecodeH264, DrawsPointer: true);
     }
 
     /// <summary>Built off the caller's thread: the first codec probe starts Media Foundation and can take a moment.</summary>
@@ -342,6 +342,14 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
 
         return _peerCaps.TryGetValue(session.PeerId, out var caps) && caps.CanDecodeH264;
     }
+
+    /// <summary>
+    /// Whether this viewer draws a streamed pointer itself. Only then does a source leave the pointer out of the
+    /// picture and send it on its own; a viewer on an older build still gets it drawn into the frames, which is the
+    /// only thing it knows how to show.
+    /// </summary>
+    private bool PeerDrawsPointer(PeerSession session) =>
+        _peerCaps.TryGetValue(session.PeerId, out var caps) && caps.DrawsPointer;
 
     private void OnSessionReady(PeerSession session)
     {
@@ -446,7 +454,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
                 return;
             }
 
-            var source = ScreenSource.ForMonitor(session, request.StreamId, request.MonitorIndex, request.MonitorKey, _node.Settings.Screen, NegotiateVideo(session), _logger);
+            var source = ScreenSource.ForMonitor(session, request.StreamId, request.MonitorIndex, request.MonitorKey, _node.Settings.Screen, NegotiateVideo(session), PeerDrawsPointer(session), _logger);
             await StartSourceAsync(session, source).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or System.Runtime.InteropServices.COMException or ArgumentException)
@@ -514,6 +522,18 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             if (_viewers.TryGetValue(streamId, out var viewer) && ReferenceEquals(viewer.Session, session))
             {
                 viewer.Enqueue(payload.ToArray());
+            }
+
+            return ValueTask.CompletedTask;
+        }
+
+        // So does the pointer, but not through the frame queue: it travels on its own precisely so that it does not
+        // wait for a frame to be decoded first.
+        if (type is ScreenMessageType.Cursor or ScreenMessageType.CursorShape)
+        {
+            if (_viewers.TryGetValue(streamId, out var viewer) && ReferenceEquals(viewer.Session, session))
+            {
+                viewer.OnPointerMessage(span);
             }
 
             return ValueTask.CompletedTask;

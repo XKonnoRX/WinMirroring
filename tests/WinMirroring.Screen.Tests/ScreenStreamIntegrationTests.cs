@@ -242,8 +242,65 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
             Assert.InRange(meanError, 0, 12);
         }
 
+        await ThePointerArrivesOnItsOwnAsync(screenA, b.Identity.Id, viewer, primary, ct);
+
         viewer.Close();
         await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
+    }
+
+    /// <summary>
+    /// The pointer is not in the picture any more; it travels on its own and is drawn by the viewer. So it has to
+    /// arrive: a position, and the pixels of the shape that position names. The pointer is put in the middle of the
+    /// streamed monitor for this and then put back where it was, because where it happens to be is not this test's
+    /// to decide and a pointer on another monitor is not in this stream at all.
+    ///
+    /// What the position is held to is the thing that matters about it: the source is asked where that point on the
+    /// picture is on its own screen — the same question a tap on the picture asks — and it has to come back where
+    /// the pointer actually is. A pointer drawn anywhere other than where a click would land is worse than none.
+    /// </summary>
+    private static async Task ThePointerArrivesOnItsOwnAsync(ScreenStreamingService source, string viewerId, ScreenViewer viewer, MonitorDescription monitor, CancellationToken ct)
+    {
+        Assert.True(GetCursorPos(out var was));
+        try
+        {
+            var middle = new System.Drawing.Point(monitor.Bounds.Left + (monitor.Bounds.Width / 2), monitor.Bounds.Top + (monitor.Bounds.Height / 2));
+            Assert.True(SetCursorPos(middle.X, middle.Y));
+
+            // Waiting for a pointer at the place it was put, not merely for one: wherever the mouse already was is
+            // also a visible pointer, and it will have arrived before this moved it.
+            bool AtTheMiddle() =>
+                viewer.Pointer is { Visible: true } at
+                && source.TryMapToScreen(viewerId, viewer.StreamId, at.X, at.Y, out var screen)
+                && Math.Abs(screen.X - middle.X) <= 4
+                && Math.Abs(screen.Y - middle.Y) <= 4;
+
+            await WaitUntilAsync(AtTheMiddle, ct);
+
+            // The shape its id names must have arrived too, or there would be nothing to draw.
+            var pointer = viewer.Pointer!;
+            await WaitUntilAsync(() => viewer.PointerShape(pointer.ShapeId) is not null, ct);
+            var shape = viewer.PointerShape(pointer.ShapeId)!;
+            Assert.InRange(shape.Width, 8, Protocol.ScreenCodec.MaxCursorSize);
+            Assert.Equal(shape.Width * shape.Height * 4, shape.Pixels.Length);
+            Assert.Contains(shape.Pixels, b => b != 0);
+        }
+        finally
+        {
+            SetCursorPos(was.X, was.Y);
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetCursorPos(int x, int y);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetCursorPos(out NativePoint point);
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
     }
 
     [Fact]

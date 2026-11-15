@@ -47,6 +47,15 @@ internal sealed class ScreenSource : IAsyncDisposable
     private static readonly TimeSpan IdleWait = TimeSpan.FromMilliseconds(100);
 
     /// <summary>
+    /// How often this device's pointer is looked at. About the rate a mouse reports at: the whole point of sending
+    /// it on its own is that it does not wait for a frame, and a position is eighteen bytes.
+    /// </summary>
+    private static readonly TimeSpan PointerEvery = TimeSpan.FromMilliseconds(8);
+
+    /// <summary>Shapes remembered per stream before the names start again; Windows has a few dozen pointers.</summary>
+    private const int MaxShapes = 48;
+
+    /// <summary>
     /// How long a frame may stay unacknowledged before the stream stops waiting for it. Whatever this is, it is
     /// also how long the picture stands still when it happens, so half a second — which is what it was — was half
     /// a second of frozen picture every time a frame went missing, about once a minute on this link. It only has
@@ -109,7 +118,17 @@ internal sealed class ScreenSource : IAsyncDisposable
     private volatile string? _tilesRequested;
     private uint _frameNo;
 
-    private ScreenSource(PeerSession session, uint streamId, StreamKind kind, WgcCapture capture, MonitorDescription? monitor, nint window, string title, ScreenSettings settings, bool useVideo, ILogger logger)
+    // The pointer, sent on its own when the viewer draws it itself. Touched only by the pointer loop.
+    private readonly bool _sendsPointer;
+    private readonly Dictionary<nint, uint> _shapeIds = [];
+    private Task? _pointerLoop;
+    private uint _nextShapeId;
+    private uint _sentShapeId;
+    private float _sentX = -1;
+    private float _sentY = -1;
+    private bool _sentVisible;
+
+    private ScreenSource(PeerSession session, uint streamId, StreamKind kind, WgcCapture capture, MonitorDescription? monitor, nint window, string title, ScreenSettings settings, bool useVideo, bool sendsPointer, ILogger logger)
     {
         Session = session;
         StreamId = streamId;
@@ -120,10 +139,12 @@ internal sealed class ScreenSource : IAsyncDisposable
         Title = title;
         _settings = settings;
         _useVideo = useVideo;
+        _sendsPointer = sendsPointer;
         _logger = logger;
         _pacing = new StreamPacing(settings.MaxFps);
         _touch = new Injection.TouchInjector(logger);
         _capture.Closed += OnCaptureClosed;
+        _capture.CaptureCursor = !sendsPointer;
     }
 
     /// <summary>The codec this stream announces to the viewer: H.264 when negotiated, otherwise JPEG tiles.</summary>
@@ -143,21 +164,21 @@ internal sealed class ScreenSource : IAsyncDisposable
 
     public event Action<ScreenSource, string>? Ended;
 
-    public static ScreenSource ForMonitor(PeerSession session, uint streamId, int monitorIndex, string? monitorKey, ScreenSettings settings, bool useVideo, ILogger logger)
+    public static ScreenSource ForMonitor(PeerSession session, uint streamId, int monitorIndex, string? monitorKey, ScreenSettings settings, bool useVideo, bool sendsPointer, ILogger logger)
     {
         var monitor = PickMonitor(monitorIndex, monitorKey);
-        return new ScreenSource(session, streamId, StreamKind.Monitor, WgcCapture.ForMonitor(monitor.Handle, logger), monitor, 0, MonitorTitle(monitor), settings, useVideo, logger);
+        return new ScreenSource(session, streamId, StreamKind.Monitor, WgcCapture.ForMonitor(monitor.Handle, logger), monitor, 0, MonitorTitle(monitor), settings, useVideo, sendsPointer, logger);
     }
 
-    public static ScreenSource ForWindow(PeerSession session, uint streamId, nint window, ScreenSettings settings, bool useVideo, ILogger logger)
+    public static ScreenSource ForWindow(PeerSession session, uint streamId, nint window, ScreenSettings settings, bool useVideo, bool sendsPointer, ILogger logger)
     {
         var title = GetTitle(window);
-        return new ScreenSource(session, streamId, StreamKind.Window, WgcCapture.ForWindow(window, logger), null, window, string.IsNullOrEmpty(title) ? "Окно" : title, settings, useVideo, logger);
+        return new ScreenSource(session, streamId, StreamKind.Window, WgcCapture.ForWindow(window, logger), null, window, string.IsNullOrEmpty(title) ? "Окно" : title, settings, useVideo, sendsPointer, logger);
     }
 
     /// <summary>Streams the virtual monitor that extends this desktop onto the viewer.</summary>
-    public static ScreenSource ForDisplay(PeerSession session, uint streamId, MonitorDescription monitor, ScreenSettings settings, bool useVideo, ILogger logger) =>
-        new(session, streamId, StreamKind.Display, WgcCapture.ForMonitor(monitor.Handle, logger), monitor, 0, $"Второй монитор {Environment.MachineName}", settings, useVideo, logger);
+    public static ScreenSource ForDisplay(PeerSession session, uint streamId, MonitorDescription monitor, ScreenSettings settings, bool useVideo, bool sendsPointer, ILogger logger) =>
+        new(session, streamId, StreamKind.Display, WgcCapture.ForMonitor(monitor.Handle, logger), monitor, 0, $"Второй монитор {Environment.MachineName}", settings, useVideo, sendsPointer, logger);
 
     public ScreenStreamMessage Describe() => new(
         StreamId,
@@ -216,7 +237,17 @@ internal sealed class ScreenSource : IAsyncDisposable
         _timer = MediaTimerResolution.Hold();
         _capture.Start();
         _loop = Task.Run(() => LoopAsync(_cts.Token));
-        _logger.LogInformation("Streaming {Title} to {Peer} (stream {Stream})", Title, Session.PeerName, StreamId);
+        if (_sendsPointer)
+        {
+            _pointerLoop = Task.Run(() => PointerLoopAsync(_cts.Token));
+        }
+
+        _logger.LogInformation(
+            "Streaming {Title} to {Peer} (stream {Stream}){Pointer}",
+            Title,
+            Session.PeerName,
+            StreamId,
+            _sendsPointer ? "; the pointer travels on its own and is drawn there" : string.Empty);
     }
 
     /// <summary>The viewer cannot show H.264: the stream goes on as JPEG tiles from the next frame on.</summary>
@@ -248,6 +279,7 @@ internal sealed class ScreenSource : IAsyncDisposable
 
         old.Closed -= OnCaptureClosed;
         capture.Closed += OnCaptureClosed;
+        capture.CaptureCursor = !_sendsPointer;
         capture.Start();
         old.Dispose();
         Volatile.Write(ref _forceAll, 1);
@@ -476,6 +508,123 @@ internal sealed class ScreenSource : IAsyncDisposable
         }
 
         return _monitor!.Bounds;
+    }
+
+    /// <summary>
+    /// A point on this device's screen → where it is in the streamed (cropped) picture, 0 to 1. The way back from
+    /// <see cref="MapToScreen"/>, and what puts the pointer where it belongs on the viewer's picture. Outside 0 to 1
+    /// means the point is not in what is being streamed at all.
+    /// </summary>
+    internal static (float X, float Y) MapFromScreen(Point screen, RectangleF crop, Size frame, Rectangle bounds)
+    {
+        var pixels = ScreenCodec.ToPixels(crop, frame.Width, frame.Height);
+        if (pixels.Width <= 0 || pixels.Height <= 0 || bounds.Width <= 0 || bounds.Height <= 0)
+        {
+            return (-1, -1);
+        }
+
+        var frameX = (screen.X - bounds.Left) * (double)frame.Width / bounds.Width;
+        var frameY = (screen.Y - bounds.Top) * (double)frame.Height / bounds.Height;
+        return ((float)((frameX - pixels.X) / pixels.Width), (float)((frameY - pixels.Y) / pixels.Height));
+    }
+
+    /// <summary>
+    /// Follows this device's pointer and sends it on its own, so the viewer can draw it at the rate a mouse moves
+    /// rather than the rate frames arrive. Shapes are sent once each and kept there; a position is a dozen bytes.
+    /// </summary>
+    private async Task PointerLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(PointerEvery);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+            {
+                await SendPointerIfChangedAsync(ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
+        {
+            _logger.LogDebug("The pointer is no longer being sent: {Message}", ex.Message);
+        }
+    }
+
+    private async Task SendPointerIfChangedAsync(CancellationToken ct)
+    {
+        if (!CursorReader.TryRead(out var shape, out var screen, out var showing))
+        {
+            return;
+        }
+
+        Size frame;
+        RectangleF crop;
+        Rectangle bounds;
+        lock (_gate)
+        {
+            frame = _frameSize;
+            crop = _crop;
+            bounds = Kind != StreamKind.Window ? CurrentMonitorBoundsLocked() : GetVisibleBounds(Window) ?? Rectangle.Empty;
+        }
+
+        if (frame.Width <= 0 || frame.Height <= 0)
+        {
+            return; // nothing has been captured yet, so there is no picture to place a pointer on
+        }
+
+        var (x, y) = MapFromScreen(screen, crop, frame, bounds);
+        var inside = x is >= 0 and <= 1 && y is >= 0 and <= 1;
+        var visible = showing && inside;
+        var shapeId = visible ? await ShapeIdAsync(shape, ct).ConfigureAwait(false) : _sentShapeId;
+
+        // A tenth of a pixel of the picture is not a move anyone can see, and the pointer is read a hundred times
+        // a second: without this a mouse resting on a desk would still be sending.
+        var moved = Math.Abs(x - _sentX) * frame.Width >= 0.5 || Math.Abs(y - _sentY) * frame.Height >= 0.5;
+        if (visible == _sentVisible && shapeId == _sentShapeId && (!visible || !moved))
+        {
+            return;
+        }
+
+        _sentVisible = visible;
+        _sentShapeId = shapeId;
+        _sentX = x;
+        _sentY = y;
+        await Session.SendAsync(ChannelId.Screen, ScreenCodec.EncodeCursor(StreamId, shapeId, Math.Clamp(x, 0, 1), Math.Clamp(y, 0, 1), visible), ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The id this shape travels under, sending its pixels the first time it is seen. Zero means it could not be
+    /// drawn at all, and the viewer then shows a pointer of its own rather than none.
+    /// </summary>
+    private async Task<uint> ShapeIdAsync(nint shape, CancellationToken ct)
+    {
+        if (_shapeIds.TryGetValue(shape, out var known))
+        {
+            return known;
+        }
+
+        var picture = CursorReader.TryDraw(shape);
+        if (picture is null)
+        {
+            _shapeIds[shape] = 0;
+            return 0;
+        }
+
+        // A handle is only as good as the shape it points at: a pointer that is destroyed and another made can be
+        // handed the same handle, so the names are not kept for ever.
+        if (_shapeIds.Count >= MaxShapes)
+        {
+            _shapeIds.Clear();
+        }
+
+        var id = ++_nextShapeId;
+        _shapeIds[shape] = id;
+        await Session.SendAsync(
+            ChannelId.Screen,
+            ScreenCodec.EncodeCursorShape(StreamId, id, picture.Width, picture.Height, picture.HotspotX, picture.HotspotY, picture.Pixels),
+            ct).ConfigureAwait(false);
+        return id;
     }
 
     internal static Point MapToScreen(float x, float y, RectangleF crop, Size frame, Rectangle bounds)
@@ -907,11 +1056,16 @@ internal sealed class ScreenSource : IAsyncDisposable
     {
         Interlocked.Exchange(ref _ended, 1);
         await _cts.CancelAsync().ConfigureAwait(false);
-        if (_loop is not null)
+        foreach (var running in new[] { _loop, _pointerLoop })
         {
+            if (running is null)
+            {
+                continue;
+            }
+
             try
             {
-                await _loop.ConfigureAwait(false);
+                await running.ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {

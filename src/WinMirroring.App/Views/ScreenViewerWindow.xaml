@@ -104,6 +104,10 @@
              Stylus.IsTapFeedbackEnabled="False" Stylus.IsTouchFeedbackEnabled="False" />
       <Canvas x:Name="Overlay" IsHitTestVisible="False">
         <Rectangle x:Name="CropRectangle" Stroke="#3B82F6" StrokeThickness="2" Fill="#333B82F6" Visibility="Collapsed" />
+        <!-- The other device's pointer, drawn here rather than sent inside the picture: it then moves at the rate
+             the mouse moves instead of the rate frames arrive. -->
+        <Image x:Name="PointerImage" Visibility="Collapsed" IsHitTestVisible="False"
+               RenderOptions.BitmapScalingMode="NearestNeighbor" />
       </Canvas>
       <TextBlock x:Name="WaitingText" Text="Ожидание изображения…" Foreground="#9CA3AF" FontSize="16"
                  HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />

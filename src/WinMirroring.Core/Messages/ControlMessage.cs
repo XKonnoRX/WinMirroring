@@ -40,17 +40,20 @@ public abstract record ControlMessage;
 
 /// <summary>
 /// What this device can offer: a virtual display driver (so it can extend its desktop), its monitors (so the other
-/// side can pick one to view) and the screen codecs it can use (a source sends H.264 only to a viewer that can decode
-/// it; otherwise JPEG tiles). Sent when a session is ready; a message that is not itself a reply is answered with the
-/// receiver's own, because messages can arrive before the receiver has subscribed and be lost. Sent again, as a
-/// reply, when the device's monitors change.
+/// side can pick one to view), the screen codecs it can use (a source sends H.264 only to a viewer that can decode
+/// it; otherwise JPEG tiles) and whether it draws a streamed pointer itself (a source leaves the pointer out of the
+/// picture and sends it separately only for a viewer that says so, so a device on an older build still gets the
+/// pointer the way it expects it — in the picture). Sent when a session is ready; a message that is not itself a
+/// reply is answered with the receiver's own, because messages can arrive before the receiver has subscribed and be
+/// lost. Sent again, as a reply, when the device's monitors change.
 /// </summary>
 public sealed record DeviceCapabilitiesMessage(
     bool HasVirtualDisplay,
     bool IsReply = false,
     List<RemoteMonitor>? Monitors = null,
     bool CanEncodeH264 = false,
-    bool CanDecodeH264 = false) : ControlMessage;
+    bool CanDecodeH264 = false,
+    bool DrawsPointer = false) : ControlMessage;
 
 /// <summary>
 /// The app version this device runs ("1.0.13"), so devices can show it and offer to bring an older one up to date

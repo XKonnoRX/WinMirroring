@@ -49,6 +49,9 @@ public sealed class ScreenViewer : IAsyncDisposable
     private H264VideoDecoder? _videoDecoder;
     private bool _videoDecodeUnavailable;
 
+    /// <summary>The graphics card was tried for this stream and let it down; from then on the processor decodes.</summary>
+    private bool _decodeInMemory;
+
     /// <summary>The picture the decoder writes into.</summary>
     private byte[] _image = [];
 
@@ -186,6 +189,57 @@ public sealed class ScreenViewer : IAsyncDisposable
 
     internal void Enqueue(byte[] message) => _frames.Writer.TryWrite(new Incoming(message, Stopwatch.GetTimestamp()));
 
+    /// <summary>
+    /// The source's pointer, taken as it arrives rather than queued behind the frames: the whole reason it travels
+    /// on its own is that it must not wait for one. A shape comes once and is kept here under its id; a position is
+    /// eighteen bytes and comes as often as the mouse moves.
+    /// </summary>
+    internal void OnPointerMessage(ReadOnlySpan<byte> message)
+    {
+        if (message.Length > 0 && message[0] == (byte)ScreenMessageType.CursorShape)
+        {
+            if (ScreenCodec.TryDecodeCursorShape(message) is { } shape)
+            {
+                lock (_shapes)
+                {
+                    if (_shapes.Count >= MaxShapes)
+                    {
+                        _shapes.Clear();
+                    }
+
+                    _shapes[shape.ShapeId] = shape;
+                }
+            }
+
+            return;
+        }
+
+        if (ScreenCodec.TryDecodeCursor(message) is { } cursor)
+        {
+            Pointer = cursor;
+            PointerMoved?.Invoke(this, cursor);
+        }
+    }
+
+    /// <summary>Shapes kept for this stream; Windows has a few dozen pointers and a stream may rename them once.</summary>
+    private const int MaxShapes = 64;
+    private readonly Dictionary<uint, ScreenCursorShape> _shapes = [];
+
+    /// <summary>Where the source's pointer was last said to be, or null while it has not said at all.</summary>
+    public ScreenCursor? Pointer { get; private set; }
+
+    /// <summary>The source's pointer moved, changed shape or went away. Raised off the UI thread.</summary>
+    public event Action<ScreenViewer, ScreenCursor>? PointerMoved;
+
+    /// <summary>The pixels of a shape the source has sent, or null when it has not sent that one (yet).</summary>
+    public ScreenCursorShape? PointerShape(uint shapeId)
+    {
+        lock (_shapes)
+        {
+            return _shapes.TryGetValue(shapeId, out var shape) ? shape : null;
+        }
+    }
+
     internal Task CloseAsync(bool notifySource, string? reason)
     {
         if (Interlocked.Exchange(ref _closed, 1) != 0)
@@ -269,7 +323,7 @@ public sealed class ScreenViewer : IAsyncDisposable
 
         if (_videoDecoder is null && !_videoDecodeUnavailable)
         {
-            _videoDecoder = H264VideoDecoder.TryCreate(frame.Width, frame.Height, _logger);
+            _videoDecoder = H264VideoDecoder.TryCreate(frame.Width, frame.Height, _logger, useGraphicsCard: !_decodeInMemory);
             if (_videoDecoder is null)
             {
                 _videoDecodeUnavailable = true;
@@ -298,6 +352,17 @@ public sealed class ScreenViewer : IAsyncDisposable
             catch (Exception ex) when (ex is SharpGen.Runtime.SharpGenException or System.Runtime.InteropServices.COMException or InvalidOperationException)
             {
                 _logger.LogDebug("H.264 decode failed: {Message}", ex.Message);
+            }
+
+            // The card took the stream and then would not finish a picture: build the decoder again without it.
+            // A stream on the processor is slower, which is not the same as no picture.
+            if (_videoDecoder.GraphicsCardFailed)
+            {
+                _logger.LogWarning("The graphics card stopped producing pictures for the stream from {Peer}; the processor takes the stream over", PeerName);
+                _decodeInMemory = true;
+                _videoDecoder.Dispose();
+                _videoDecoder = null;
+                produced = false;
             }
         }
 

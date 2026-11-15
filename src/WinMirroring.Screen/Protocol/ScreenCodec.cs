@@ -44,6 +44,12 @@ public enum ScreenMessageType : byte
 
     /// <summary>Viewer → source: the size the picture is actually being shown at, so it can be encoded at that size.</summary>
     Size = 10,
+
+    /// <summary>Source → viewer: where the pointer is and which shape it is wearing.</summary>
+    Cursor = 11,
+
+    /// <summary>Source → viewer: the pixels of one pointer shape, sent once and kept by the viewer.</summary>
+    CursorShape = 12,
 }
 
 /// <summary>What a <see cref="ScreenMessageType.Window"/> message asks the captured window to do.</summary>
@@ -53,6 +59,19 @@ public enum WindowCommand : byte
 }
 
 public sealed record ScreenFrame(uint StreamId, uint FrameNo, int Width, int Height, IReadOnlyList<EncodedTile> Tiles);
+
+/// <summary>
+/// Where the source's pointer is, in the streamed picture's own normalized coordinates, and which shape it wears.
+/// <see cref="Visible"/> false means it is hidden, suppressed, or outside the part being streamed.
+/// </summary>
+public sealed record ScreenCursor(uint StreamId, uint ShapeId, float X, float Y, bool Visible);
+
+/// <summary>
+/// One pointer shape: premultiplied BGRA, with the hotspot that says which of its pixels is the point. Sent once
+/// per shape and kept by the viewer under <see cref="ShapeId"/> — a pointer changes shape a few times a minute and
+/// moves a hundred times a second.
+/// </summary>
+public sealed record ScreenCursorShape(uint StreamId, uint ShapeId, int Width, int Height, int HotspotX, int HotspotY, byte[] Pixels);
 
 /// <summary>One H.264 access unit for a stream: the decoded picture is <see cref="Width"/>×<see cref="Height"/>.</summary>
 public sealed record ScreenVideoFrame(uint StreamId, uint FrameNo, int Width, int Height, bool Keyframe, byte[] Data);
@@ -64,6 +83,8 @@ public sealed record ScreenVideoFrame(uint StreamId, uint FrameNo, int Width, in
 /// Ack: u32 frame no, u16 milliseconds the viewer held the frame (absent from an older peer's acks).
 /// Pointer: u8 action, u8 button, f32 x, f32 y, i16 wheel. Key: u16 vk, u16 scan, u8 flags.
 /// Crop: f32 x, y, w, h.
+/// Cursor: u32 shape id, f32 x, f32 y, u8 flags (bit0 visible).
+/// CursorShape: u32 shape id, u16 width, u16 height, i16 hotspot x, i16 hotspot y, premultiplied BGRA.
 /// </summary>
 public static class ScreenCodec
 {
@@ -344,6 +365,87 @@ public static class ScreenCodec
             BinaryPrimitives.ReadUInt16LittleEndian(message[5..]),
             BinaryPrimitives.ReadUInt16LittleEndian(message[7..]));
         return true;
+    }
+
+    private const int CursorLength = 18;
+    private const int CursorShapeHeader = 17;
+
+    /// <summary>The largest pointer a shape message may carry; a cursor is 32 or 48 pixels, 256 is room to spare.</summary>
+    public const int MaxCursorSize = 256;
+
+    /// <summary>Cursor: u32 shape id, f32 x, f32 y, u8 flags (bit0 visible).</summary>
+    public static byte[] EncodeCursor(uint streamId, uint shapeId, float x, float y, bool visible)
+    {
+        var message = new byte[CursorLength];
+        message[0] = (byte)ScreenMessageType.Cursor;
+        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(1), streamId);
+        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(5), shapeId);
+        BinaryPrimitives.WriteSingleLittleEndian(message.AsSpan(9), x);
+        BinaryPrimitives.WriteSingleLittleEndian(message.AsSpan(13), y);
+        message[17] = (byte)(visible ? 1 : 0);
+        return message;
+    }
+
+    public static ScreenCursor? TryDecodeCursor(ReadOnlySpan<byte> message)
+    {
+        if (message.Length < CursorLength || message[0] != (byte)ScreenMessageType.Cursor)
+        {
+            return null;
+        }
+
+        var x = BinaryPrimitives.ReadSingleLittleEndian(message[9..]);
+        var y = BinaryPrimitives.ReadSingleLittleEndian(message[13..]);
+        if (!float.IsFinite(x) || !float.IsFinite(y))
+        {
+            return null;
+        }
+
+        return new ScreenCursor(
+            BinaryPrimitives.ReadUInt32LittleEndian(message[1..]),
+            BinaryPrimitives.ReadUInt32LittleEndian(message[5..]),
+            Math.Clamp(x, 0f, 1f),
+            Math.Clamp(y, 0f, 1f),
+            (message[17] & 1) != 0);
+    }
+
+    /// <summary>CursorShape: u32 shape id, u16 width, u16 height, i16 hotspot x, i16 hotspot y, premultiplied BGRA.</summary>
+    public static byte[] EncodeCursorShape(uint streamId, uint shapeId, int width, int height, int hotspotX, int hotspotY, ReadOnlySpan<byte> pixels)
+    {
+        var message = new byte[CursorShapeHeader + pixels.Length];
+        var span = message.AsSpan();
+        span[0] = (byte)ScreenMessageType.CursorShape;
+        BinaryPrimitives.WriteUInt32LittleEndian(span[1..], streamId);
+        BinaryPrimitives.WriteUInt32LittleEndian(span[5..], shapeId);
+        BinaryPrimitives.WriteUInt16LittleEndian(span[9..], (ushort)width);
+        BinaryPrimitives.WriteUInt16LittleEndian(span[11..], (ushort)height);
+        BinaryPrimitives.WriteInt16LittleEndian(span[13..], (short)hotspotX);
+        BinaryPrimitives.WriteInt16LittleEndian(span[15..], (short)hotspotY);
+        pixels.CopyTo(span[CursorShapeHeader..]);
+        return message;
+    }
+
+    public static ScreenCursorShape? TryDecodeCursorShape(ReadOnlySpan<byte> message)
+    {
+        if (message.Length < CursorShapeHeader || message[0] != (byte)ScreenMessageType.CursorShape)
+        {
+            return null;
+        }
+
+        int width = BinaryPrimitives.ReadUInt16LittleEndian(message[9..]);
+        int height = BinaryPrimitives.ReadUInt16LittleEndian(message[11..]);
+        if (width is < 1 or > MaxCursorSize || height is < 1 or > MaxCursorSize || message.Length - CursorShapeHeader != width * height * 4)
+        {
+            return null;
+        }
+
+        return new ScreenCursorShape(
+            BinaryPrimitives.ReadUInt32LittleEndian(message[1..]),
+            BinaryPrimitives.ReadUInt32LittleEndian(message[5..]),
+            width,
+            height,
+            BinaryPrimitives.ReadInt16LittleEndian(message[13..]),
+            BinaryPrimitives.ReadInt16LittleEndian(message[15..]),
+            message[CursorShapeHeader..].ToArray());
     }
 
     public static bool TryReadHeader(ReadOnlySpan<byte> message, out ScreenMessageType type, out uint streamId)

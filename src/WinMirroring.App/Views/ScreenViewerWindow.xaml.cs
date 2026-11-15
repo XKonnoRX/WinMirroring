@@ -104,6 +104,7 @@ public partial class ScreenViewerWindow : Window
         Surface.PreviewMouseDown += OnSurfacePreviewDown;
         Surface.PreviewTouchDown += OnSurfacePreviewDown;
 
+        _viewer.PointerMoved += (_, cursor) => Dispatcher.BeginInvoke(DispatcherPriority.Input, () => OnRemotePointer(cursor));
         _viewer.InfoChanged += _ => Dispatcher.BeginInvoke(UpdateInfo);
         _viewer.Closed += (_, reason) => Dispatcher.BeginInvoke(() => OnRemoteClosed(reason));
         // Input priority, not Render: Render sits above Input in WPF, so painting the stream used to overtake the
@@ -112,6 +113,13 @@ public partial class ScreenViewerWindow : Window
         _viewer.Attach(update => Dispatcher.BeginInvoke(DispatcherPriority.Input, () => Present(update)));
 
         ScreenImage.MouseMove += OnImageMouseMove;
+        ScreenImage.MouseLeave += (_, _) =>
+        {
+            // Nobody here is driving the pointer any more, so where the other device says it is becomes news again.
+            _pointerHere = null;
+            PlacePointer();
+        };
+        ScreenImage.SizeChanged += (_, _) => PlacePointer();
         ScreenImage.MouseDown += OnImageMouseDown;
         ScreenImage.MouseUp += OnImageMouseUp;
         ScreenImage.MouseWheel += OnImageMouseWheel;
@@ -369,12 +377,87 @@ public partial class ScreenViewerWindow : Window
                 ReportShownSize();
             }
 
+            // Kept over the picture: a frame may have resized or moved it under the pointer.
+            PlacePointer();
             _framesSinceTick++;
         }
         finally
         {
             _viewer.FramePresented();
         }
+    }
+
+    // ---- the other device's pointer ---------------------------------------------------------------------
+    //
+    // It used to arrive inside the picture, which meant every movement of the mouse was a video frame: encoded,
+    // sent, decoded and painted, so it moved as often as frames arrived and as late as they did. Now the source
+    // sends where it is and what it looks like, and it is drawn here, over the picture.
+    //
+    // While this window is the one driving that pointer, it is drawn at the local mouse position instead of the
+    // reported one, which is what makes it feel immediate: the position it would report back is where this mouse
+    // already is, a round trip later. When nobody here is driving — watching, or control turned off — it is drawn
+    // where the other device says it is, because then that is news.
+
+    private ScreenCursor? _pointer;
+    private (float X, float Y)? _pointerHere;
+    private readonly Dictionary<uint, BitmapSource> _pointerShapes = [];
+
+    private void OnRemotePointer(ScreenCursor cursor)
+    {
+        _pointer = cursor;
+        PlacePointer();
+    }
+
+    private void PlacePointer()
+    {
+        var width = ScreenImage.ActualWidth;
+        var height = ScreenImage.ActualHeight;
+        if (_pointer is not { Visible: true } cursor || width <= 0 || height <= 0 || PointerPicture(cursor.ShapeId) is not var (shape, picture))
+        {
+            PointerImage.Visibility = Visibility.Collapsed;
+            ScreenImage.Cursor = null;
+            return;
+        }
+
+        // Shapes are in the other device's screen pixels, and a stream is encoded at the size this window shows it
+        // at, so one of those pixels is one of this screen's — which in a window's own units is one divided by its
+        // scaling.
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var origin = ScreenImage.TranslatePoint(new Point(0, 0), Overlay);
+        var (x, y) = _pointerHere ?? (cursor.X, cursor.Y);
+
+        PointerImage.Source = picture;
+        PointerImage.Width = shape.Width / dpi.DpiScaleX;
+        PointerImage.Height = shape.Height / dpi.DpiScaleY;
+        Canvas.SetLeft(PointerImage, origin.X + (x * width) - (shape.HotspotX / dpi.DpiScaleX));
+        Canvas.SetTop(PointerImage, origin.Y + (y * height) - (shape.HotspotY / dpi.DpiScaleY));
+        PointerImage.Visibility = Visibility.Visible;
+
+        // One pointer, not two: this window's own is hidden over the picture while it is the one driving.
+        ScreenImage.Cursor = _pointerHere is not null ? Cursors.None : null;
+    }
+
+    /// <summary>The shape and its picture, built once per shape; null while the source has not sent that one.</summary>
+    private (ScreenCursorShape Shape, BitmapSource Picture)? PointerPicture(uint shapeId)
+    {
+        if (_viewer.PointerShape(shapeId) is not { } shape)
+        {
+            return null;
+        }
+
+        if (!_pointerShapes.TryGetValue(shapeId, out var picture))
+        {
+            if (_pointerShapes.Count > 64)
+            {
+                _pointerShapes.Clear();
+            }
+
+            picture = BitmapSource.Create(shape.Width, shape.Height, 96, 96, PixelFormats.Pbgra32, null, shape.Pixels, shape.Width * 4);
+            picture.Freeze();
+            _pointerShapes[shapeId] = picture;
+        }
+
+        return (shape, picture);
     }
 
     /// <summary>
@@ -503,6 +586,9 @@ public partial class ScreenViewerWindow : Window
             _dragOutTried = false;
         }
 
+        // Drawn where this mouse already is, rather than where the other device will say it is a round trip later.
+        _pointerHere = (x, y);
+        PlacePointer();
         _lastPointer = (x, y);
         _viewer.SendPointer(PointerAction.Move, InputButton.None, x, y);
     }
