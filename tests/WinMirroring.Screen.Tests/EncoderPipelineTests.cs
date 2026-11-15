@@ -100,6 +100,60 @@ public class EncoderPipelineTests
         Assert.Equal(0, encoder.Waiting);
     }
 
+    /// <summary>
+    /// How long the encoder takes from being handed a frame to having the access unit ready. Explicit, because it
+    /// is a measurement — but the one that says what a stream's own stages cost: a frame collected on the capture
+    /// loop's next turn waits a whole frame period, and whether that is worth a loop of its own depends entirely
+    /// on this number. Writes to %TEMP%.
+    /// </summary>
+    [Fact(Explicit = true)]
+    public void HowLongTheEncoderHoldsAFrame()
+    {
+        Assert.SkipUnless(VideoCodecSupport.CanEncodeH264, "No hardware H.264 encoder on this machine.");
+
+        var report = Path.Combine(Path.GetTempPath(), "encoder-latency.txt");
+        File.WriteAllText(report, string.Empty);
+
+        foreach (var (width, height, fps) in new[] { (1920, 1080, 60), (1280, 720, 60), (1138, 640, 60) })
+        {
+            using var encoder = H264VideoEncoder.TryCreate(width, height, fps, 12_000, NullLogger.Instance)!;
+            var picture = ColourBands(width, height);
+            var crop = new Rectangle(0, 0, width, height);
+            var held = new List<double>();
+
+            for (var i = 0; i < 40; i++)
+            {
+                // Fed at the pace a stream feeds it, so the encoder is working the way it works in one.
+                var started = Stopwatch.GetTimestamp();
+                encoder.Feed(picture, width, crop, forceKeyframe: i == 0);
+
+                var deadline = Stopwatch.StartNew();
+                while (!encoder.HasPendingOutput && deadline.Elapsed < TimeSpan.FromMilliseconds(200))
+                {
+                    Thread.Yield();
+                }
+
+                if (encoder.HasPendingOutput)
+                {
+                    held.Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                    encoder.TakePending();
+                }
+
+                Thread.Sleep(1000 / fps);
+            }
+
+            held.Sort();
+            File.AppendAllText(
+                report,
+                held.Count == 0
+                    ? $"{width}×{height}: nothing came out{Environment.NewLine}"
+                    : $"{width}×{height} at {fps} fps: {held.Count} frames, median {held[held.Count / 2]:F1} ms, "
+                        + $"mean {held.Average():F1} ms, worst {held[^1]:F1} ms (a frame's period is {1000.0 / fps:F1} ms){Environment.NewLine}");
+        }
+
+        Assert.True(File.Exists(report));
+    }
+
     /// <summary>A frame that is the wrong size is refused rather than fed, so the caller knows to rebuild.</summary>
     [Fact]
     public void AFrameOfTheWrongSizeIsRefused()

@@ -67,6 +67,10 @@ public sealed class ScreenViewer : IAsyncDisposable
     /// <summary>When the buffer the window holds was handed to it, or 0 while it holds none.</summary>
     private long _presentingSince;
 
+    /// <summary>The same moment on a stopwatch, and how long the last painting took, for the acknowledgement.</summary>
+    private long _presentStarted;
+    private int _paintMs = -1;
+
     /// <summary>A frame was decoded but not shown, so the next one the window takes must redraw everything.</summary>
     private bool _missedFrames;
 
@@ -122,8 +126,23 @@ public sealed class ScreenViewer : IAsyncDisposable
         _attached.TrySetResult();
     }
 
-    /// <summary>The window is done with the buffer it was given; the decoder may use it again.</summary>
-    public void FramePresented() => Volatile.Write(ref _presentingSince, 0);
+    /// <summary>
+    /// The window is done with the buffer it was given; the decoder may use it again. How long it took is kept and
+    /// travels in the next acknowledgement: it is the last stretch of a picture's journey, and the only one neither
+    /// device could see. Everything else — the encoder, the link, the decoding — is measured at one end or the
+    /// other, so without this the hundred milliseconds between moving a finger and seeing it move had a piece
+    /// nobody could account for.
+    /// </summary>
+    public void FramePresented()
+    {
+        var started = Volatile.Read(ref _presentStarted);
+        if (started != 0)
+        {
+            Volatile.Write(ref _paintMs, (int)Math.Round(Stopwatch.GetElapsedTime(started).TotalMilliseconds));
+        }
+
+        Volatile.Write(ref _presentingSince, 0);
+    }
 
     public void SendPointer(PointerAction action, MouseButton button, float x, float y, int wheel = 0) =>
         _outbox.Writer.TryWrite(ScreenCodec.EncodePointer(StreamId, action, button, x, y, wheel));
@@ -575,6 +594,7 @@ public sealed class ScreenViewer : IAsyncDisposable
         }
 
         Volatile.Write(ref _presentingSince, Environment.TickCount64);
+        Volatile.Write(ref _presentStarted, Stopwatch.GetTimestamp());
 
         // Swap buffers before the window is told, so the decoder can start the next frame while it paints.
         var pixels = _width * _height * 4;
@@ -647,7 +667,8 @@ public sealed class ScreenViewer : IAsyncDisposable
     private Task AckAsync(uint frameNo, long arrived, CancellationToken ct)
     {
         var held = (int)Math.Round(Stopwatch.GetElapsedTime(arrived).TotalMilliseconds);
-        return Session.SendAsync(ChannelId.Screen, ScreenCodec.EncodeAck(StreamId, frameNo, held), ct).AsTask();
+        var painted = Volatile.Read(ref _paintMs);
+        return Session.SendAsync(ChannelId.Screen, ScreenCodec.EncodeAck(StreamId, frameNo, held, Math.Max(painted, 0)), ct).AsTask();
     }
 
     private async Task SendLoopAsync()

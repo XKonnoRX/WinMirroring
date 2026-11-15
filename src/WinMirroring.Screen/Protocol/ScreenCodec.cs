@@ -233,13 +233,14 @@ public static class ScreenCodec
     /// turned into pixels — so the source can tell a slow link from a busy viewer instead of guessing which of the
     /// two the round trip it measures belongs to.
     /// </summary>
-    public static byte[] EncodeAck(uint streamId, uint frameNo, int viewerMs = 0)
+    public static byte[] EncodeAck(uint streamId, uint frameNo, int viewerMs = 0, int paintMs = 0)
     {
-        var message = new byte[11];
+        var message = new byte[13];
         message[0] = (byte)ScreenMessageType.Ack;
         BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(1), streamId);
         BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(5), frameNo);
         BinaryPrimitives.WriteUInt16LittleEndian(message.AsSpan(9), (ushort)Math.Clamp(viewerMs, 0, ushort.MaxValue));
+        BinaryPrimitives.WriteUInt16LittleEndian(message.AsSpan(11), (ushort)Math.Clamp(paintMs, 0, ushort.MaxValue));
         return message;
     }
 
@@ -504,10 +505,18 @@ public static class ScreenCodec
     /// Reads an acknowledgement. <paramref name="viewerMs"/> comes back as -1 when the acknowledgement carries no
     /// time at all — which is what a peer running an older build sends.
     /// </summary>
-    public static bool TryDecodeAck(ReadOnlySpan<byte> message, out uint frameNo, out int viewerMs)
+    public static bool TryDecodeAck(ReadOnlySpan<byte> message, out uint frameNo, out int viewerMs) =>
+        TryDecodeAck(message, out frameNo, out viewerMs, out _);
+
+    /// <summary>
+    /// As above, and <paramref name="paintMs"/> is how long the window took to put the previous picture on the
+    /// screen — the last piece of the journey that was not measured anywhere. Also -1 from an older peer.
+    /// </summary>
+    public static bool TryDecodeAck(ReadOnlySpan<byte> message, out uint frameNo, out int viewerMs, out int paintMs)
     {
         frameNo = message.Length >= 9 ? BinaryPrimitives.ReadUInt32LittleEndian(message[5..]) : 0;
         viewerMs = message.Length >= 11 ? BinaryPrimitives.ReadUInt16LittleEndian(message[9..]) : -1;
+        paintMs = message.Length >= 13 ? BinaryPrimitives.ReadUInt16LittleEndian(message[11..]) : -1;
         return message.Length >= 9 && message[0] == (byte)ScreenMessageType.Ack;
     }
 

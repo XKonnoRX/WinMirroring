@@ -52,13 +52,10 @@ internal sealed class ScreenSource : IAsyncDisposable
     private static readonly TimeSpan IdleWait = TimeSpan.FromMilliseconds(100);
 
     /// <summary>
-    /// How long the capture loop waits for a new frame while the encoder still owes it one. Short, because what it
-    /// is really waiting for is the encoder, and a frame that has been fed is finished a few milliseconds later.
+    /// How often the collect loop looks for a finished picture. Two milliseconds is a tenth of a frame at sixty a
+    /// second: cheap enough not to matter and short enough that a picture is on the wire as soon as it exists.
     /// </summary>
-    private static readonly TimeSpan EncoderWait = TimeSpan.FromMilliseconds(4);
-
-    /// <summary>How long a frame handed to the encoder is still worth waiting those short waits for.</summary>
-    private static readonly TimeSpan EncoderOwesFor = TimeSpan.FromMilliseconds(60);
+    private static readonly TimeSpan CollectEvery = TimeSpan.FromMilliseconds(2);
 
     /// <summary>
     /// How still the screen has to be before one whole, sharp picture is sent. Long enough that it does not fire
@@ -144,14 +141,23 @@ internal sealed class ScreenSource : IAsyncDisposable
     private readonly Channel<List<byte[]>> _outbound = Channel.CreateBounded<List<byte[]>>(
         new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.Wait, SingleReader = true, SingleWriter = true });
 
-    /// <summary>The encoder has been fed a frame it has not finished yet, so the next wait for one is a short one.</summary>
-    private bool _awaitingEncoder;
-    private long _awaitingSince;
+    /// <summary>
+    /// Held around every touch of <see cref="_videoEncoder"/>. The capture loop owns it — it makes one, feeds it and
+    /// gives it up when the picture changes size — while the collect loop reads what it has finished, so the two
+    /// have to agree on when it exists.
+    /// </summary>
+    private readonly object _encoderGate = new();
+
+    /// <summary>When the frame the encoder is working on was handed to it, for the capture-to-wire measurement.</summary>
+    private long _fedAt;
+    private long _heldTicks;
+    private long _heldFrames;
 
     // When the screen last changed, and whether the one sharp picture for this quiet spell has been sent.
     private long _lastFreshTicks;
     private bool _settled;
     private Task? _loop;
+    private Task? _collectLoop;
     private Task? _sendLoop;
 
     /// <summary>The UDP path for this stream's pictures, or null where this node has no media socket.</summary>
@@ -297,6 +303,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         _timer = MediaTimerResolution.Hold();
         _capture.Start();
         _loop = Task.Run(() => LoopAsync(_cts.Token));
+        _collectLoop = Task.Run(() => CollectLoopAsync(_cts.Token));
         _sendLoop = Task.Run(() => SendLoopAsync(_cts.Token));
         if (_sendsPointer)
         {
@@ -347,9 +354,9 @@ internal sealed class ScreenSource : IAsyncDisposable
     }
 
     /// <summary>A frame came back; <paramref name="viewerMs"/> is how long the viewer held it, or -1 if it did not say.</summary>
-    public void OnAck(int viewerMs = -1)
+    public void OnAck(int viewerMs = -1, int paintMs = -1)
     {
-        _window.OnAck(viewerMs);
+        _window.OnAck(viewerMs, paintMs);
         _link?.Acknowledged();
     }
 
@@ -764,22 +771,12 @@ internal sealed class ScreenSource : IAsyncDisposable
 
                 ReportWindowStateIfChanged();
 
-                // Shorter while the encoder still owes a frame: it finishes one a few milliseconds after it is fed,
-                // and that frame must not wait for the screen to change again — on a screen that has just stopped
-                // changing, the next change may be a long time coming, and that frame is the one that shows what
-                // the screen settled on.
-                // ...and only for as long as an encoder could honestly still be working on it: an encoder that has
-                // stopped answering must not leave this loop polling at a quarter of a millisecond for ever.
-                var owed = _awaitingEncoder && Environment.TickCount64 - _awaitingSince < EncoderOwesFor.TotalMilliseconds;
-                var fresh = await capture.WaitForFrameAsync(seen, owed ? EncoderWait : IdleWait, ct).ConfigureAwait(false);
-                if (!fresh && _videoEncoder is { HasPendingOutput: true } pending)
-                {
-                    // The screen is still, but the encoder finished a frame after it was last asked: send it, or the
-                    // last change would only appear with the next one.
-                    _awaitingEncoder = false;
-                    await QueueAsync(BuildVideoMessages(pending.TakePending()), ct).ConfigureAwait(false);
-                    continue;
-                }
+                // Blocked here, not on a clock. This loop used to finish its work and then sleep out the rest of a
+                // frame's period, which meant a frame arriving during that sleep sat untouched for however much of
+                // it was left — up to a whole period of the picture's age for nothing, since the frame was going to
+                // be encoded anyway. What paces the capture is the capture: the screen produces a frame when it is
+                // composed, and that is the soonest anyone could have it.
+                var fresh = await capture.WaitForFrameAsync(seen, IdleWait, ct).ConfigureAwait(false);
 
                 if (fresh)
                 {
@@ -798,6 +795,10 @@ internal sealed class ScreenSource : IAsyncDisposable
                     Volatile.Write(ref _forceAll, 1);
                 }
 
+                // Here rather than further down, so that the measurements and the stream's own line in the log keep
+                // coming on a screen that is standing still.
+                var minimumMs = 1000.0 / Observe();
+
                 if (!fresh && (Volatile.Read(ref _forceAll) == 0 || seen == 0))
                 {
                     continue;
@@ -810,6 +811,18 @@ internal sealed class ScreenSource : IAsyncDisposable
                     continue;
                 }
 
+                // The cap, applied by leaving a frame out rather than by sleeping. Sleeping would make the next
+                // frame older without saving any work; skipping one costs the work and keeps every frame that is
+                // taken as young as the capture can make it. A tolerance, because at sixty a second against a
+                // sixty-hertz screen the two periods are the same number and a hair of jitter either way must not
+                // start dropping every other frame.
+                if (fresh && seen != 0 && pacing.Elapsed.TotalMilliseconds < minimumMs * 0.75)
+                {
+                    seen = version;
+                    continue;
+                }
+
+                pacing.Restart();
                 seen = version;
                 var force = Interlocked.Exchange(ref _forceAll, 0) == 1;
                 Rectangle crop;
@@ -825,47 +838,45 @@ internal sealed class ScreenSource : IAsyncDisposable
                 {
                     _logger.LogInformation("{Peer} gets no picture from H.264 ({Reason}); sending JPEG tiles", Session.PeerName, reason);
                     _videoFailed = true;
-                    _videoEncoder?.Dispose();
-                    _videoEncoder = null;
+                    lock (_encoderGate)
+                    {
+                        _videoEncoder?.Dispose();
+                        _videoEncoder = null;
+                    }
+
                     _gpuConverter?.Dispose();
                     _gpuConverter = null;
                     force = true;
                     _ = Session.SendControlAsync(Describe());
                 }
 
-                List<byte[]>? messages = null;
+                var fedVideo = false;
                 if (_useVideo && !_videoFailed)
                 {
-                    messages = BuildVideoMessages(capture, ref frame, width, crop, force);
+                    // The encoder belongs to this loop but is read by the one that collects from it, so every touch
+                    // of it — making one, feeding it, giving it up — happens here.
+                    lock (_encoderGate)
+                    {
+                        fedVideo = TryFeedVideo(capture, ref frame, width, crop, force);
+                    }
+
                     if (_videoFailed)
                     {
                         force = true; // just fell back to tiles: make the first JPEG frame complete
                     }
                 }
 
-                if (messages is null)
+                if (!fedVideo)
                 {
                     if (!capture.TryCopyLatest(ref frame, out width, out height, out _))
                     {
                         continue;
                     }
 
-                    messages = BuildJpegMessages(frame, width, height, ScreenCodec.ToPixels(cropFraction, width, height), force);
+                    // Tiles are made here and handed straight over; what the encoder makes of a video frame is
+                    // collected by a loop of its own, as soon as it exists (see CollectLoopAsync).
+                    await QueueAsync(BuildJpegMessages(frame, width, height, ScreenCodec.ToPixels(cropFraction, width, height), force), ct).ConfigureAwait(false);
                 }
-
-                // Handed to the send loop rather than sent here. The queue holds one, so this loop can be capturing
-                // and the encoder working while the last frame is on the wire, and none of the three waits for
-                // another except through that one place — which is also what stops this loop running ahead.
-                await QueueAsync(messages, ct).ConfigureAwait(false);
-
-                var minimumMs = 1000.0 / Observe();
-                var wait = minimumMs - pacing.Elapsed.TotalMilliseconds;
-                if (wait > 1)
-                {
-                    await Task.Delay(TimeSpan.FromMilliseconds(wait), ct).ConfigureAwait(false);
-                }
-
-                pacing.Restart();
             }
         }
         catch (OperationCanceledException)
@@ -883,17 +894,17 @@ internal sealed class ScreenSource : IAsyncDisposable
     }
 
     /// <summary>
-    /// Encodes one frame as H.264 and returns the ready access units as VideoFrame messages. Returns null to mean
-    /// "use JPEG for this frame" — because the crop is too small for video, or because the encoder could not be
-    /// created (which also sets <see cref="_videoFailed"/> so the whole stream stays on tiles from now on). An
-    /// empty list means the encoder pipeline has no output yet; nothing is sent this frame.
+    /// Hands one frame to the H.264 encoder. False means "use JPEG for this frame" — because the crop is too small
+    /// for video, or because the encoder could not be created (which also sets <see cref="_videoFailed"/> so the
+    /// whole stream stays on tiles from now on). What the encoder makes of the frame is collected by
+    /// <see cref="CollectLoopAsync"/> as soon as it exists, which is not this loop's business.
     /// </summary>
-    private List<byte[]>? BuildVideoMessages(WgcCapture capture, ref byte[] frame, int frameWidth, Rectangle crop, bool force)
+    private bool TryFeedVideo(WgcCapture capture, ref byte[] frame, int frameWidth, Rectangle crop, bool force)
     {
         var videoCrop = new Rectangle(crop.X, crop.Y, Nv12Converter.Even(crop.Width), Nv12Converter.Even(crop.Height));
         if (videoCrop.Width < 16 || videoCrop.Height < 16)
         {
-            return null; // too small for H.264 this frame; the tile path handles it
+            return false; // too small for H.264 this frame; the tile path handles it
         }
 
         // Only the graphics card can scale on the way; when the processor is doing the conversion the crop is
@@ -908,7 +919,7 @@ internal sealed class ScreenSource : IAsyncDisposable
             {
                 _logger.LogInformation("H.264 encoder unavailable for {Title}; using JPEG tiles", Title);
                 _videoFailed = true;
-                return null;
+                return false;
             }
 
             if (output.Width != videoCrop.Width || output.Height != videoCrop.Height)
@@ -927,24 +938,21 @@ internal sealed class ScreenSource : IAsyncDisposable
         // on the card that cannot be written again while it sits there.
         if (_videoEncoder.Waiting >= MaxQueuedFrames)
         {
-            Owed();
             if (force)
             {
                 Volatile.Write(ref _forceAll, 1); // a full refresh that is dropped has to happen on the next frame
             }
 
-            return BuildVideoMessages(_videoEncoder.TakePending());
+            return true;
         }
 
-        IReadOnlyList<VideoAccessUnit> units;
         try
         {
-            // Fed here, collected below: the two are deliberately not the same step.
             if (!TryFeedOnGpu(capture, videoCrop, output, force))
             {
                 if (!capture.TryCopyLatest(ref frame, out var width, out _, out _))
                 {
-                    return [];
+                    return true; // nothing to hand over this turn; the next frame carries a newer picture
                 }
 
                 // The processor path cannot scale, so this only produces anything when the sizes already agree;
@@ -952,18 +960,8 @@ internal sealed class ScreenSource : IAsyncDisposable
                 _videoEncoder.Feed(frame, width, videoCrop, force);
             }
 
-            // Whatever the encoder has finished by now, which is normally the frame before this one: it works on
-            // its own thread and takes a few milliseconds, and waiting here for the frame just fed is what made
-            // this loop's period the sum of capturing, encoding and sending instead of the longest of them.
-            units = _videoEncoder.TakePending();
-            if (units.Count == 0)
-            {
-                Owed();
-            }
-            else
-            {
-                _awaitingEncoder = false;
-            }
+            _fedAt = Stopwatch.GetTimestamp();
+            return true;
         }
         catch (Exception ex)
         {
@@ -975,10 +973,8 @@ internal sealed class ScreenSource : IAsyncDisposable
             _gpuConverter?.Dispose();
             _gpuConverter = null;
             _videoFailed = true;
-            return null;
+            return false;
         }
-
-        return BuildVideoMessages(units);
     }
 
     /// <summary>
@@ -1012,17 +1008,6 @@ internal sealed class ScreenSource : IAsyncDisposable
         }
 
         return true;
-    }
-
-    /// <summary>The encoder owes a frame from now, which is what makes the next wait for one a short one.</summary>
-    private void Owed()
-    {
-        if (!_awaitingEncoder)
-        {
-            _awaitingSince = Environment.TickCount64;
-        }
-
-        _awaitingEncoder = true;
     }
 
     private bool GiveUpOnGpu()
@@ -1066,6 +1051,59 @@ internal sealed class ScreenSource : IAsyncDisposable
         if (messages.Count > 0)
         {
             await _outbound.Writer.WriteAsync(messages, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Takes each encoded picture from the encoder the moment it exists, rather than on the capture loop's next
+    /// turn. Measured on this encoder: it holds a 1080p frame for about twenty-one milliseconds and a smaller one
+    /// for ten, while the capture loop comes round every sixteen or seventeen — so a frame collected by that loop
+    /// had been sitting finished for anything up to a whole period, which is pure age added to a picture for
+    /// nothing. This is the shortest of the three loops and the only one whose job is to not wait.
+    /// </summary>
+    private async Task CollectLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                List<byte[]>? messages = null;
+                long fedAt;
+                lock (_encoderGate)
+                {
+                    if (_videoEncoder is { HasPendingOutput: true } encoder)
+                    {
+                        messages = BuildVideoMessages(encoder.TakePending());
+                    }
+
+                    fedAt = _fedAt;
+                }
+
+                if (messages is { Count: > 0 })
+                {
+                    Interlocked.Add(ref _heldTicks, Stopwatch.GetTimestamp() - fedAt);
+                    Interlocked.Increment(ref _heldFrames);
+                    await QueueAsync(messages, ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                // Nothing ready. Looked at rather than waited on: the encoder's own signal would have to outlive
+                // the encoder, which is replaced whenever the picture changes size, and two milliseconds of age is
+                // a cheaper thing to pay than that is to get right.
+                await Task.Delay(CollectEvery, ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
+        {
+            End($"connection: {ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Screen stream {Stream} stopped collecting", StreamId);
+            End("error");
         }
     }
 
@@ -1139,9 +1177,12 @@ internal sealed class ScreenSource : IAsyncDisposable
         var reading = _window.Reading;
         _pacing.Observe(reading, _settings.MaxFps, now);
         var fps = _pacing.Fps;
-        if (_videoEncoder is { } encoder)
+        lock (_encoderGate)
         {
-            encoder.Retune(fps, ScaleBitrate(encoder.Width, encoder.Height));
+            if (_videoEncoder is { } encoder)
+            {
+                encoder.Retune(fps, ScaleBitrate(encoder.Width, encoder.Height));
+            }
         }
 
         if (_reportedTicks == 0)
@@ -1155,11 +1196,19 @@ internal sealed class ScreenSource : IAsyncDisposable
             // Taken away rather than read and cleared: the send loop is adding to them from its own thread.
             var frames = Interlocked.Exchange(ref _framesSent, 0);
             var bytes = Interlocked.Exchange(ref _bytesSent, 0);
+            // The whole journey of a picture, in the order it happens: how long the encoder held it, how long from
+            // the wire to the acknowledgement, how much of that was the viewer decoding and how much its window
+            // painting. Added up, that is the delay between something moving on one screen and moving on the other
+            // — which is the thing to argue with, and it used to be guessed at.
+            var encoderMs = Interlocked.Exchange(ref _heldFrames, 0) is var held and > 0
+                ? Interlocked.Exchange(ref _heldTicks, 0) * 1000.0 / Stopwatch.Frequency / held
+                : 0;
             _logger.LogInformation(
                 "Stream {Stream} to {Peer}: {Codec} over {Path}, {Rate:F1} messages/s, {Kbps:F0} kbit/s at {Share:P0} "
-                + "of the configured bitrate{Held}, {Fps} fps asked for, bitrate moved {Changes} times, acknowledged "
-                + "in {Delay:F0} ms of which the viewer spent {Viewer:F0} ms, {Late} of {Acks} late, {GivenUp} not "
-                + "waited for, {InFlight} in flight",
+                + "of the configured bitrate{Held}, {Fps} fps asked for, bitrate moved {Changes} times, "
+                + "{Encoder:F0} ms in the encoder, acknowledged in {Delay:F0} ms of which the viewer spent "
+                + "{Viewer:F0} ms decoding and {Paint:F0} ms painting, {Late} of {Acks} late, {GivenUp} not waited "
+                + "for, {InFlight} in flight",
                 StreamId,
                 Session.PeerName,
                 Codec,
@@ -1170,8 +1219,10 @@ internal sealed class ScreenSource : IAsyncDisposable
                 _pacing.HeldBack ? " (held back)" : string.Empty,
                 fps,
                 _pacing.Changes - _reportedChanges,
+                encoderMs,
                 reading.DelayMs,
                 reading.ViewerMs,
+                reading.PaintMs,
                 reading.LateAcks - _reportedLate,
                 reading.Acks - _reportedAcks,
                 reading.GivenUp,
@@ -1277,7 +1328,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         Interlocked.Exchange(ref _ended, 1);
         await _cts.CancelAsync().ConfigureAwait(false);
         _outbound.Writer.TryComplete();
-        foreach (var running in new[] { _loop, _sendLoop, _pointerLoop })
+        foreach (var running in new[] { _loop, _collectLoop, _sendLoop, _pointerLoop })
         {
             if (running is null)
             {

@@ -7,7 +7,7 @@ namespace WinMirroring.Screen;
 /// the frame itself, and how many frames came back late or not at all. The counts only ever grow, so a reader
 /// takes two readings and subtracts.
 /// </summary>
-internal readonly record struct LinkReading(double DelayMs, double ViewerMs, long Acks, long LateAcks, long GivenUp);
+internal readonly record struct LinkReading(double DelayMs, double ViewerMs, long Acks, long LateAcks, long GivenUp, double PaintMs = 0);
 
 /// <summary>
 /// How many frame messages one stream may have on the wire before the viewer acknowledges them.
@@ -41,6 +41,7 @@ internal sealed class SendWindow : IDisposable
 
     private double _delayMs;
     private double _viewerMs;
+    private double _paintMs;
     private long _givenUp;
     private long _acks;
     private long _lateAcks;
@@ -110,7 +111,7 @@ internal sealed class SendWindow : IDisposable
         {
             lock (_gate)
             {
-                return new LinkReading(_delayMs, _viewerMs, _acks, _lateAcks, _givenUp);
+                return new LinkReading(_delayMs, _viewerMs, _acks, _lateAcks, _givenUp, _paintMs);
             }
         }
     }
@@ -146,10 +147,11 @@ internal sealed class SendWindow : IDisposable
     }
 
     /// <summary>
-    /// A frame came back. <paramref name="viewerMs"/> is how long the viewer says it held the frame, or a negative
-    /// number from a viewer that does not report it.
+    /// A frame came back. <paramref name="viewerMs"/> is how long the viewer says it held the frame and
+    /// <paramref name="paintMs"/> how long its window then took to put a picture on the screen; either is a
+    /// negative number from a viewer that does not report it.
     /// </summary>
-    public void OnAck(int viewerMs = -1)
+    public void OnAck(int viewerMs = -1, int paintMs = -1)
     {
         lock (_gate)
         {
@@ -170,6 +172,11 @@ internal sealed class SendWindow : IDisposable
             if (viewerMs >= 0)
             {
                 _viewerMs = _viewerMs <= 0 ? viewerMs : (_viewerMs * 0.75) + (viewerMs * 0.25);
+            }
+
+            if (paintMs >= 0)
+            {
+                _paintMs = _paintMs <= 0 ? paintMs : (_paintMs * 0.75) + (paintMs * 0.25);
             }
         }
 
