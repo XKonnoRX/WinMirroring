@@ -45,6 +45,13 @@ export type SettingsState = {
     sources: { streamId: number; title: string; peer: string }[]
   }
   shell: { allowCommands: boolean; allowElevatedCommands: boolean }
+  power: {
+    saving: string
+    fps: number
+    savingNow: boolean
+    onBattery: boolean
+    options: { value: string; label: string }[]
+  }
   network: {
     discoveryPort: number
     transportPort: number

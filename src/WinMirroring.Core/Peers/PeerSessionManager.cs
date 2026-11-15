@@ -24,6 +24,7 @@ public sealed class PeerSessionManager : IAsyncDisposable
     private readonly Action _saveSettings;
     private readonly PeerDirectory _directory;
     private readonly IPairingUserInterface _pairingUi;
+    private readonly Power.PowerMode _power;
     private readonly ILogger _logger;
     private readonly ConcurrentDictionary<string, PeerSession> _sessions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastAttempt = new(StringComparer.Ordinal);
@@ -39,6 +40,7 @@ public sealed class PeerSessionManager : IAsyncDisposable
         Action saveSettings,
         PeerDirectory directory,
         IPairingUserInterface pairingUi,
+        Power.PowerMode power,
         ILogger logger)
     {
         _identity = identity;
@@ -46,6 +48,7 @@ public sealed class PeerSessionManager : IAsyncDisposable
         _saveSettings = saveSettings;
         _directory = directory;
         _pairingUi = pairingUi;
+        _power = power;
         _logger = logger;
     }
 
@@ -269,7 +272,7 @@ public sealed class PeerSessionManager : IAsyncDisposable
 
     private async Task<PeerSession> RegisterSessionAsync(PeerConnection connection, HandshakeResult handshake)
     {
-        var session = new PeerSession(connection, _identity, handshake, _pairingUi, OnPairedAsync, _logger);
+        var session = new PeerSession(connection, _identity, handshake, _pairingUi, OnPairedAsync, _power, _logger);
 
         PeerSession? loser = null;
         PeerSession winner;

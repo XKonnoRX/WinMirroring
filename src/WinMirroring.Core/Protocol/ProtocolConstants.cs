@@ -25,8 +25,20 @@ public static class ProtocolConstants
     public static readonly IPAddress MulticastGroup = IPAddress.Parse("239.255.47.62");
 
     public static readonly TimeSpan BeaconInterval = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// The same beacon on a battery. Still twice inside <see cref="PeerExpiry"/>, so one lost broadcast does not
+    /// make this device blink out of another one's list — which is the only reason it is not slower still, since
+    /// a device on an older build expires peers on its own eight-second clock whatever this one does.
+    /// </summary>
+    public static readonly TimeSpan BeaconOnBattery = TimeSpan.FromSeconds(4);
+
     public static readonly TimeSpan PeerExpiry = TimeSpan.FromSeconds(8);
     public static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(5);
+
+    /// <summary>The same pulse on a battery: twice within <see cref="IdleTimeout"/>, which is the margin it needs.</summary>
+    public static readonly TimeSpan HeartbeatOnBattery = TimeSpan.FromSeconds(10);
+
     public static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(20);
     public static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(15);
     public static readonly TimeSpan PairingTimeout = TimeSpan.FromMinutes(2);

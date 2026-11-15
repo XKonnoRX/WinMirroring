@@ -130,6 +130,19 @@ public sealed class SettingsUi
             allowCommands = _vm.AllowRemoteCommands,
             allowElevatedCommands = _vm.AllowElevatedRemoteCommands,
         },
+        power = new
+        {
+            saving = _vm.PowerSaving,
+            fps = _vm.PowerFps,
+            savingNow = _node.Power.Saving,
+            onBattery = _node.Power.OnBattery,
+            options = new[]
+            {
+                new { value = nameof(WinMirroring.Core.Settings.PowerSaving.Never), label = "Никогда" },
+                new { value = nameof(WinMirroring.Core.Settings.PowerSaving.OnBattery), label = "Когда устройство на батарее" },
+                new { value = nameof(WinMirroring.Core.Settings.PowerSaving.Always), label = "Всегда" },
+            },
+        },
         network = new
         {
             discoveryPort = _vm.DiscoveryPort,
@@ -184,6 +197,8 @@ public sealed class SettingsUi
             case "screen.allowControl": _vm.ScreenAllowControl = Flag(); break;
             case "shell.allowCommands": _vm.AllowRemoteCommands = Flag(); break;
             case "shell.allowElevatedCommands": _vm.AllowElevatedRemoteCommands = Flag(); break;
+            case "power.saving": _vm.PowerSaving = text; break;
+            case "power.fps": _vm.PowerFps = Number(); break;
             case "screen.windowDrag": _vm.ScreenWindowDrag = Flag(); break;
             case "screen.hideSentWindow": _vm.ScreenHideSentWindow = Flag(); break;
             case "screen.maxFps": _vm.ScreenMaxFps = Number(); break;

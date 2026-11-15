@@ -35,6 +35,8 @@ public sealed class DiscoveryService : IAsyncDisposable
     private readonly Dictionary<string, (IPAddress[] Addresses, DateTimeOffset ResolvedAt)> _dnsCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<IPEndPoint, SendFailure> _sendFailures = [];
 
+    private readonly Power.PowerMode _power;
+
     private Socket? _receiver;
     private Task? _receiveLoop;
     private Task? _announceLoop;
@@ -46,6 +48,7 @@ public sealed class DiscoveryService : IAsyncDisposable
         NetworkSelection network,
         Func<IReadOnlyCollection<string>> manualAddresses,
         Func<IReadOnlyCollection<IPEndPoint>> rememberedPeers,
+        Power.PowerMode power,
         ILogger logger)
     {
         _identity = identity;
@@ -54,6 +57,7 @@ public sealed class DiscoveryService : IAsyncDisposable
         _network = network;
         _manualAddresses = manualAddresses;
         _rememberedPeers = rememberedPeers;
+        _power = power;
         _logger = logger;
     }
 
@@ -214,14 +218,18 @@ public sealed class DiscoveryService : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Saying "here I am" on every interface, which is how a device is found without anything being configured —
+    /// and a broadcast is a radio waking up, so on a battery it is said half as often.
+    /// </summary>
     private async Task AnnounceLoopAsync(CancellationToken ct)
     {
-        using var timer = new PeriodicTimer(ProtocolConstants.BeaconInterval);
-        do
+        while (!ct.IsCancellationRequested)
         {
             try
             {
                 await AnnounceOnceAsync(ct).ConfigureAwait(false);
+                await Task.Delay(_power.Every(ProtocolConstants.BeaconInterval, ProtocolConstants.BeaconOnBattery), ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -232,7 +240,6 @@ public sealed class DiscoveryService : IAsyncDisposable
                 _logger.LogWarning(ex, "Announce failed");
             }
         }
-        while (await WaitNextTickAsync(timer, ct).ConfigureAwait(false));
     }
 
     private static async ValueTask<bool> WaitNextTickAsync(PeriodicTimer timer, CancellationToken ct)

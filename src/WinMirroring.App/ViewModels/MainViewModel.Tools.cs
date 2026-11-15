@@ -63,6 +63,44 @@ public sealed partial class MainViewModel
             : "Команды с правами администратора с других устройств выключены.");
     }
 
+    /// <summary>
+    /// When this device spends less to do the same job: never, while it runs on its battery, or always. What that
+    /// costs is frames and a little freshness; what is free is not in here, it was simply done.
+    /// </summary>
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
+    public partial string PowerSaving { get; set; } = nameof(WinMirroring.Core.Settings.PowerSaving.OnBattery);
+
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
+    public partial int PowerFps { get; set; } = 30;
+
+    partial void OnPowerSavingChanged(string value)
+    {
+        if (!_initialized || !Enum.TryParse<WinMirroring.Core.Settings.PowerSaving>(value, out var mode))
+        {
+            return;
+        }
+
+        _node.Settings.Power.Saving = mode;
+        _node.SaveSettings();
+        Say(mode switch
+        {
+            WinMirroring.Core.Settings.PowerSaving.Always => "Экономия заряда включена всегда.",
+            WinMirroring.Core.Settings.PowerSaving.OnBattery => "Экономия заряда включается, когда устройство на батарее.",
+            _ => "Экономия заряда выключена.",
+        });
+    }
+
+    partial void OnPowerFpsChanged(int value)
+    {
+        if (!_initialized || value is < 1 or > 240)
+        {
+            return;
+        }
+
+        _node.Settings.Power.Fps = value;
+        _node.SaveSettings();
+    }
+
     /// <summary>The address without a port, which is what all of these need; empty when it is not known.</summary>
     public string HostOf(string peerId) => Peers.FirstOrDefault(p => p.Id == peerId)?.Host ?? string.Empty;
 

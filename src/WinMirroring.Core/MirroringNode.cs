@@ -97,6 +97,7 @@ public sealed class MirroringNode : IAsyncDisposable
             SettingsStore.Save(Settings);
         }
 
+        Power = new Power.PowerMode(Settings);
         Peers = new PeerDirectory();
         foreach (var paired in Settings.PairedPeers)
         {
@@ -109,7 +110,7 @@ public sealed class MirroringNode : IAsyncDisposable
             });
         }
 
-        Sessions = new PeerSessionManager(Identity, Settings, SaveSettings, Peers, pairingUi, loggerFactory.CreateLogger<PeerSessionManager>());
+        Sessions = new PeerSessionManager(Identity, Settings, SaveSettings, Peers, pairingUi, Power, loggerFactory.CreateLogger<PeerSessionManager>());
         Introductions = new PeerIntroductions(
             Sessions,
             Settings,
@@ -126,6 +127,9 @@ public sealed class MirroringNode : IAsyncDisposable
     public AppSettings Settings { get; }
 
     public DeviceIdentity Identity { get; }
+
+    /// <summary>Whether this device is spending less at the moment, and what that means in numbers.</summary>
+    public Power.PowerMode Power { get; }
 
     public PeerDirectory Peers { get; }
 
@@ -329,6 +333,7 @@ public sealed class MirroringNode : IAsyncDisposable
             Network,
             () => Settings.ManualPeerAddresses.ToList(),
             Sessions.RememberedDiscoveryEndPoints,
+            Power,
             _loggerFactory.CreateLogger<DiscoveryService>());
         discovery.PeerSeen += Sessions.OnPeerSeen;
         discovery.AddressLost += ScheduleNetworkCheck;

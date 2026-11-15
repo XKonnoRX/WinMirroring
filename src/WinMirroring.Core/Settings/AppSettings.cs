@@ -48,6 +48,8 @@ public sealed class AppSettings
 
     public ShellSettings Shell { get; set; } = new();
 
+    public PowerSettings Power { get; set; } = new();
+
     public PairedPeer? FindPairedById(string peerId) =>
         PairedPeers.FirstOrDefault(p => string.Equals(p.Id, peerId, StringComparison.Ordinal));
 

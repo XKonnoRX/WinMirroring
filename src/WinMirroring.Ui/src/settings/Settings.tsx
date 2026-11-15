@@ -71,22 +71,49 @@ export function Settings() {
 
       <main className="settings-page">
         {page === 'device' && (
-          <Section title="Это устройство">
-            <Text
-              label="Имя устройства"
-              hint="Под этим именем его видят остальные. Сохраняется сразу, как только вы уйдёте из поля или нажмёте Enter; остальные узнают новое имя в течение нескольких секунд."
-              value={state.device.name}
-              onChange={(v) => void set('device.name', v)}
-            />
-            <div className="facts">
-              <dt>Идентификатор</dt>
-              <dd className="mono">{state.device.id}</dd>
-              <dt>Отпечаток</dt>
-              <dd className="mono">{state.device.fingerprint}</dd>
-              <dt>Сеть</dt>
-              <dd>{state.device.network}</dd>
-            </div>
-          </Section>
+          <>
+            <Section title="Экономия заряда">
+              <Choice
+                label="Экономить заряд"
+                hint="Что экономится: вдвое меньше кадров, реже маяк в сеть и реже пульс между устройствами. То, что ничего не стоит, работает всегда и в этот режим не входит."
+                value={state.power.saving}
+                options={state.power.options}
+                onChange={(v) => void set('power.saving', v)}
+              />
+              <Num
+                label="Кадров в секунду при экономии"
+                suffix="к/с"
+                value={state.power.fps}
+                onChange={(v) => void set('power.fps', v)}
+              />
+              <p className="note">
+                {state.power.savingNow
+                  ? 'Сейчас экономия включена: это устройство и отдаёт, и просит меньше кадров.'
+                  : state.power.onBattery
+                    ? 'Устройство на батарее, но экономия сейчас выключена.'
+                    : 'Устройство питается от сети — экономия не нужна.'}{' '}
+                Просьба о кадрах уходит и на ту сторону: когда на батарее тот, кто смотрит, передающий снижает
+                частоту сам.
+              </p>
+            </Section>
+
+            <Section title="Это устройство">
+              <Text
+                label="Имя устройства"
+                hint="Под этим именем его видят остальные. Сохраняется сразу, как только вы уйдёте из поля или нажмёте Enter; остальные узнают новое имя в течение нескольких секунд."
+                value={state.device.name}
+                onChange={(v) => void set('device.name', v)}
+              />
+              <div className="facts">
+                <dt>Идентификатор</dt>
+                <dd className="mono">{state.device.id}</dd>
+                <dt>Отпечаток</dt>
+                <dd className="mono">{state.device.fingerprint}</dd>
+                <dt>Сеть</dt>
+                <dd>{state.device.network}</dd>
+              </div>
+            </Section>
+          </>
         )}
 
         {page === 'input' && (

@@ -178,7 +178,13 @@ public sealed record AudioLossReportMessage(uint StreamId, double PercentLost, d
 /// monitor is named by <see cref="MonitorKey"/> where it is known, because an index is only a position in a list
 /// and the two sides can order or filter theirs differently; the index remains for older devices.
 /// </summary>
-public sealed record ScreenRequestMessage(uint StreamId, int MonitorIndex, string? MonitorKey = null) : ControlMessage;
+/// <summary>
+/// Asks a device for a screen. <paramref name="MaxFps"/> is the most frames a second the asking device wants —
+/// it says so when it is the one on a battery, since half the frames is half the decoding and painting here as
+/// much as half the capturing and encoding there. Absent, and from any device on an older build, it means "as
+/// many as you were going to send".
+/// </summary>
+public sealed record ScreenRequestMessage(uint StreamId, int MonitorIndex, string? MonitorKey = null, int? MaxFps = null) : ControlMessage;
 
 /// <summary>
 /// Source → viewer: a stream starts or changes. Kind is "monitor", "window" or "display". <see cref="Codec"/>

@@ -58,6 +58,13 @@ internal sealed class ScreenSource : IAsyncDisposable
     private static readonly TimeSpan CollectEvery = TimeSpan.FromMilliseconds(2);
 
     /// <summary>
+    /// The same look on a battery. Five hundred wake-ups a second is what two milliseconds costs while a stream
+    /// runs; eight is a hundred and twenty-five, and what it buys back is up to six milliseconds of a picture's
+    /// age — which is the trade this mode exists to make.
+    /// </summary>
+    private static readonly TimeSpan CollectOnBattery = TimeSpan.FromMilliseconds(8);
+
+    /// <summary>
     /// How still the screen has to be before one whole, sharp picture is sent. Long enough that it does not fire
     /// between the frames of something moving, short enough that it is already there by the time anyone has
     /// finished moving their eyes to what they were dragging.
@@ -76,6 +83,9 @@ internal sealed class ScreenSource : IAsyncDisposable
     /// it on its own is that it does not wait for a frame, and a position is eighteen bytes.
     /// </summary>
     private static readonly TimeSpan PointerEvery = TimeSpan.FromMilliseconds(8);
+
+    /// <summary>The pointer on a battery: sixty positions a second instead of a hundred and twenty-five.</summary>
+    private static readonly TimeSpan PointerOnBattery = TimeSpan.FromMilliseconds(16);
 
     /// <summary>Shapes remembered per stream before the names start again; Windows has a few dozen pointers.</summary>
     private const int MaxShapes = 48;
@@ -111,6 +121,7 @@ internal sealed class ScreenSource : IAsyncDisposable
     private readonly TileEncoder _encoder = new();
     private readonly SendWindow _window = new(MaxInFlight, AckGrace, LateAbove);
     private readonly StreamPacing _pacing;
+    private readonly WinMirroring.Core.Power.PowerMode _power;
     private readonly CancellationTokenSource _cts = new();
     private readonly object _gate = new();
     private long _lastBlockedReport = -10_000;
@@ -201,6 +212,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         _settings = settings;
         _useVideo = useVideo;
         _sendsPointer = sendsPointer;
+        _power = node.Power;
         _logger = logger;
         _pacing = new StreamPacing(settings.MaxFps);
         _touch = new Injection.TouchInjector(logger);
@@ -633,11 +645,11 @@ internal sealed class ScreenSource : IAsyncDisposable
     /// </summary>
     private async Task PointerLoopAsync(CancellationToken ct)
     {
-        using var timer = new PeriodicTimer(PointerEvery);
         try
         {
-            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+            while (!ct.IsCancellationRequested)
             {
+                await Task.Delay(_power.Every(PointerEvery, PointerOnBattery), ct).ConfigureAwait(false);
                 await SendPointerIfChangedAsync(ct).ConfigureAwait(false);
             }
         }
@@ -1090,7 +1102,7 @@ internal sealed class ScreenSource : IAsyncDisposable
                 // Nothing ready. Looked at rather than waited on: the encoder's own signal would have to outlive
                 // the encoder, which is replaced whenever the picture changes size, and two milliseconds of age is
                 // a cheaper thing to pay than that is to get right.
-                await Task.Delay(CollectEvery, ct).ConfigureAwait(false);
+                await Task.Delay(_power.Every(CollectEvery, CollectOnBattery), ct).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -1171,11 +1183,29 @@ internal sealed class ScreenSource : IAsyncDisposable
     /// numbers that say why — how long acknowledgements take, how many frames the window stopped waiting for, what
     /// is actually going out — should already be in the log rather than having to be guessed at afterwards.
     /// </summary>
+    /// <summary>
+    /// The most frames a second this stream will send: what this device is set to, lowered while it is saving
+    /// power, and lowered again to what the device watching asked for — which it does when <em>it</em> is the one
+    /// on a battery. Half the frames is half the capturing, encoding and sending here and half the decoding and
+    /// painting there, so either end being on a battery is reason enough.
+    /// </summary>
+    private int EffectiveMaxFps
+    {
+        get
+        {
+            var here = _power.Fps(_settings.MaxFps);
+            return ViewerFps is { } asked && asked > 0 ? Math.Min(here, asked) : here;
+        }
+    }
+
+    /// <summary>Frames a second the viewer asked for, or null when it asked for nothing in particular.</summary>
+    public int? ViewerFps { get; set; }
+
     private int Observe()
     {
         var now = Environment.TickCount64;
         var reading = _window.Reading;
-        _pacing.Observe(reading, _settings.MaxFps, now);
+        _pacing.Observe(reading, EffectiveMaxFps, now);
         var fps = _pacing.Fps;
         lock (_encoderGate)
         {

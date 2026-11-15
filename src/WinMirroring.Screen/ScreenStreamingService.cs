@@ -173,7 +173,9 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
         _requested[streamId] = peerId;
         try
         {
-            await session.SendControlAsync(new ScreenRequestMessage(streamId, monitorIndex, monitorKey)).ConfigureAwait(false);
+            // Asking for fewer frames while this device is the one on a battery: what arrives has to be decoded
+            // and painted here, and half of sixty is half of that.
+            await session.SendControlAsync(new ScreenRequestMessage(streamId, monitorIndex, monitorKey, WantedFps())).ConfigureAwait(false);
             return true;
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
@@ -440,6 +442,9 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
         }
     }
 
+    /// <summary>The frame rate to ask a source for, or null when this device is not saving anything.</summary>
+    private int? WantedFps() => _node.Power.Saving ? Math.Max(1, _node.Settings.Power.Fps) : null;
+
     private async Task HandleRequestAsync(PeerSession session, ScreenRequestMessage request)
     {
         try
@@ -452,6 +457,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
 
             if (_sources.TryGetValue(request.StreamId, out var existing) && ReferenceEquals(existing.Session, session))
             {
+                existing.ViewerFps = request.MaxFps;
                 existing.SwitchMonitor(request.MonitorIndex, request.MonitorKey);
                 await session.SendControlAsync(existing.Describe()).ConfigureAwait(false);
                 RaiseSourcesChanged();
@@ -459,6 +465,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             }
 
             var source = ScreenSource.ForMonitor(_node, session, request.StreamId, request.MonitorIndex, request.MonitorKey, _node.Settings.Screen, NegotiateVideo(session), PeerDrawsPointer(session), _logger);
+            source.ViewerFps = request.MaxFps;
             await StartSourceAsync(session, source).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or System.Runtime.InteropServices.COMException or ArgumentException)

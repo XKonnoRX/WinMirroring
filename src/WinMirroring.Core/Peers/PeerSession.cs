@@ -35,6 +35,7 @@ public sealed class PeerSession : IAsyncDisposable
     private readonly DeviceIdentity _identity;
     private readonly IPairingUserInterface _pairingUi;
     private readonly Func<PeerSession, Task> _onPaired;
+    private readonly Power.PowerMode _power;
     private readonly ILogger _logger;
     private readonly CancellationTokenSource _cts = new();
     private readonly ConcurrentDictionary<ChannelId, ChannelHandler> _handlers = new();
@@ -62,12 +63,14 @@ public sealed class PeerSession : IAsyncDisposable
         HandshakeResult handshake,
         IPairingUserInterface pairingUi,
         Func<PeerSession, Task> onPaired,
+        Power.PowerMode power,
         ILogger logger)
     {
         _connection = connection;
         _identity = identity;
         _pairingUi = pairingUi;
         _onPaired = onPaired;
+        _power = power;
         _logger = logger;
 
         PeerId = handshake.PeerId;
@@ -605,11 +608,17 @@ public sealed class PeerSession : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// A ping every few seconds: it measures the round trip and it is how a link that has quietly died is
+    /// noticed. On a battery it is sent half as often — twice within the silence that counts as dead, which is
+    /// the margin that matters, and a packet on the wire is a radio waking up.
+    /// </summary>
     private async Task HeartbeatLoopAsync(CancellationToken ct)
     {
-        using var timer = new PeriodicTimer(ProtocolConstants.HeartbeatInterval);
-        while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+        while (!ct.IsCancellationRequested)
         {
+            await Task.Delay(_power.Every(ProtocolConstants.HeartbeatInterval, ProtocolConstants.HeartbeatOnBattery), ct).ConfigureAwait(false);
+
             var silence = Environment.TickCount64 - LastReceivedTicks;
             if (silence > ProtocolConstants.IdleTimeout.TotalMilliseconds)
             {
