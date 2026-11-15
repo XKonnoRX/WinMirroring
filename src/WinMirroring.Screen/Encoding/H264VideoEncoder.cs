@@ -362,6 +362,13 @@ internal sealed class H264VideoEncoder : IDisposable
     /// <summary>Access units are waiting to be sent (produced after <see cref="Encode"/> stopped waiting).</summary>
     public bool HasPendingOutput => !_outputs.IsEmpty;
 
+    /// <summary>
+    /// Frames handed over that the encoder has not taken in yet. A caller that feeds without waiting watches this:
+    /// an encoder that stops taking frames must not become the place a stall piles up, and each frame waiting here
+    /// holds either a picture in memory or a texture on the card that cannot be written again meanwhile.
+    /// </summary>
+    public int Waiting => _inputs.Count;
+
     /// <summary>Whatever access units are ready, without feeding a frame (for a still screen).</summary>
     public IReadOnlyList<VideoAccessUnit> TakePending() => DrainOutputs();
 
@@ -373,15 +380,56 @@ internal sealed class H264VideoEncoder : IDisposable
     /// </summary>
     public IReadOnlyList<VideoAccessUnit> Encode(byte[] frameBgra, int frameWidth, Rectangle crop, bool forceKeyframe)
     {
-        if (crop.Width != _width || crop.Height != _height)
+        // Read before feeding, or an access unit finished in between would be mistaken for one that was already there.
+        var producedBefore = Volatile.Read(ref DiagOutputs);
+        if (!Feed(frameBgra, frameWidth, crop, forceKeyframe))
         {
             // Size changed under us: the caller is expected to recreate the encoder, so just drain what we have.
             return DrainOutputs();
         }
 
+        return WaitForOutput(producedBefore);
+    }
+
+    /// <summary>
+    /// Hands the <paramref name="crop"/> region of <paramref name="frameBgra"/> to the encoder and returns at once,
+    /// without waiting for the access unit it will make of it; <see cref="TakePending"/> collects that a few
+    /// milliseconds later. False means the size no longer matches and the caller must rebuild the encoder.
+    ///
+    /// This is how a stream feeds it. Waiting here for the frame just given — which is what <see cref="Encode"/>
+    /// does, and what the stream used to do — makes the capture loop's period the sum of capturing, encoding and
+    /// sending instead of the longest of the three, and makes every slow frame of the encoder's a gap in the
+    /// capture as well.
+    /// </summary>
+    public bool Feed(byte[] frameBgra, int frameWidth, Rectangle crop, bool forceKeyframe)
+    {
+        if (crop.Width != _width || crop.Height != _height)
+        {
+            return false;
+        }
+
         ForceKeyframe(forceKeyframe);
         Nv12Converter.BgraCropToNv12(frameBgra, frameWidth, crop, _nv12);
-        return Submit(BuildInputSample());
+        _inputs.Enqueue(BuildInputSample());
+        return true;
+    }
+
+    /// <summary>
+    /// The same for a frame that is already NV12 on the graphics card. The texture is referred to rather than
+    /// copied, so it must not be written again until the encoder has read it — which is why the converter hands
+    /// out several in turn (see <see cref="GpuNv12Converter"/>).
+    /// </summary>
+    public bool FeedTexture(ID3D11Texture2D nv12, bool forceKeyframe)
+    {
+        var description = nv12.Description;
+        if (description.Width != (uint)_width || description.Height != (uint)_height)
+        {
+            return false;
+        }
+
+        ForceKeyframe(forceKeyframe);
+        _inputs.Enqueue(BuildTextureSample(nv12));
+        return true;
     }
 
     /// <summary>
@@ -391,14 +439,13 @@ internal sealed class H264VideoEncoder : IDisposable
     /// </summary>
     public IReadOnlyList<VideoAccessUnit> EncodeTexture(ID3D11Texture2D nv12, bool forceKeyframe)
     {
-        var description = nv12.Description;
-        if (description.Width != (uint)_width || description.Height != (uint)_height)
+        var producedBefore = Volatile.Read(ref DiagOutputs);
+        if (!FeedTexture(nv12, forceKeyframe))
         {
             return DrainOutputs();
         }
 
-        ForceKeyframe(forceKeyframe);
-        return Submit(BuildTextureSample(nv12));
+        return WaitForOutput(producedBefore);
     }
 
     private void ForceKeyframe(bool forceKeyframe)
@@ -420,12 +467,13 @@ internal sealed class H264VideoEncoder : IDisposable
         }
     }
 
-    /// <summary>Hands one frame to the encoder and waits briefly for the access unit it produces.</summary>
-    private IReadOnlyList<VideoAccessUnit> Submit(IMFSample sample)
+    /// <summary>
+    /// Waits briefly for an access unit produced after the frame that was just fed. Only <see cref="Encode"/> and
+    /// <see cref="EncodeTexture"/> use this — one frame in, one frame out — which is what a measurement or a test
+    /// wants; a stream feeds and collects separately so that nothing waits on the encoder's own thread.
+    /// </summary>
+    private IReadOnlyList<VideoAccessUnit> WaitForOutput(long producedBefore)
     {
-        var producedBefore = Volatile.Read(ref DiagOutputs);
-        _inputs.Enqueue(sample);
-
         // Wait for an access unit produced after this input went in (the queue may hold older ones).
         var deadline = Environment.TickCount64 + (long)OutputWait.TotalMilliseconds;
         while (Volatile.Read(ref DiagOutputs) == producedBefore && _running)

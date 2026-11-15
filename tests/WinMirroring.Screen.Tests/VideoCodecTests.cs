@@ -267,6 +267,16 @@ public class VideoCodecTests
 
         var units = encoder.Encode(bgra, width, crop, forceKeyframe: true);
 
+        // Encode waits a frame's worth for the access unit and no longer, which a loaded machine can overrun — and
+        // what this is about is that the frame comes out at all without a second one pushing it through, not how
+        // many milliseconds that took. So if the wait was not enough, wait here instead.
+        var deadline = System.Diagnostics.Stopwatch.StartNew();
+        while (units.Count == 0 && deadline.Elapsed < TimeSpan.FromSeconds(5))
+        {
+            Thread.Sleep(5);
+            units = encoder.TakePending();
+        }
+
         var unit = Assert.Single(units);
         Assert.True(unit.Keyframe);
         Assert.True(decoder.DecodeInto(unit.Data, ref output, out var decodedWidth, out var decodedHeight));
