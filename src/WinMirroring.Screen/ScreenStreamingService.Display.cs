@@ -296,7 +296,7 @@ public sealed partial class ScreenStreamingService
             // A window parked on the virtual monitor while it was shown elsewhere comes back, and the monitor goes
             // away once nothing is left on it.
             RestoreWindow(source.Window);
-            _ = DetachVirtualMonitorIfIdleAsync();
+            _ = DetachVirtualMonitorWhenIdleAsync();
             return;
         }
 

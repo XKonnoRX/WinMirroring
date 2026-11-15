@@ -59,6 +59,9 @@ public sealed partial class ScreenStreamingService
             return;
         }
 
+        // Whatever was about to take the monitor away is no longer right: something is going onto it again.
+        Interlocked.Exchange(ref _detachSoon, null)?.Cancel();
+
         var monitor = await EnsureVirtualMonitorAttachedAsync().ConfigureAwait(false);
         if (monitor is not null)
         {
@@ -113,6 +116,39 @@ public sealed partial class ScreenStreamingService
         {
             _displayGate.Release();
         }
+    }
+
+    /// <summary>
+    /// How long the virtual monitor is left attached after the last window comes home.
+    ///
+    /// Attaching and detaching a monitor rearranges the desktop, and Windows shows that by blinking every screen
+    /// — which is what sending a window to another device and bringing it back looked like, twice each time. The
+    /// monitor itself costs nothing while it sits there empty: nothing is drawn on it and, since the pointer is
+    /// kept off it, nothing goes there by accident either. So it is kept for a while, and a few windows sent one
+    /// after another cost one blink instead of one each.
+    /// </summary>
+    private static readonly TimeSpan KeepMonitorFor = TimeSpan.FromMinutes(5);
+
+    private CancellationTokenSource? _detachSoon;
+
+    /// <summary>
+    /// Takes the virtual monitor off the desktop once nothing is parked on it and it is not a second monitor —
+    /// after a wait, and only if nothing has been parked on it in the meantime.
+    /// </summary>
+    private async Task DetachVirtualMonitorWhenIdleAsync()
+    {
+        var waiting = new CancellationTokenSource();
+        Interlocked.Exchange(ref _detachSoon, waiting)?.Cancel();
+        try
+        {
+            await Task.Delay(KeepMonitorFor, waiting.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return; // another window went onto it, or the app is on its way out
+        }
+
+        await DetachVirtualMonitorIfIdleAsync().ConfigureAwait(false);
     }
 
     /// <summary>Takes the virtual monitor off the desktop once nothing is parked on it and it is not a second monitor.</summary>

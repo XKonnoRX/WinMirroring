@@ -278,6 +278,20 @@ public sealed partial class InputSharingService
         }
 
         var monitors = MonitorCatalog.Current;
+
+        // A window shown on another device is parked on the virtual monitor, which is a monitor to Windows and
+        // nothing at all to a person: moving the mouse that way, the pointer walked onto it and disappeared, and
+        // the edge that used to lead to the other device was now in the middle of the desktop — which is what
+        // being unable to reach that device with the mouse felt like. Pushed there by hand, the pointer is put
+        // back where it can be seen, and the push goes on counting towards crossing, which is what the hand was
+        // doing anyway. Only motion from a real mouse gets here, so a device driving that parked window is not
+        // disturbed by this.
+        if (monitors.IsOutOfSight(cursor))
+        {
+            cursor = monitors.SnapToScreen(cursor);
+            VirtualScreen.SetCursor(cursor);
+        }
+
         var monitor = monitors.Nearest(cursor);
         var bounds = monitor.Bounds;
         var resistance = Math.Max(1, _node.Settings.Input.EdgeResistance);

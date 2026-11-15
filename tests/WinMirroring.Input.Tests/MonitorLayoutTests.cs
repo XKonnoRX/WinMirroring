@@ -115,7 +115,31 @@ public class MonitorLayoutTests
         Assert.False(Monitors.ContinuesBeyond(built, Edge.Top, new Point(1000, 0)));      // nothing above
         Assert.False(Monitors.ContinuesBeyond(lg, Edge.Left, new Point(1920, 1100)));     // below the built-in screen's bottom
         Assert.True(Monitors.ContinuesBeyond(lg, Edge.Left, new Point(1920, 500)));
-        Assert.True(Monitors.ContinuesBeyond(lg, Edge.Right, new Point(3839, 500)));      // the virtual monitor is still a monitor here
+
+        // And the virtual monitor beyond that edge does not count as anywhere to go. It used to: the pointer
+        // then walked onto a monitor nobody can see and the edge that leads to another device stopped being an
+        // edge, which is what losing the mouse after sending a window somewhere actually was.
+        Assert.False(Monitors.ContinuesBeyond(lg, Edge.Right, new Point(3839, 500)));
+    }
+
+    /// <summary>
+    /// A window shown on another device is parked on the virtual monitor to hide it here. That makes it a real
+    /// monitor as far as Windows is concerned, and a place the pointer must never end up: there is nothing to see
+    /// there and no way back except by feel.
+    /// </summary>
+    [Fact]
+    public void ThePointerIsNotLeftOnAMonitorNobodyCanSee()
+    {
+        var onTheHiddenOne = new Point(4200, 400);
+
+        Assert.True(Monitors.IsOutOfSight(onTheHiddenOne));
+        Assert.False(Monitors.IsOutOfSight(new Point(500, 500)));
+
+        // Back onto the nearest screen, at its edge, which is where it came from.
+        Assert.Equal(new Point(3839, 400), Monitors.SnapToScreen(onTheHiddenOne));
+
+        // A point already on a screen is left exactly where it is.
+        Assert.Equal(new Point(500, 500), Monitors.SnapToScreen(new Point(500, 500)));
     }
 
     /// <summary>The real monitors of the machine running the tests (on request only: build agents may have none).</summary>

@@ -21,12 +21,24 @@ public sealed class MonitorSet
             .ThenBy(m => m.Bounds.Left)
             .ThenBy(m => m.Bounds.Top)
             .ToList();
+
+        // Everything that is not the hidden one — and all of them if somehow they all are, since a device with no
+        // screen at all is not a case to invent behaviour for.
+        var visible = All.Where(m => !m.IsVirtual).ToList();
+        Screens = visible.Count > 0 ? visible : All;
     }
 
     public IReadOnlyList<MonitorInfo> All { get; }
 
     /// <summary>The real monitors in the order they are numbered for the user: primary first, then left to right.</summary>
     public IReadOnlyList<MonitorInfo> ForLayout { get; }
+
+    /// <summary>
+    /// The monitors with a screen in front of them. The virtual monitor is a real monitor to Windows and a place
+    /// nobody can see: windows are parked there to hide them. So the pointer has no business being there, and
+    /// everything about where the pointer may go is decided over these rather than over <see cref="All"/>.
+    /// </summary>
+    public IReadOnlyList<MonitorInfo> Screens { get; private init; } = [];
 
     public MonitorInfo? At(Point point)
     {
@@ -59,7 +71,12 @@ public sealed class MonitorSet
         return new Point(Math.Clamp(point.X, bounds.Left, bounds.Right - 1), Math.Clamp(point.Y, bounds.Top, bounds.Bottom - 1));
     }
 
-    /// <summary>True when the cursor at <paramref name="at"/> on <paramref name="monitor"/> can go on across that edge onto another monitor.</summary>
+    /// <summary>
+    /// True when the cursor at <paramref name="at"/> on <paramref name="monitor"/> can go on across that edge onto
+    /// another monitor — another monitor with a screen. A virtual monitor beyond an edge does not continue
+    /// anything: the pointer going there would simply vanish, and the edge that leads to another device would stop
+    /// leading anywhere, which is exactly what happened when a window was parked on one.
+    /// </summary>
     public bool ContinuesBeyond(MonitorInfo monitor, Edge edge, Point at)
     {
         var bounds = monitor.Bounds;
@@ -70,7 +87,22 @@ public sealed class MonitorSet
             Edge.Top => new Point(at.X, bounds.Top - 1),
             _ => new Point(at.X, bounds.Bottom),
         };
-        return At(beyond) is not null;
+        return Screens.Any(m => m.Bounds.Contains(beyond));
+    }
+
+    /// <summary>True when this point is on a monitor nobody can see — a window parked out of sight lives there.</summary>
+    public bool IsOutOfSight(Point point) => At(point) is { IsVirtual: true };
+
+    /// <summary>The same point, or the nearest one on a monitor that actually shows something.</summary>
+    public Point SnapToScreen(Point point)
+    {
+        if (!IsOutOfSight(point) && At(point) is not null)
+        {
+            return point;
+        }
+
+        var bounds = Screens.MinBy(m => DistanceSquared(m.Bounds, point))!.Bounds;
+        return new Point(Math.Clamp(point.X, bounds.Left, bounds.Right - 1), Math.Clamp(point.Y, bounds.Top, bounds.Bottom - 1));
     }
 
     /// <summary>"Монитор 2 · 1920×1080 · справа" (numbered as in <see cref="ForLayout"/>).</summary>
