@@ -121,7 +121,7 @@ internal sealed class CliOptions
 
             Running a command on a device, in the place of logging into it:
 
-              --exec <name|id>          the device to run it on (it must be paired with this one, and have
+              --exec <name|id>          the device to run it on (it must be paired with this machine, and have
                                         "allow commands from other devices" turned on)
               -c, --command "<text>"    the command; PowerShell, as the signed-in user over there
               --command-file <path>     read the command from a file instead (a whole script, any length)
@@ -133,8 +133,9 @@ internal sealed class CliOptions
               wm-cli --exec tablet --command-file .\collect-logs.ps1 > logs.txt
               if (-not (wm-cli --exec tablet -c "Test-Path C:\\build")) { ... }
 
-            The first time, pair this tool with the device once — it is a device of its own, with its own
-            identity, exactly as a second machine would be, and it keeps that identity in its own directory:
+            Nothing has to be paired with this tool: while the app is running here, the app does the running, with
+            the identity the devices have already agreed to, and the tool is not a device at all. On a machine with
+            no app it is one — its own identity in its own directory — and then it does need pairing once:
 
               wm-cli --pair tablet
             """);

@@ -10,6 +10,7 @@ const pages = [
   { id: 'screen', title: 'Экран' },
   { id: 'audio', title: 'Звук' },
   { id: 'clipboard', title: 'Буфер обмена' },
+  { id: 'commands', title: 'Команды' },
   { id: 'network', title: 'Сеть' },
   { id: 'startup', title: 'Запуск и обновления' },
   { id: 'health', title: 'Диагностика' },
@@ -73,7 +74,7 @@ export function Settings() {
           <Section title="Это устройство">
             <Text
               label="Имя устройства"
-              hint="Под этим именем его видят остальные. Применяется кнопкой «Применить» в разделе «Сеть»."
+              hint="Под этим именем его видят остальные. Сохраняется сразу, как только вы уйдёте из поля или нажмёте Enter; остальные узнают новое имя в течение нескольких секунд."
               value={state.device.name}
               onChange={(v) => void set('device.name', v)}
             />
@@ -213,19 +214,6 @@ export function Settings() {
               <Num label="Кадров в секунду, не больше" value={state.screen.maxFps} onChange={(v) => void set('screen.maxFps', v)} />
             </Section>
 
-            <Section title="Выполнение команд">
-              <Toggle
-                label="Разрешить выполнение команд с других устройств"
-                checked={state.shell.allowCommands}
-                onChange={(v) => void set('shell.allowCommands', v)}
-              />
-              <p className="note">
-                Спаренное устройство сможет открыть здесь консоль и запускать команды от вашего имени — так же, как
-                если бы вошло по SSH. Первое разрешение каждому устройству вы подтверждаете здесь, и оно действует до
-                перезапуска приложения; об открытой консоли приложение сообщает уведомлением.
-              </p>
-            </Section>
-
             <Section title="Второй монитор">
               <p className="note">{state.screen.virtualDisplay}</p>
             </Section>
@@ -248,6 +236,21 @@ export function Settings() {
               )}
             </Section>
           </>
+        )}
+
+        {page === 'commands' && (
+          <Section title="Выполнение команд">
+            <Toggle
+              label="Разрешить выполнение команд с других устройств"
+              checked={state.shell.allowCommands}
+              onChange={(v) => void set('shell.allowCommands', v)}
+            />
+            <p className="note">
+              Спаренное устройство сможет открыть здесь консоль и запускать команды от вашего имени — так же, как
+              если бы вошло по SSH. Первое разрешение каждому устройству вы подтверждаете здесь, и оно действует до
+              перезапуска приложения; об открытой консоли приложение сообщает уведомлением.
+            </p>
+          </Section>
         )}
 
         {page === 'audio' && (

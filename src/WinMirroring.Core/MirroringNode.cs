@@ -169,6 +169,31 @@ public sealed class MirroringNode : IAsyncDisposable
 
     public void SaveSettings() => SettingsStore.Save(Settings);
 
+    /// <summary>
+    /// Renames this device and returns the name it ended up with: the one given, trimmed, or this machine's own
+    /// name when nothing was given.
+    ///
+    /// Both halves of a rename are here because having one without the other looks exactly like the rename not
+    /// working. Written to disk, so it survives a restart — it used to be saved only by the button that applies
+    /// network settings, two sections away, so a name typed and left alone came back as it was and looked as if
+    /// the device refused to be renamed. And put on the identity, which is what the handshake introduces this
+    /// device with and what every announcement carries, so peers hear the new name within a beacon or two rather
+    /// than at the next restart. Nothing is rebound: announcements are built one at a time from the identity.
+    /// </summary>
+    public string Rename(string name)
+    {
+        var wanted = string.IsNullOrWhiteSpace(name) ? Environment.MachineName : name.Trim();
+        if (!string.Equals(Settings.DeviceName, wanted, StringComparison.Ordinal))
+        {
+            Settings.DeviceName = wanted;
+            SaveSettings();
+            _logger.LogInformation("This device is now called {Name}", wanted);
+        }
+
+        Identity.Name = wanted;
+        return wanted;
+    }
+
     public async Task StartAsync()
     {
         await _networkGate.WaitAsync().ConfigureAwait(false);

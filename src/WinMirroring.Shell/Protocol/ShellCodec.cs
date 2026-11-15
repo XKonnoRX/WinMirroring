@@ -14,7 +14,7 @@ public enum ShellMessageType : byte
     /// <summary>Device → controller: it is not open, and why — in Russian, to be shown as it is.</summary>
     Refused = 3,
 
-    /// <summary>Controller → device: run this.</summary>
+    /// <summary>Controller → device: run this — together with whatever <see cref="RunPart"/> arrived before it.</summary>
     Run = 4,
 
     /// <summary>Device → controller: a piece of what the command said, as it says it.</summary>
@@ -28,6 +28,12 @@ public enum ShellMessageType : byte
 
     /// <summary>Either way: this console is finished with.</summary>
     Close = 9,
+
+    /// <summary>
+    /// Controller → device: the beginning, or the middle, of a command too long for one message. Nothing runs
+    /// until the <see cref="Run"/> that ends it.
+    /// </summary>
+    RunPart = 10,
 }
 
 /// <summary>Which of a command's two streams a piece of output came from.</summary>
@@ -65,6 +71,42 @@ public static class ShellCodec
         BinaryPrimitives.WriteUInt16LittleEndian(message.AsSpan(Header), (ushort)bytes.Length);
         bytes.CopyTo(message.AsSpan(Header + 2));
         return message;
+    }
+
+    /// <summary>
+    /// A command as the messages that carry it: every piece but the last as <see cref="ShellMessageType.RunPart"/>
+    /// and the last as <see cref="ShellMessageType.Run"/>, which is the one that runs what has arrived. Sent in
+    /// this order and never reordered, since the pieces are only a piece of text each.
+    ///
+    /// A whole script goes down this channel — a command can be read from a file, of any length — and one message
+    /// holds eight kilobytes. A longer one used to be cut to fit without a word and the front of it run as though
+    /// it were the whole script, which for a script is worse than refusing it.
+    /// </summary>
+    public static IReadOnlyList<byte[]> EncodeCommand(uint consoleId, string command)
+    {
+        if (Encoding.UTF8.GetByteCount(command) <= MaxText)
+        {
+            return [Encode(ShellMessageType.Run, consoleId, command)];
+        }
+
+        // Three bytes per character is the worst case for anything outside the astral planes, and a surrogate pair
+        // counts as one character here, so a piece this size always encodes within one message.
+        var step = MaxText / 3;
+        var messages = new List<byte[]>();
+        for (var at = 0; at < command.Length;)
+        {
+            var take = Math.Min(step, command.Length - at);
+            if (at + take < command.Length && char.IsHighSurrogate(command[at + take - 1]))
+            {
+                take--; // never end a piece between the halves of one character
+            }
+
+            var piece = command.Substring(at, take);
+            at += take;
+            messages.Add(Encode(at >= command.Length ? ShellMessageType.Run : ShellMessageType.RunPart, consoleId, piece));
+        }
+
+        return messages;
     }
 
     /// <summary>Output: which stream it came from, then the text.</summary>

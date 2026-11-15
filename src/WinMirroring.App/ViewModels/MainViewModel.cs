@@ -202,6 +202,26 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// A name typed here is the rename itself: written to disk and announced at once. It used to be neither until
+    /// the button that applies network settings was pressed, in another section — so a name typed and left alone
+    /// came back as it had been, which looks exactly like a device refusing to be renamed. An empty field means
+    /// this machine's own name, and the field is corrected to show whichever name was actually taken.
+    /// </summary>
+    partial void OnDeviceNameChanged(string value)
+    {
+        if (!_initialized)
+        {
+            return;
+        }
+
+        var taken = _node.Rename(value);
+        if (!string.Equals(taken, value, StringComparison.Ordinal))
+        {
+            DeviceName = taken;
+        }
+    }
+
     partial void OnSmoothingEnabledChanged(bool value)
     {
         if (!_initialized)
@@ -464,7 +484,7 @@ public sealed partial class MainViewModel : ObservableObject
         try
         {
             var settings = _node.Settings;
-            settings.DeviceName = string.IsNullOrWhiteSpace(DeviceName) ? Environment.MachineName : DeviceName.Trim();
+            _node.Rename(DeviceName);
             settings.DiscoveryPort = ClampPort(DiscoveryPort, settings.DiscoveryPort);
             settings.TransportPort = ClampPort(TransportPort, settings.TransportPort);
             settings.SelectedInterfaceIds = Interfaces.Where(i => i.IsSelected).Select(i => i.Id).Distinct().ToList();

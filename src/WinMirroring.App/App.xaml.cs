@@ -167,6 +167,12 @@ public partial class App : Application
                 MessageBox.Show(text, title, MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes).Task;
             shell.Notify = (title, text) => Dispatcher.BeginInvoke(() => ShowNotification($"WinMirroring: {title}", text));
             shell.Start();
+
+            // And the other direction: a tool on this machine asks this app to run something on a device, rather
+            // than being a device of its own with an identity and pairings of its own. Nothing new is granted —
+            // whoever is signed in here can already open a console on any paired device from this app's own
+            // window — so the pipe is theirs alone and it is open whenever the app is.
+            _services.GetRequiredService<WinMirroring.Shell.Local.LocalShellServer>().Start();
         });
         health.Start("Главное окно", () =>
         {
@@ -477,6 +483,7 @@ public partial class App : Application
         services.AddSingleton<DragDropCoordinator>();
         services.AddSingleton<ScreenStreamingService>();
         services.AddSingleton<WinMirroring.Shell.ShellService>();
+        services.AddSingleton<WinMirroring.Shell.Local.LocalShellServer>();
         services.AddSingleton<GithubUpdater>();
         services.AddSingleton<ButtonBarService>();
         services.AddSingleton<DeviceInfoService>();

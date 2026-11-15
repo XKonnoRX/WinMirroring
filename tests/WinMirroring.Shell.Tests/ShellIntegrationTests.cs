@@ -139,6 +139,112 @@ public sealed class ShellIntegrationTests : IAsyncLifetime
         Assert.Contains(second.Lines, line => line.Equals("C:\\Windows", StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// A command sent by a tool on this machine, through the app, rather than by a device of its own. This is the
+    /// whole reason the command-line tool is not a device: the app has the session and the pairing already, so the
+    /// device on the other end sees a command from the machine it knows and nothing new appears in its list.
+    /// </summary>
+    [Fact]
+    public async Task AToolOnThisMachineRunsSomethingThroughTheApp()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, _) = await ConnectAsync(allowThere: true, agreeThere: true, ct);
+
+        var pipe = $"WinMirroring-tests-{Guid.NewGuid():N}";
+        await using var server = new Local.LocalShellServer(a, shellA, NullLogger<Local.LocalShellServer>.Instance, pipe);
+        server.Start();
+
+        var lines = new List<string>();
+        var reasons = new List<string>();
+        await using var tool = await ConnectToolAsync(pipe, ct);
+        var code = await tool.RunAsync(
+            b.Identity.Id,
+            "Write-Output 'через приложение'",
+            (_, text) => Collect(lines, text),
+            reasons.Add,
+            ct);
+
+        Assert.Equal(0, code);
+        Assert.Empty(reasons);
+        Assert.Contains(lines, line => line.Contains("через приложение", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// And it is told why, in words, when there is no exit code to give — with the code that says which kind of
+    /// nothing happened, because a script reads that and a person reads the words.
+    /// </summary>
+    [Fact]
+    public async Task AToolIsToldWhyWhenTheDeviceWillNotRunCommands()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, _) = await ConnectAsync(allowThere: false, agreeThere: true, ct);
+
+        var pipe = $"WinMirroring-tests-{Guid.NewGuid():N}";
+        await using var server = new Local.LocalShellServer(a, shellA, NullLogger<Local.LocalShellServer>.Instance, pipe);
+        server.Start();
+
+        var lines = new List<string>();
+        var reasons = new List<string>();
+        await using var tool = await ConnectToolAsync(pipe, ct);
+        var code = await tool.RunAsync(b.Identity.Id, "Write-Output 'nope'", (_, text) => Collect(lines, text), reasons.Add, ct);
+
+        Assert.Equal(ShellExit.Refused, code);
+        Assert.Contains(reasons, reason => reason.Contains("выключено", StringComparison.Ordinal));
+        Assert.Empty(lines);
+    }
+
+    /// <summary>
+    /// A script longer than one message arrives whole and runs as one script. One message holds eight kilobytes
+    /// and a command used to be cut to that without a word, so the front of a script ran as though it were all of
+    /// it — and the tool takes a script from a file, of any length, which is exactly how one gets this long.
+    /// </summary>
+    [Fact]
+    public async Task AScriptTooLongForOneMessageArrivesWhole()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, _) = await ConnectAsync(allowThere: true, agreeThere: true, ct);
+
+        var padding = string.Concat(Enumerable.Range(0, 400).Select(i => $"# строка {i}, которая здесь только для длины\n"));
+        var script = padding + "Write-Output 'конец длинного скрипта'";
+        Assert.True(ShellCodec.EncodeCommand(0, script).Count > 1, "this script should not fit in one message");
+
+        var console = shellA.Open(b.Identity.Id)!;
+        var run = Watch(console);
+        await run.Opened.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+
+        Assert.True(console.Run(script));
+        Assert.Equal(0, await run.Done.Task.WaitAsync(TimeSpan.FromSeconds(30), ct));
+        Assert.Contains(run.Lines, line => line.Contains("конец длинного скрипта", StringComparison.Ordinal));
+    }
+
+    private static void Collect(List<string> lines, string text)
+    {
+        lock (lines)
+        {
+            lines.Add(text.Trim());
+        }
+    }
+
+    /// <summary>
+    /// The pipe is opened by a loop of its own in the server, so it is listening a moment after Start rather than
+    /// at it; a tool in the ordinary way would simply find nothing and do the work itself.
+    /// </summary>
+    private static async Task<Local.LocalShellClient> ConnectToolAsync(string pipe, CancellationToken ct)
+    {
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            if (await Local.LocalShellClient.TryConnectAsync(ct, pipe) is { } client)
+            {
+                return client;
+            }
+
+            await Task.Delay(50, ct);
+        }
+
+        Assert.Fail("the local command pipe never answered");
+        return null!;
+    }
+
     /// <summary>Everything one console says, collected; the waits are off the receive loop on purpose.</summary>
     private sealed class Run
     {

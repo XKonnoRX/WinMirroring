@@ -59,7 +59,7 @@ public sealed class RemoteConsole
         }
 
         Running = true;
-        Send(ShellCodec.Encode(ShellMessageType.Run, Id, command));
+        _ = SendInTurnAsync(ShellCodec.EncodeCommand(Id, command));
         return true;
     }
 
@@ -132,6 +132,19 @@ public sealed class RemoteConsole
     }
 
     private void Send(byte[] message) => _ = SendAsync(message);
+
+    /// <summary>
+    /// One after another, each awaited before the next goes out. A long command travels as several messages and
+    /// the last of them is the one that runs it, so their order is the difference between a script and a script
+    /// with its middle somewhere else — and messages sent without waiting are not ordered by anything.
+    /// </summary>
+    private async Task SendInTurnAsync(IReadOnlyList<byte[]> messages)
+    {
+        foreach (var message in messages)
+        {
+            await SendAsync(message).ConfigureAwait(false);
+        }
+    }
 
     private async Task SendAsync(byte[] message)
     {

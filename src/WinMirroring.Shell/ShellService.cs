@@ -34,6 +34,19 @@ public sealed class ShellService : IAsyncDisposable
     /// <summary>Consoles this device has opened elsewhere, by id.</summary>
     private readonly ConcurrentDictionary<uint, RemoteConsole> _mine = new();
 
+    /// <summary>
+    /// What has arrived so far of a command too long for one message, by the console it is for. A whole script
+    /// comes this way; nothing is run until the message that ends it.
+    /// </summary>
+    private readonly ConcurrentDictionary<(string PeerId, uint Id), System.Text.StringBuilder> _arriving = new();
+
+    /// <summary>
+    /// The longest command that will be put back together. A script is text and a megabyte of it is a very long
+    /// script indeed; past that, something is either wrong or not a command, and this is memory held on someone
+    /// else's say-so.
+    /// </summary>
+    private const int LongestCommand = 1 << 20;
+
     private int _disposed;
 
     public ShellService(MirroringNode node, ILogger<ShellService> logger)
@@ -111,6 +124,11 @@ public sealed class ShellService : IAsyncDisposable
             }
         }
 
+        foreach (var key in _arriving.Keys.Where(k => k.PeerId == session.PeerId).ToList())
+        {
+            _arriving.TryRemove(key, out _);
+        }
+
         foreach (var console in _mine.Values.Where(c => ReferenceEquals(c.Session, session)).ToList())
         {
             console.OnClosed("соединение закрыто");
@@ -161,25 +179,71 @@ public sealed class ShellService : IAsyncDisposable
                 _ = Task.Run(() => OpenHereAsync(session, id), ct);
                 break;
 
-            case ShellMessageType.Run when _hosted.TryGetValue(key, out var running) && ShellCodec.TryDecodeText(span, out var command):
-                _logger.LogInformation("{Peer} runs in console {Console}: {Command}", session.PeerName, id, command);
+            case ShellMessageType.RunPart when _hosted.ContainsKey(key) && ShellCodec.TryDecodeText(span, out var part):
+                Arriving(key).Append(part);
+                break;
+
+            case ShellMessageType.Run when _hosted.TryGetValue(key, out var running) && ShellCodec.TryDecodeText(span, out var last):
+                var command = Whole(key, last);
+                if (command is null)
+                {
+                    _logger.LogWarning("{Peer} sent a command longer than this will put back together", session.PeerName);
+                    _ = session.SendAsync(ChannelId.Shell, ShellCodec.EncodeOutput(id, ShellStream.Error, "Команда слишком длинная."), ct);
+                    _ = session.SendAsync(ChannelId.Shell, ShellCodec.EncodeDone(id, 1, running.Directory), ct);
+                    break;
+                }
+
+                // The first line and its length, not the whole thing: a command here is as often a script of a
+                // hundred lines as it is one line, and a log is not the place to keep a copy of it.
+                _logger.LogInformation(
+                    "{Peer} runs in console {Console}: {Command}",
+                    session.PeerName,
+                    id,
+                    Describe(command));
                 running.Run(command);
                 break;
 
             case ShellMessageType.Cancel when _hosted.TryRemove(key, out var cancelled):
                 _logger.LogInformation("{Peer} stopped console {Console}", session.PeerName, id);
+                _arriving.TryRemove(key, out _);
                 cancelled.Dispose();
                 _ = session.SendAsync(ChannelId.Shell, ShellCodec.Encode(ShellMessageType.Close, id), ct);
                 break;
 
             case ShellMessageType.Close when _hosted.TryRemove(key, out var closing):
                 _logger.LogInformation("{Peer} closed console {Console}", session.PeerName, id);
+                _arriving.TryRemove(key, out _);
                 closing.Dispose();
                 Told(session, "Консоль закрыта", $"{session.PeerName} больше не выполняет здесь команды.");
                 break;
         }
 
         return ValueTask.CompletedTask;
+    }
+
+    private System.Text.StringBuilder Arriving((string PeerId, uint Id) key) =>
+        _arriving.GetOrAdd(key, _ => new System.Text.StringBuilder());
+
+    /// <summary>
+    /// The command that just ended, with whatever arrived before it in front of it; null when more of it arrived
+    /// than will be put back together. Either way nothing of it is kept afterwards.
+    /// </summary>
+    private string? Whole((string PeerId, uint Id) key, string last)
+    {
+        if (!_arriving.TryRemove(key, out var arriving))
+        {
+            return last.Length <= LongestCommand ? last : null;
+        }
+
+        return arriving.Length + last.Length <= LongestCommand ? arriving.Append(last).ToString() : null;
+    }
+
+    /// <summary>A command as one line for the log: the first line of it, and how long the rest is.</summary>
+    private static string Describe(string command)
+    {
+        var end = command.IndexOfAny(['\r', '\n']);
+        var first = end < 0 ? command : command[..end];
+        return end < 0 ? first : $"{first} … ({command.Length} символов)";
     }
 
     /// <summary>

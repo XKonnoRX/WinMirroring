@@ -30,13 +30,48 @@ using var loggerFactory = LoggerFactory.Create(builder => builder
     })
     .SetMinimumLevel(options.Verbose ? LogLevel.Debug : options.IsExec ? LogLevel.Warning : LogLevel.Information));
 
-// A data directory is a device: one identity, one certificate, one list of paired peers. So this tool keeps its
-// own rather than the app's — it is a device of its own, and sharing the app's would mean two nodes holding one
-// file in memory, each writing its whole view of it whenever anything changes. The one that saves last wins, and
-// what it takes away is the other's identity and everything it was paired with. That is not a story: this tool,
-// pointed at the app's directory with --data-dir, took the app's identity off the disk while the app went on
-// running with it in memory, and the device it was paired with was left trusting a certificate nobody would
-// present again. Hence both the default below and the refusal: a directory that is plainly in use is not shared.
+using var shutdown = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) =>
+{
+    e.Cancel = true;
+    shutdown.Cancel();
+};
+
+if (options.TimeoutSeconds is { } timeoutSeconds)
+{
+    shutdown.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+}
+
+// Running a command goes through the app on this machine when there is one, and this is before anything of a node
+// is built because that is the whole point: no identity made, no directory taken, nothing of a second device
+// brought into existence. The app has a session with every paired device already, under the identity those
+// devices agreed to, so what arrives over there is a command from the machine they know — rather than from a
+// "wm-cli" that each of them would have to be introduced to and would then list for ever.
+string? execCommand = null;
+if (options.IsExec)
+{
+    execCommand = await Exec.CommandTextAsync(options, shutdown.Token).ConfigureAwait(false);
+    if (execCommand is null)
+    {
+        return Exec.CouldNotReach;
+    }
+
+    if (await WinMirroring.Shell.Local.LocalShellClient.TryConnectAsync(shutdown.Token).ConfigureAwait(false) is { } app)
+    {
+        await using (app)
+        {
+            return await Exec.RunThroughAppAsync(app, options, execCommand, stdout, shutdown.Token).ConfigureAwait(false);
+        }
+    }
+}
+
+// No app here, so this really is the device — and a data directory is a device: one identity, one certificate,
+// one list of paired peers. Two nodes sharing one hold that file in memory and each writes its whole view of it
+// whenever anything changes; the one that saves last wins, and what it takes away is the other's identity and
+// everything it was paired with. That is not a story: this tool, pointed at the app's directory with --data-dir,
+// took the app's identity off the disk while the app went on running with it in memory, and the device it was
+// paired with was left trusting a certificate nobody would present again. Hence both the default below and the
+// refusal: a directory that is plainly in use is not shared.
 var dataDirectory = options.DataDirectory
     ?? Path.Combine(WinMirroring.Core.Settings.SettingsStore.DefaultDataDirectory, "cli");
 
@@ -127,18 +162,6 @@ if (options.Input)
 
 await using var inputDisposer = input;
 
-using var shutdown = new CancellationTokenSource();
-Console.CancelKeyPress += (_, e) =>
-{
-    e.Cancel = true;
-    shutdown.Cancel();
-};
-
-if (options.TimeoutSeconds is { } seconds)
-{
-    shutdown.CancelAfter(TimeSpan.FromSeconds(seconds));
-}
-
 // A console both ways: this node can run commands on another device, and — with --accept, and only when its own
 // settings allow commands at all — let another device run them here. That second half is what makes a headless
 // node something a script can manage rather than only something that manages.
@@ -149,7 +172,7 @@ shell.Start();
 
 if (options.IsExec)
 {
-    return await Exec.RunAsync(node, shell, options, stdout, shutdown.Token).ConfigureAwait(false);
+    return await Exec.RunAsync(node, shell, options, execCommand!, stdout, shutdown.Token).ConfigureAwait(false);
 }
 
 try

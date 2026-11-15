@@ -152,6 +152,8 @@ public sealed class SettingsUi
 
         switch (change.Key)
         {
+            // The property saves and announces the new name; it used to be written to disk only by "Применить"
+            // in the network section, so a name typed in this one came back as it was.
             case "device.name": _vm.DeviceName = text; break;
 
             case "input.enabled": _vm.InputEnabled = Flag(); break;

@@ -322,8 +322,10 @@
         <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="8" MaxWidth="560" HorizontalAlignment="Left">
           <TextBlock Style="{StaticResource SectionTitle}" Text="Имя устройства" />
-          <TextBlock Style="{StaticResource Caption}" Text="Под этим именем устройство видят остальные. Применяется кнопкой «Применить» на вкладке «Сеть»." Margin="0,0,0,6" />
-          <TextBox Text="{Binding DeviceName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,16" />
+          <TextBlock Style="{StaticResource Caption}" Text="Под этим именем устройство видят остальные. Сохраняется, как только вы уйдёте из поля; остальные узнают новое имя в течение нескольких секунд." Margin="0,0,0,6" />
+          <!-- On losing focus rather than per keystroke: the property saves the name and announces it, which is
+               not something to do letter by letter while someone is still typing. -->
+          <TextBox Text="{Binding DeviceName, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,16" />
 
           <TextBlock Style="{StaticResource SectionTitle}" Text="Общий ввод" />
           <CheckBox Content="Делить мышь и клавиатуру с другими устройствами" IsChecked="{Binding InputEnabled}" />
