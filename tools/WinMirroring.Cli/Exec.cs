@@ -14,12 +14,15 @@ namespace WinMirroring.Cli;
 /// tool that behaves like the command it ran is something a script — or anything else that drives a computer — can
 /// build on. So nothing of ours is allowed onto standard output, and the code that comes back is the command's and
 /// not a verdict on whether the connection worked. The codes that are ours are above anything a command uses:
-/// 64 for a device that could not be reached, 65 for one that said no.
+/// 64 for a device that could not be reached, 65 for one that said no, 66 for a settings directory that belongs to
+/// another device. The last one is not about --exec, but it belongs with the others: they are what this tool says
+/// about itself rather than about a command.
 /// </summary>
 internal static class Exec
 {
     public const int CouldNotReach = 64;
     public const int Refused = 65;
+    public const int DirectoryInUse = 66;
 
     /// <summary>How long a device is waited for before giving up, when --timeout did not say.</summary>
     private static readonly TimeSpan DefaultWait = TimeSpan.FromSeconds(30);

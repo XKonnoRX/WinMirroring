@@ -363,6 +363,7 @@ public sealed class MirroringNode : IAsyncDisposable
 
         await StopAsync().ConfigureAwait(false);
         await Sessions.DisposeAsync().ConfigureAwait(false);
+        SettingsStore.Dispose();
         _networkGate.Dispose();
     }
 }

@@ -105,7 +105,9 @@ internal sealed class CliOptions
             wm-cli: headless WinMirroring node
 
               --name <name>             device name shown to peers
-              --data-dir <dir>          settings/identity directory (default: %LocalAppData%\WinMirroring)
+              --data-dir <dir>          settings/identity directory, this tool's own device
+                                        (default: %LocalAppData%\WinMirroring\cli; the app's own directory,
+                                        or any other node's, is refused — exit code 66)
               --discovery-port <port>   UDP discovery port (default 47620)
               --port <port>             TCP transport port (default 47621)
               --manual <host[:port]>    peer address to probe (repeatable; port = peer's discovery port)
@@ -132,9 +134,9 @@ internal sealed class CliOptions
               if (-not (wm-cli --exec tablet -c "Test-Path C:\\build")) { ... }
 
             The first time, pair this tool with the device once — it is a device of its own, with its own
-            identity, exactly as a second machine would be:
+            identity, exactly as a second machine would be, and it keeps that identity in its own directory:
 
-              wm-cli --pair tablet --data-dir %LocalAppData%\WinMirroring\cli
+              wm-cli --pair tablet
             """);
     }
 }

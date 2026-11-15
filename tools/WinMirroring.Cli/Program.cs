@@ -30,9 +30,32 @@ using var loggerFactory = LoggerFactory.Create(builder => builder
     })
     .SetMinimumLevel(options.Verbose ? LogLevel.Debug : options.IsExec ? LogLevel.Warning : LogLevel.Information));
 
+// A data directory is a device: one identity, one certificate, one list of paired peers. So this tool keeps its
+// own rather than the app's — it is a device of its own, and sharing the app's would mean two nodes holding one
+// file in memory, each writing its whole view of it whenever anything changes. The one that saves last wins, and
+// what it takes away is the other's identity and everything it was paired with. That is not a story: this tool,
+// pointed at the app's directory with --data-dir, took the app's identity off the disk while the app went on
+// running with it in memory, and the device it was paired with was left trusting a certificate nobody would
+// present again. Hence both the default below and the refusal: a directory that is plainly in use is not shared.
+var dataDirectory = options.DataDirectory
+    ?? Path.Combine(WinMirroring.Core.Settings.SettingsStore.DefaultDataDirectory, "cli");
+
+if (WinMirroring.Core.Settings.SettingsStore.IsInUseByAnotherNode(dataDirectory))
+{
+    Console.Error.WriteLine($"""
+        {dataDirectory}
+        уже используется другим устройством WinMirroring (приложением или другой копией wm-cli).
+        Папка настроек — это и есть устройство: его identity, сертификат и список спаренных устройств.
+        Две программы в одной папке затирают это друг другу, поэтому здесь нужна своя:
+
+          --data-dir {Path.Combine(WinMirroring.Core.Settings.SettingsStore.DefaultDataDirectory, "cli")}
+        """);
+    return Exec.DirectoryInUse;
+}
+
 var nodeOptions = new NodeOptions
 {
-    DataDirectory = options.DataDirectory ?? WinMirroring.Core.Settings.SettingsStore.DefaultDataDirectory,
+    DataDirectory = dataDirectory,
     IncludeLoopback = options.Loopback,
     DeviceName = options.Name,
     DiscoveryPort = options.DiscoveryPort,

@@ -128,6 +128,23 @@ public sealed class ShellService : IAsyncDisposable
         // Answers to a console of ours.
         if (type is ShellMessageType.Opened or ShellMessageType.Refused or ShellMessageType.Output or ShellMessageType.Done or ShellMessageType.Close)
         {
+            // Whether a device gave us a console is worth keeping, because asking was already written down and
+            // the answer was not: a refusal — commands turned off over there, or whoever is sitting at it saying
+            // no — reached the screen of whoever asked and nowhere else. Afterwards, with the window closed,
+            // there was no way to tell a device that said no from one that never answered.
+            if (type is ShellMessageType.Opened)
+            {
+                _logger.LogInformation("{Peer} gave us console {Console}", session.PeerName, id);
+            }
+            else if (type is ShellMessageType.Refused)
+            {
+                _logger.LogInformation(
+                    "{Peer} gave us no console {Console}: {Reason}",
+                    session.PeerName,
+                    id,
+                    ShellCodec.TryDecodeText(span, out var reason) ? reason : "причина не названа");
+            }
+
             if (_mine.TryGetValue(id, out var console) && ReferenceEquals(console.Session, session))
             {
                 console.OnMessage(type, span);
