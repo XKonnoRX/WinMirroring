@@ -157,6 +157,29 @@ public sealed class NodeIntegrationTests : IAsyncLifetime
     /// The app disposes its services in order and the service container disposes them again afterwards; a second
     /// dispose that throws used to abort the exit before the app shut down, leaving it running with no windows.
     /// </summary>
+    /// <summary>
+    /// A rename is kept and introduces the device. Both halves, because either one without the other looks
+    /// exactly like a rename that did not work: the name used to be saved only by the button that applies network
+    /// settings, in another section, so a name typed and left alone came back as it had been — and a name saved
+    /// but not put on the identity would still introduce the device by the old one in every handshake and every
+    /// announcement.
+    /// </summary>
+    [Fact]
+    public void ARenameIsKeptAndIsWhatTheDeviceIntroducesItselfBy()
+    {
+        var node = CreateNode("BeforeTheRename", FreeUdpPort(), FreeTcpPort(), ["127.0.0.1:1"]);
+
+        var taken = node.Rename("  После переименования  ");
+
+        Assert.Equal("После переименования", taken);
+        Assert.Equal("После переименования", node.Identity.Name);
+        Assert.Equal("После переименования", new Settings.SettingsStore(node.SettingsStore.DataDirectory).Load().DeviceName);
+
+        // And an empty name is this machine's own, rather than a device with no name at all.
+        Assert.Equal(Environment.MachineName, node.Rename("   "));
+        Assert.Equal(Environment.MachineName, new Settings.SettingsStore(node.SettingsStore.DataDirectory).Load().DeviceName);
+    }
+
     [Fact]
     public async Task DisposingTwiceIsHarmless()
     {

@@ -140,6 +140,48 @@ public sealed class ShellIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// A command that failed as PowerShell rather than as a program comes back as a failure. Nothing exited, so
+    /// there is no exit code to report, and what used to be reported instead was zero — a script with a syntax
+    /// error in it came back a success, which for something a script reads is the worst answer available.
+    /// </summary>
+    [Fact]
+    public async Task ACommandThatFailedWithoutAProgramComesBackAsAFailure()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, _) = await ConnectAsync(allowThere: true, agreeThere: true, ct);
+
+        var console = shellA.Open(b.Identity.Id)!;
+        var run = Watch(console);
+        await run.Opened.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+
+        Assert.True(console.Run("Get-Item C:\\нет-такого-пути-и-не-было"));
+        Assert.NotEqual(0, await run.Done.Task.WaitAsync(TimeSpan.FromSeconds(30), ct));
+    }
+
+    /// <summary>
+    /// And one command's exit code is not the next one's. The variable PowerShell keeps it in holds whatever the
+    /// last program to exit left there, and a console runs many commands: a "cmd /c exit 7" used to make every
+    /// cmdlet after it report 7 too, until the next program came along.
+    /// </summary>
+    [Fact]
+    public async Task AnExitCodeDoesNotStickToTheCommandAfterIt()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, _) = await ConnectAsync(allowThere: true, agreeThere: true, ct);
+
+        var console = shellA.Open(b.Identity.Id)!;
+        var first = Watch(console);
+        await first.Opened.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+
+        Assert.True(console.Run("cmd /c exit 7"));
+        Assert.Equal(7, await first.Done.Task.WaitAsync(TimeSpan.FromSeconds(30), ct));
+
+        var second = Watch(console);
+        Assert.True(console.Run("Write-Output 'и это получилось'"));
+        Assert.Equal(0, await second.Done.Task.WaitAsync(TimeSpan.FromSeconds(30), ct));
+    }
+
+    /// <summary>
     /// A command sent by a tool on this machine, through the app, rather than by a device of its own. This is the
     /// whole reason the command-line tool is not a device: the app has the session and the pairing already, so the
     /// device on the other end sees a command from the machine it knows and nothing new appears in its list.

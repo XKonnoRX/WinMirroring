@@ -109,9 +109,20 @@ internal sealed class RemoteShell : IDisposable
         // mojibake; and a command written as itself has to be one line, because the shell runs each line as it
         // comes. Base64 is ASCII, so no code page can touch it, and it carries newlines without them meaning
         // anything to the shell.
-        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(command));
+        // A line of our own on the end of what was sent, which is how the command's own success gets out. $? read
+        // after Invoke-Expression is about Invoke-Expression: measured, it is false for a command that would not
+        // parse and true for one whose last cmdlet failed, which is the common failure and the one a script cares
+        // about. Asked inside the command instead, it is the command's own answer.
+        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(command + "\n$global:WinMirroringOk = $?"));
+
+        // The exit code is cleared first, because $LASTEXITCODE is whatever the last program to exit left there and
+        // one console runs many commands: without this, a command that ran "cmd /c exit 7" made every cmdlet after
+        // it report 7 as well, right up to the next program. The success is cleared to nothing at all, which is
+        // what it still is if the command never got far enough to answer.
         return Write(
-            $"Invoke-Expression ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{payload}')))"
+            "$global:LASTEXITCODE = 0; $global:WinMirroringOk = $null"
+            + Environment.NewLine
+            + $"Invoke-Expression ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{payload}')))"
             + Environment.NewLine + MarkerCommand());
     }
 
@@ -123,12 +134,26 @@ internal sealed class RemoteShell : IDisposable
     public void Cancel() => Dispose();
 
     /// <summary>
-    /// The line that says a command is over: the marker, the exit code and where the console now is. Cast to a
-    /// number on purpose — PowerShell leaves $LASTEXITCODE unset until a program has exited, and an empty one here
-    /// made the line one field short, so the directory was read as the exit code and then lost.
+    /// The line that says a command is over: the marker, the exit code, whether the command succeeded at all, and
+    /// where the console now is.
+    ///
+    /// Both numbers, because PowerShell keeps the two apart and a caller wants one answer. $LASTEXITCODE is what a
+    /// program exited with and says nothing about a cmdlet or a script that failed — a script with a syntax error
+    /// in it came back as a success, which is the worst possible answer for something a script is reading.
+    ///
+    /// Success is the command's own answer where the command managed to give one (the line added to it on the way
+    /// out), and otherwise $? here — which is then about Invoke-Expression, and is false exactly when the command
+    /// never ran at all. $? is read first, before anything else on this line: an assignment is itself a statement
+    /// that succeeds, and reading $? after one would only say that the assignment went well.
+    ///
+    /// The code is cast to a number because PowerShell leaves $LASTEXITCODE unset until a program has exited, and
+    /// an empty one here made the line a field short, so the directory was read as the exit code and then lost.
     /// </summary>
     private string MarkerCommand() =>
-        $"Write-Output \"{_marker} $([int]$LASTEXITCODE) $((Get-Location).Path)\"";
+        "$ran = [int]$?; "
+        + "$ok = if ($null -eq $global:WinMirroringOk) { $ran } else { [int]$global:WinMirroringOk }; "
+        + "$code = [int]$LASTEXITCODE; "
+        + $"Write-Output \"{_marker} $code $ok $((Get-Location).Path)\"";
 
     private void Begin()
     {
@@ -154,10 +179,15 @@ internal sealed class RemoteShell : IDisposable
 
         if (kind == ShellStreamKind.Output && line.StartsWith(_marker, StringComparison.Ordinal))
         {
-            var rest = line[_marker.Length..].TrimStart();
-            var split = rest.IndexOf(' ');
-            var code = split < 0 ? rest : rest[..split];
-            Directory = split < 0 ? Directory : rest[(split + 1)..];
+            // The exit code, whether it worked, and the directory — which is last because a path has spaces in it
+            // and the other two never do.
+            var parts = line[_marker.Length..].TrimStart().Split(' ', 3);
+            var code = parts.Length > 0 && int.TryParse(parts[0], out var exit) ? exit : 0;
+            var worked = parts.Length < 2 || parts[1] != "0";
+            if (parts.Length > 2)
+            {
+                Directory = parts[2];
+            }
 
             if (Interlocked.Exchange(ref _opened, 1) == 0)
             {
@@ -165,7 +195,9 @@ internal sealed class RemoteShell : IDisposable
                 return;
             }
 
-            Done?.Invoke(int.TryParse(code, out var exit) ? exit : 0, Directory);
+            // A program's own code when it gave one, and otherwise one if the command failed as PowerShell: a
+            // script that would not even parse used to come back as a success, because nothing had exited.
+            Done?.Invoke(code != 0 ? code : worked ? 0 : 1, Directory);
             return;
         }
 
