@@ -195,6 +195,13 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
         Assert.Contains(frame.Image, b => b != 0);
         Assert.Single(screenA.Sources);
 
+        // Before the comparison below, which stands aside on a desktop that will not hold still: whether the
+        // pictures reach the viewer by UDP has nothing to do with whether anything on the screen is moving.
+        if (expectedCodec == "h264")
+        {
+            await ThePicturesMoveToUdpAsync(viewer, ct);
+        }
+
         // The streamed image must match a direct capture of the same monitor (JPEG is lossy, the screen may change
         // a little in between, so compare the mean error rather than exact pixels).
         var received = frame.Image;
@@ -308,6 +315,27 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
         {
             SetCursorPos(was.X, was.Y);
         }
+    }
+
+    /// <summary>
+    /// The pictures leave the connection for UDP, where a lost one does not hold back the next. Every part of that
+    /// has to work for one picture to arrive this way: the key handed over inside the session, the probes the
+    /// source sends on the new path, the answer the viewer gives on the old one, the cutting into datagrams and the
+    /// putting back together. Nothing is lost over a loopback, so this also says the pieces line up exactly.
+    /// </summary>
+    private static async Task ThePicturesMoveToUdpAsync(ScreenViewer viewer, CancellationToken ct)
+    {
+        await WaitUntilAsync(() => viewer.Datagrams.Delivered > 0, ct);
+
+        var (delivered, repaired, lost) = viewer.Datagrams;
+        var line = $"by UDP: {delivered} pictures, {repaired} repaired, {lost} given up on";
+        TestContext.Current.TestOutputHelper?.WriteLine(line);
+
+        // Also to a file, because this test stands aside further down on a desktop that will not hold still, and a
+        // test that was skipped prints nothing — while whether the pictures took the new path is the whole point.
+        File.AppendAllText(Path.Combine(Path.GetTempPath(), "winmirroring-udp.txt"), line + Environment.NewLine);
+        Assert.True(delivered > 0, "no picture arrived by UDP");
+        Assert.Equal(0, lost);
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]

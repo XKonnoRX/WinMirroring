@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
+using WinMirroring.Core;
 using WinMirroring.Core.Messages;
 using WinMirroring.Core.Peers;
 using WinMirroring.Core.Settings;
@@ -11,6 +12,7 @@ using WinMirroring.Input.Protocol;
 using WinMirroring.Screen.Capture;
 using WinMirroring.Screen.Encoding;
 using WinMirroring.Screen.Protocol;
+using WinMirroring.Screen.Transport;
 using static WinMirroring.Screen.Native.ScreenNative;
 
 namespace WinMirroring.Screen;
@@ -75,6 +77,12 @@ internal sealed class ScreenSource : IAsyncDisposable
     private const int MaxShapes = 48;
 
     /// <summary>
+    /// How often a viewer's request for a whole picture is acted on. A key frame is the most expensive thing a
+    /// stream sends, and losses come in runs: answering each one separately would make a bad moment worse.
+    /// </summary>
+    private static readonly TimeSpan RefreshAtMost = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
     /// How long a frame may stay unacknowledged before the stream stops waiting for it. Whatever this is, it is
     /// also how long the picture stands still when it happens, so half a second — which is what it was — was half
     /// a second of frozen picture every time a frame went missing, about once a minute on this link. It only has
@@ -134,6 +142,10 @@ internal sealed class ScreenSource : IAsyncDisposable
     private long _awaitingSince;
     private Task? _loop;
     private Task? _sendLoop;
+
+    /// <summary>The UDP path for this stream's pictures, or null where this node has no media socket.</summary>
+    private VideoLink? _link;
+    private long _refreshedTicks;
     private IDisposable? _timer;
     private int _ended;
     private bool _reportedIconic;
@@ -160,7 +172,7 @@ internal sealed class ScreenSource : IAsyncDisposable
     private float _sentY = -1;
     private bool _sentVisible;
 
-    private ScreenSource(PeerSession session, uint streamId, StreamKind kind, WgcCapture capture, MonitorDescription? monitor, nint window, string title, ScreenSettings settings, bool useVideo, bool sendsPointer, ILogger logger)
+    private ScreenSource(MirroringNode node, PeerSession session, uint streamId, StreamKind kind, WgcCapture capture, MonitorDescription? monitor, nint window, string title, ScreenSettings settings, bool useVideo, bool sendsPointer, ILogger logger)
     {
         Session = session;
         StreamId = streamId;
@@ -177,6 +189,10 @@ internal sealed class ScreenSource : IAsyncDisposable
         _touch = new Injection.TouchInjector(logger);
         _capture.Closed += OnCaptureClosed;
         _capture.CaptureCursor = !sendsPointer;
+
+        // Made here rather than at the start because the stream is described to the viewer before it starts, and
+        // the key for these datagrams travels in that description.
+        _link = useVideo ? VideoLink.TryCreate(node, session, streamId, logger) : null;
     }
 
     /// <summary>The codec this stream announces to the viewer: H.264 when negotiated, otherwise JPEG tiles.</summary>
@@ -196,21 +212,21 @@ internal sealed class ScreenSource : IAsyncDisposable
 
     public event Action<ScreenSource, string>? Ended;
 
-    public static ScreenSource ForMonitor(PeerSession session, uint streamId, int monitorIndex, string? monitorKey, ScreenSettings settings, bool useVideo, bool sendsPointer, ILogger logger)
+    public static ScreenSource ForMonitor(MirroringNode node, PeerSession session, uint streamId, int monitorIndex, string? monitorKey, ScreenSettings settings, bool useVideo, bool sendsPointer, ILogger logger)
     {
         var monitor = PickMonitor(monitorIndex, monitorKey);
-        return new ScreenSource(session, streamId, StreamKind.Monitor, WgcCapture.ForMonitor(monitor.Handle, logger), monitor, 0, MonitorTitle(monitor), settings, useVideo, sendsPointer, logger);
+        return new ScreenSource(node, session, streamId, StreamKind.Monitor, WgcCapture.ForMonitor(monitor.Handle, logger), monitor, 0, MonitorTitle(monitor), settings, useVideo, sendsPointer, logger);
     }
 
-    public static ScreenSource ForWindow(PeerSession session, uint streamId, nint window, ScreenSettings settings, bool useVideo, bool sendsPointer, ILogger logger)
+    public static ScreenSource ForWindow(MirroringNode node, PeerSession session, uint streamId, nint window, ScreenSettings settings, bool useVideo, bool sendsPointer, ILogger logger)
     {
         var title = GetTitle(window);
-        return new ScreenSource(session, streamId, StreamKind.Window, WgcCapture.ForWindow(window, logger), null, window, string.IsNullOrEmpty(title) ? "Окно" : title, settings, useVideo, sendsPointer, logger);
+        return new ScreenSource(node, session, streamId, StreamKind.Window, WgcCapture.ForWindow(window, logger), null, window, string.IsNullOrEmpty(title) ? "Окно" : title, settings, useVideo, sendsPointer, logger);
     }
 
     /// <summary>Streams the virtual monitor that extends this desktop onto the viewer.</summary>
-    public static ScreenSource ForDisplay(PeerSession session, uint streamId, MonitorDescription monitor, ScreenSettings settings, bool useVideo, bool sendsPointer, ILogger logger) =>
-        new(session, streamId, StreamKind.Display, WgcCapture.ForMonitor(monitor.Handle, logger), monitor, 0, $"Второй монитор {Environment.MachineName}", settings, useVideo, sendsPointer, logger);
+    public static ScreenSource ForDisplay(MirroringNode node, PeerSession session, uint streamId, MonitorDescription monitor, ScreenSettings settings, bool useVideo, bool sendsPointer, ILogger logger) =>
+        new(node, session, streamId, StreamKind.Display, WgcCapture.ForMonitor(monitor.Handle, logger), monitor, 0, $"Второй монитор {Environment.MachineName}", settings, useVideo, sendsPointer, logger);
 
     public ScreenStreamMessage Describe() => new(
         StreamId,
@@ -222,7 +238,8 @@ internal sealed class ScreenSource : IAsyncDisposable
         Kind == StreamKind.Window && IsIconic(Window),
         Kind == StreamKind.Window ? WindowScalePercent(Window) : 100,
         Codec,
-        _monitor?.DeviceName ?? string.Empty);
+        _monitor?.DeviceName ?? string.Empty,
+        _link?.Key ?? string.Empty);
 
     /// <summary>Viewer side runs a copy of the window: carry out a command on this device's real window.</summary>
     public void OnWindowCommand(WindowCommand command)
@@ -319,7 +336,38 @@ internal sealed class ScreenSource : IAsyncDisposable
     }
 
     /// <summary>A frame came back; <paramref name="viewerMs"/> is how long the viewer held it, or -1 if it did not say.</summary>
-    public void OnAck(int viewerMs = -1) => _window.OnAck(viewerMs);
+    public void OnAck(int viewerMs = -1)
+    {
+        _window.OnAck(viewerMs);
+        _link?.Acknowledged();
+    }
+
+    /// <summary>The viewer is receiving this stream's UDP probes: its pictures move off the connection.</summary>
+    public void OnUdpReady()
+    {
+        _link?.Confirm();
+
+        // The first picture on the new path is a whole one. Not for the decoder's sake alone: a picture already on
+        // the connection and one on UDP can pass each other, and a whole picture is read against nothing.
+        Volatile.Write(ref _forceAll, 1);
+    }
+
+    /// <summary>
+    /// The viewer lost a picture for good and cannot read the next ones against it, so it asks for a whole one.
+    /// Throttled: several losses in a row are one answer, and a key frame is the most expensive thing a stream
+    /// sends — answering every one of them would turn a bad moment into a worse one.
+    /// </summary>
+    public void OnRefreshRequested()
+    {
+        var now = Environment.TickCount64;
+        if (now - _refreshedTicks < RefreshAtMost.TotalMilliseconds)
+        {
+            return;
+        }
+
+        _refreshedTicks = now;
+        Volatile.Write(ref _forceAll, 1);
+    }
 
     public void OnCrop(RectangleF crop)
     {
@@ -1004,12 +1052,20 @@ internal sealed class ScreenSource : IAsyncDisposable
         {
             await foreach (var messages in _outbound.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
+                // Here rather than anywhere else because everything this link does, probing included, seals
+                // datagrams with one cipher, and a cipher serves one thread at a time.
+                _link?.ProbeIfDue();
+
                 foreach (var message in messages)
                 {
+                    // A slot stands for a picture on its way, whichever way it goes.
                     await _window.TakeAsync(ct).ConfigureAwait(false);
                     Interlocked.Increment(ref _framesSent);
                     Interlocked.Add(ref _bytesSent, message.Length);
-                    await Session.SendAsync(ChannelId.Screen, message, ct).ConfigureAwait(false);
+                    if (!TrySendByUdp(message))
+                    {
+                        await Session.SendAsync(ChannelId.Screen, message, ct).ConfigureAwait(false);
+                    }
                 }
             }
         }
@@ -1025,6 +1081,22 @@ internal sealed class ScreenSource : IAsyncDisposable
             _logger.LogError(ex, "Screen stream {Stream} stopped sending", StreamId);
             End("error");
         }
+    }
+
+    /// <summary>
+    /// Sends one message as UDP datagrams if the picture it holds can go that way and the path is working. The
+    /// picture is read straight out of the message rather than built again: the two carry the same bytes, and the
+    /// connection is still where this one goes if UDP will not take it.
+    /// </summary>
+    private bool TrySendByUdp(byte[] message)
+    {
+        if (_link is not { Carries: true } link
+            || !ScreenCodec.TryReadVideoFrame(message, out var frameNo, out var width, out var height, out var keyframe, out var offset))
+        {
+            return false;
+        }
+
+        return link.TrySend(frameNo, width, height, keyframe, message.AsSpan(offset));
     }
 
     /// <summary>
@@ -1056,13 +1128,14 @@ internal sealed class ScreenSource : IAsyncDisposable
             var frames = Interlocked.Exchange(ref _framesSent, 0);
             var bytes = Interlocked.Exchange(ref _bytesSent, 0);
             _logger.LogInformation(
-                "Stream {Stream} to {Peer}: {Codec}, {Rate:F1} messages/s, {Kbps:F0} kbit/s at {Share:P0} of the "
-                + "configured bitrate{Held}, {Fps} fps asked for, bitrate moved {Changes} times, acknowledged in "
-                + "{Delay:F0} ms of which the viewer spent {Viewer:F0} ms, {Late} of {Acks} late, {GivenUp} not "
+                "Stream {Stream} to {Peer}: {Codec} over {Path}, {Rate:F1} messages/s, {Kbps:F0} kbit/s at {Share:P0} "
+                + "of the configured bitrate{Held}, {Fps} fps asked for, bitrate moved {Changes} times, acknowledged "
+                + "in {Delay:F0} ms of which the viewer spent {Viewer:F0} ms, {Late} of {Acks} late, {GivenUp} not "
                 + "waited for, {InFlight} in flight",
                 StreamId,
                 Session.PeerName,
                 Codec,
+                _link is { Carries: true } carrying ? $"UDP ({carrying.Datagrams} datagrams)" : "the connection",
                 frames / seconds,
                 bytes * 8 / 1000.0 / seconds,
                 _pacing.Share,
@@ -1198,6 +1271,7 @@ internal sealed class ScreenSource : IAsyncDisposable
             capture = _capture;
         }
 
+        _link?.Dispose();
         capture.Closed -= OnCaptureClosed;
         capture.Dispose();
         _encoder.Dispose();

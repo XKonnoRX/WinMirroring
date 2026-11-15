@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Drawing;
 using Microsoft.Extensions.Logging;
 using WinMirroring.Core.Messages;
@@ -93,7 +93,7 @@ public sealed partial class ScreenStreamingService
     {
         foreach (var source in _sources.Values.Where(s => s.Kind == StreamKind.Display).ToList())
         {
-            await StopSourceAsync(source.StreamId, "РІС‚РѕСЂРѕР№ РјРѕРЅРёС‚РѕСЂ РѕС‚РєР»СЋС‡С‘РЅ").ConfigureAwait(false);
+            await StopSourceAsync(source.StreamId, "второй монитор отключён").ConfigureAwait(false);
         }
     }
 
@@ -124,7 +124,7 @@ public sealed partial class ScreenStreamingService
 
             case DisplayExtendResultMessage { Ok: false } result:
                 _displayRequested.TryRemove(session.PeerId, out _);
-                ExtendFailed?.Invoke(session.PeerName, result.Error ?? "РЅРµРёР·РІРµСЃС‚РЅР°СЏ РѕС€РёР±РєР°");
+                ExtendFailed?.Invoke(session.PeerName, result.Error ?? "неизвестная ошибка");
                 break;
         }
     }
@@ -169,18 +169,18 @@ public sealed partial class ScreenStreamingService
     {
         if (!_node.Settings.Screen.AllowViewing)
         {
-            return "РїСЂРѕСЃРјРѕС‚СЂ СЌРєСЂР°РЅР° Р·Р°РїСЂРµС‰С‘РЅ РЅР° СЌС‚РѕРј СѓСЃС‚СЂРѕР№СЃС‚РІРµ";
+            return "просмотр экрана запрещён на этом устройстве";
         }
 
         if (ExtendedTo is { } current)
         {
-            return current == session.PeerId ? null : "РІРёСЂС‚СѓР°Р»СЊРЅС‹Р№ РјРѕРЅРёС‚РѕСЂ СѓР¶Рµ РїРѕРєР°Р·С‹РІР°РµС‚СЃСЏ РЅР° РґСЂСѓРіРѕРј СѓСЃС‚СЂРѕР№СЃС‚РІРµ";
+            return current == session.PeerId ? null : "виртуальный монитор уже показывается на другом устройстве";
         }
 
         var device = VirtualDisplay.FindDeviceName();
         if (device is null)
         {
-            return "РЅРµ СѓСЃС‚Р°РЅРѕРІР»РµРЅ РґСЂР°Р№РІРµСЂ РІРёСЂС‚СѓР°Р»СЊРЅРѕРіРѕ РјРѕРЅРёС‚РѕСЂР° (Virtual Display Driver)";
+            return "не установлен драйвер виртуального монитора (Virtual Display Driver)";
         }
 
         var width = Math.Clamp(request.Width, 640, 8192);
@@ -195,7 +195,7 @@ public sealed partial class ScreenStreamingService
                 device = await WaitForDeviceAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
                 if (device is null)
                 {
-                    return "РІРёСЂС‚СѓР°Р»СЊРЅС‹Р№ РјРѕРЅРёС‚РѕСЂ РЅРµ РІРµСЂРЅСѓР»СЃСЏ РїРѕСЃР»Рµ РїРµСЂРµР·Р°РїСѓСЃРєР° РґСЂР°Р№РІРµСЂР°";
+                    return "виртуальный монитор не вернулся после перезапуска драйвера";
                 }
 
                 mode = VirtualDisplay.PickMode(VirtualDisplay.Modes(device), width, height, out exact);
@@ -212,7 +212,7 @@ public sealed partial class ScreenStreamingService
             _logger.LogInformation("Attaching {Device} failed ({Code}); trying the extend topology", device, code);
             if (!VirtualDisplay.ExtendTopology())
             {
-                return $"Windows РЅРµ РїРѕРґРєР»СЋС‡РёР» РІРёСЂС‚СѓР°Р»СЊРЅС‹Р№ РјРѕРЅРёС‚РѕСЂ (РєРѕРґ {code})";
+                return $"Windows не подключил виртуальный монитор (код {code})";
             }
 
             await Task.Delay(1000).ConfigureAwait(false);
@@ -233,7 +233,7 @@ public sealed partial class ScreenStreamingService
         if (monitor is null)
         {
             VirtualDisplay.Detach(device);
-            return "РІРёСЂС‚СѓР°Р»СЊРЅС‹Р№ РјРѕРЅРёС‚РѕСЂ РЅРµ РїРѕСЏРІРёР»СЃСЏ РЅР° СЂР°Р±РѕС‡РµРј СЃС‚РѕР»Рµ";
+            return "виртуальный монитор не появился на рабочем столе";
         }
 
         if (!VirtualDisplay.TrySetScale(device, request.ScalePercent))
@@ -242,11 +242,11 @@ public sealed partial class ScreenStreamingService
         }
 
         _logger.LogInformation("Extending onto {Peer}: {Width}x{Height}@{Hz} at {Position}{Exact}", session.PeerName, chosen.Width, chosen.Height, chosen.Frequency, position, exact ? string.Empty : " (closest offered mode)");
-        var source = ScreenSource.ForDisplay(session, NewStreamId(), monitor, _node.Settings.Screen, NegotiateVideo(session), PeerDrawsPointer(session), _logger);
+        var source = ScreenSource.ForDisplay(_node, session, NewStreamId(), monitor, _node.Settings.Screen, NegotiateVideo(session), PeerDrawsPointer(session), _logger);
         if (!await StartSourceAsync(session, source).ConfigureAwait(false))
         {
             VirtualDisplay.Detach(device);
-            return "РЅРµ СѓРґР°Р»РѕСЃСЊ РЅР°С‡Р°С‚СЊ РїРµСЂРµРґР°С‡Сѓ РёР·РѕР±СЂР°Р¶РµРЅРёСЏ";
+            return "не удалось начать передачу изображения";
         }
 
         return null;

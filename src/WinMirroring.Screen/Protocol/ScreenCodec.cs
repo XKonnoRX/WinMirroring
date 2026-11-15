@@ -50,6 +50,12 @@ public enum ScreenMessageType : byte
 
     /// <summary>Source → viewer: the pixels of one pointer shape, sent once and kept by the viewer.</summary>
     CursorShape = 12,
+
+    /// <summary>Viewer → source: your UDP datagrams reach me, so send the pictures that way.</summary>
+    UdpReady = 13,
+
+    /// <summary>Viewer → source: a picture was lost for good; send a whole one rather than a difference.</summary>
+    Refresh = 14,
 }
 
 /// <summary>What a <see cref="ScreenMessageType.Window"/> message asks the captured window to do.</summary>
@@ -171,6 +177,38 @@ public static class ScreenCodec
         span[13] = (byte)(keyframe ? 1 : 0);
         // span[14..16] reserved for alignment / future flags.
         data.CopyTo(span[VideoHeader..]);
+        return message;
+    }
+
+    /// <summary>
+    /// Reads a video frame message without copying the access unit out of it: <paramml name="offset"/> is where
+    /// those bytes start. For sending the same picture by UDP, where what is wanted is the picture itself and the
+    /// few numbers that describe it, not another copy of either.
+    /// </summary>
+    public static bool TryReadVideoFrame(ReadOnlySpan<byte> message, out uint frameNo, out int width, out int height, out bool keyframe, out int offset)
+    {
+        frameNo = 0;
+        width = height = 0;
+        keyframe = false;
+        offset = VideoHeader;
+        if (message.Length <= VideoHeader || message[0] != (byte)ScreenMessageType.VideoFrame)
+        {
+            return false;
+        }
+
+        frameNo = BinaryPrimitives.ReadUInt32LittleEndian(message[5..]);
+        width = BinaryPrimitives.ReadUInt16LittleEndian(message[9..]);
+        height = BinaryPrimitives.ReadUInt16LittleEndian(message[11..]);
+        keyframe = (message[13] & 1) != 0;
+        return true;
+    }
+
+    /// <summary>A message that is nothing but its type and stream: the viewer's two one-word requests.</summary>
+    public static byte[] EncodeRequest(ScreenMessageType type, uint streamId)
+    {
+        var message = new byte[5];
+        message[0] = (byte)type;
+        BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(1), streamId);
         return message;
     }
 

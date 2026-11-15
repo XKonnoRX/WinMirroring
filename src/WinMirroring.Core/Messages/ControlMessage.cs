@@ -184,6 +184,11 @@ public sealed record ScreenRequestMessage(uint StreamId, int MonitorIndex, strin
 /// Source → viewer: a stream starts or changes. Kind is "monitor", "window" or "display". <see cref="Codec"/>
 /// is the encoding the source will use ("jpeg" changed tiles, or "h264" full-frame video); it defaults to "jpeg"
 /// so a message from an older peer that omits the field is read as the tile path.
+///
+/// <see cref="MediaKey"/> is the key for this stream's UDP datagrams, if the source can send them: the pictures may
+/// move off this connection and onto UDP, where a lost one does not hold back the next. It travels here because
+/// here is inside the session's TLS, which is what lets the datagrams need no handshake of their own. Empty from a
+/// source that cannot or will not, and the stream then stays on the connection.
 /// </summary>
 public sealed record ScreenStreamMessage(
     uint StreamId,
@@ -195,7 +200,8 @@ public sealed record ScreenStreamMessage(
     bool Minimized = false,
     int ScalePercent = 100,
     string Codec = "jpeg",
-    string MonitorKey = "") : ControlMessage;
+    string MonitorKey = "",
+    string MediaKey = "") : ControlMessage;
 
 /// <summary>Either side: the stream ends.</summary>
 public sealed record ScreenStopMessage(uint StreamId, string? Reason) : ControlMessage;

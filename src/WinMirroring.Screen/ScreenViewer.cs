@@ -2,12 +2,14 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
+using WinMirroring.Core.Media;
 using WinMirroring.Core.Messages;
 using WinMirroring.Core.Peers;
 using WinMirroring.Core.Transport;
 using WinMirroring.Input.Protocol;
 using WinMirroring.Screen.Encoding;
 using WinMirroring.Screen.Protocol;
+using WinMirroring.Screen.Transport;
 
 namespace WinMirroring.Screen;
 
@@ -80,6 +82,8 @@ public sealed class ScreenViewer : IAsyncDisposable
         Session = session;
         Info = info;
         _logger = logger;
+
+        OpenMediaPath(info.MediaKey);
 
         // The window paints on the dispatcher, whose timing is as coarse as the system timer; while a view is open
         // that is worth making fine (see MediaTimerResolution).
@@ -184,7 +188,154 @@ public sealed class ScreenViewer : IAsyncDisposable
     internal void OnInfo(ScreenStreamMessage info)
     {
         Info = info;
+        OpenMediaPath(info.MediaKey);
         InfoChanged?.Invoke(this);
+    }
+
+    // ---- pictures by UDP -------------------------------------------------------------------------------
+    //
+    // A picture is only worth anything while it is current. On the session's one reliable connection a lost
+    // segment holds back everything behind it until it has been asked for again and sent again — a whole round
+    // trip in which the next picture, the one that should be on the screen by then, waits its turn behind a
+    // picture nobody will ever want again. So the source may send them as UDP datagrams instead, and this is where
+    // they are put back together.
+    //
+    // The key comes in the stream's description, inside the session's TLS, which is what lets the datagrams need no
+    // handshake of their own. Nothing here is assumed to work: pictures keep coming on the connection until the
+    // probes have been answered, and go back there if they stop arriving.
+
+    private readonly object _mediaGate = new();
+    private MediaCipher? _mediaCipher;
+    private VideoReassembly? _reassembly;
+    private byte[] _mediaPlain = [];
+    private string _mediaKey = string.Empty;
+    private Task? _mediaTicks;
+    private int _udpReported;
+
+    /// <summary>
+    /// Everything about putting pictures together happens because a datagram arrived, which is enough while they
+    /// keep arriving. This is for when they stop: a picture lost at the very moment the screen stopped changing
+    /// would otherwise hold back the one after it — the one showing what the screen settled on — until something
+    /// moved again. Half a frame's worth of waking up, only while a stream is on UDP at all.
+    /// </summary>
+    private async Task TickMediaAsync()
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(8));
+            while (await timer.WaitForNextTickAsync(_cts.Token).ConfigureAwait(false))
+            {
+                lock (_mediaGate)
+                {
+                    _reassembly?.Tick();
+                }
+            }
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
+        {
+        }
+    }
+
+    private void OpenMediaPath(string key)
+    {
+        if (key.Length == 0 || key == _mediaKey)
+        {
+            return;
+        }
+
+        try
+        {
+            var bytes = Convert.FromBase64String(key);
+            if (bytes.Length != MediaCipher.KeySize)
+            {
+                return;
+            }
+
+            lock (_mediaGate)
+            {
+                _mediaCipher?.Dispose();
+                _mediaCipher = new MediaCipher(bytes);
+                _reassembly = new VideoReassembly(OnWholePicture, OnLostPicture);
+                _mediaPlain = new byte[VideoDatagram.SafeDatagramBytes];
+                _mediaKey = key;
+                _mediaTicks ??= Task.Run(TickMediaAsync);
+            }
+        }
+        catch (FormatException)
+        {
+            _logger.LogDebug("The key for this stream's datagrams is not readable; its pictures stay on the connection");
+        }
+    }
+
+    /// <summary>
+    /// One datagram, straight off the receive loop. Quick on purpose: authenticating it and copying its piece into
+    /// place is all that happens here, and a whole picture is handed to the decoder the same way one off the
+    /// connection is.
+    /// </summary>
+    internal void OnMediaPacket(byte kind, ReadOnlySpan<byte> packet)
+    {
+        lock (_mediaGate)
+        {
+            if (_mediaCipher is not { } cipher || _reassembly is not { } reassembly)
+            {
+                return;
+            }
+
+            if (!cipher.TryOpen(packet, _mediaPlain, out var length))
+            {
+                return; // forged, corrupted, or for a stream this is not
+            }
+
+            if (kind == VideoLink.ProbeKind)
+            {
+                ReportUdpWorks();
+                return;
+            }
+
+            if (kind == VideoLink.FrameKind
+                && VideoDatagram.TryReadHeader(_mediaPlain.AsSpan(0, length), out var header))
+            {
+                // Datagrams arriving are also the answer to the probes, for a path that came up mid-stream.
+                ReportUdpWorks();
+                reassembly.Add(header, _mediaPlain.AsSpan(VideoDatagram.HeaderSize, length - VideoDatagram.HeaderSize));
+            }
+        }
+    }
+
+    /// <summary>Tells the source, once, that its datagrams reach here, so the pictures can move off the connection.</summary>
+    private void ReportUdpWorks()
+    {
+        if (Interlocked.Exchange(ref _udpReported, 1) == 0)
+        {
+            _outbox.Writer.TryWrite(ScreenCodec.EncodeRequest(ScreenMessageType.UdpReady, StreamId));
+        }
+    }
+
+    /// <summary>A picture is whole: into the decoder it goes, exactly as one off the connection would.</summary>
+    private void OnWholePicture(uint frameNo, int width, int height, bool keyframe, ReadOnlySpan<byte> picture) =>
+        Enqueue(ScreenCodec.EncodeVideoFrame(StreamId, frameNo, width, height, keyframe, picture));
+
+    /// <summary>
+    /// A picture lost more than one of its datagrams and is not coming. It is acknowledged all the same, because a
+    /// sender waiting on it would stall over a picture that no longer exists, and a whole one is asked for, because
+    /// everything after this is read against what was lost.
+    /// </summary>
+    private void OnLostPicture(uint frameNo)
+    {
+        _outbox.Writer.TryWrite(ScreenCodec.EncodeAck(StreamId, frameNo, 0));
+        _outbox.Writer.TryWrite(ScreenCodec.EncodeRequest(ScreenMessageType.Refresh, StreamId));
+    }
+
+    /// <summary>How the pictures of this stream have arrived, for the view's own line in the log.</summary>
+    internal (long Delivered, long Repaired, long Lost) Datagrams
+    {
+        get
+        {
+            lock (_mediaGate)
+            {
+                return _reassembly is { } r ? (r.Delivered, r.Repaired, r.Lost) : (0, 0, 0);
+            }
+        }
     }
 
     internal void Enqueue(byte[] message) => _frames.Writer.TryWrite(new Incoming(message, Stopwatch.GetTimestamp()));
@@ -459,9 +610,12 @@ public sealed class ScreenViewer : IAsyncDisposable
         var seconds = (now - _reportedTicks) / 1000.0;
         var decoded = _decoded - _reportedDecoded;
         var skipped = _skipped - _reportedSkipped;
+        var (delivered, repaired, lost) = Datagrams;
         _logger.LogInformation(
-            "View of {Peer} (stream {Stream}): {Rate:F1} frames/s decoded, {Shown:F1} shown, {Skipped} not shown while the window was busy",
-            PeerName, StreamId, decoded / seconds, (decoded - skipped) / seconds, skipped);
+            "View of {Peer} (stream {Stream}): {Rate:F1} frames/s decoded, {Shown:F1} shown, {Skipped} not shown "
+            + "while the window was busy; by UDP {Delivered} pictures of which {Repaired} had a lost datagram "
+            + "rebuilt, {Lost} given up on",
+            PeerName, StreamId, decoded / seconds, (decoded - skipped) / seconds, skipped, delivered, repaired, lost);
         _reportedTicks = now;
         _reportedDecoded = _decoded;
         _reportedSkipped = _skipped;
@@ -527,6 +681,13 @@ public sealed class ScreenViewer : IAsyncDisposable
         await CloseAsync(notifySource: true, reason: null).ConfigureAwait(false);
         _decoder.Dispose();
         _videoDecoder?.Dispose();
+        lock (_mediaGate)
+        {
+            _mediaCipher?.Dispose();
+            _mediaCipher = null;
+            _reassembly = null;
+        }
+
         _timer.Dispose();
     }
 }

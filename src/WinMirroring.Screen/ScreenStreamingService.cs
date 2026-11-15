@@ -1,6 +1,8 @@
 ﻿using System.Collections.Concurrent;
+using System.Net;
 using Microsoft.Extensions.Logging;
 using WinMirroring.Core;
+using WinMirroring.Core.Media;
 using WinMirroring.Core.Messages;
 using WinMirroring.Core.Peers;
 using WinMirroring.Core.Settings;
@@ -9,6 +11,7 @@ using WinMirroring.Input;
 using WinMirroring.Screen.Capture;
 using WinMirroring.Screen.Encoding;
 using WinMirroring.Screen.Protocol;
+using WinMirroring.Screen.Transport;
 
 namespace WinMirroring.Screen;
 
@@ -106,6 +109,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
     {
         _node.Sessions.SessionReady += OnSessionReady;
         _node.Sessions.SessionClosed += OnSessionClosed;
+        _node.MediaPacketReceived += OnMediaPacket;
         WinMirroring.Input.Screen.MonitorCatalog.Changed += OnMonitorsChanged;
         foreach (var session in _node.Sessions.Sessions)
         {
@@ -206,7 +210,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             ScreenSource source;
             try
             {
-                source = ScreenSource.ForWindow(session, NewStreamId(), window, _node.Settings.Screen, NegotiateVideo(session), PeerDrawsPointer(session), _logger);
+                source = ScreenSource.ForWindow(_node, session, NewStreamId(), window, _node.Settings.Screen, NegotiateVideo(session), PeerDrawsPointer(session), _logger);
             }
             catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or ArgumentException or InvalidOperationException)
             {
@@ -454,7 +458,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
                 return;
             }
 
-            var source = ScreenSource.ForMonitor(session, request.StreamId, request.MonitorIndex, request.MonitorKey, _node.Settings.Screen, NegotiateVideo(session), PeerDrawsPointer(session), _logger);
+            var source = ScreenSource.ForMonitor(_node, session, request.StreamId, request.MonitorIndex, request.MonitorKey, _node.Settings.Screen, NegotiateVideo(session), PeerDrawsPointer(session), _logger);
             await StartSourceAsync(session, source).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or System.Runtime.InteropServices.COMException or ArgumentException)
@@ -577,9 +581,32 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             case ScreenMessageType.Size when ScreenCodec.TryDecodeSize(span, out var size):
                 source.OnViewerSize(size);
                 break;
+
+            case ScreenMessageType.UdpReady:
+                source.OnUdpReady();
+                break;
+
+            case ScreenMessageType.Refresh:
+                source.OnRefreshRequested();
+                break;
         }
 
         return ValueTask.CompletedTask;
+    }
+
+    /// <summary>
+    /// A UDP media datagram: the pictures of a stream whose source has moved them off the connection, or one of
+    /// the probes that asked whether it could. Only the stream's own key opens it, so a datagram for someone else's
+    /// stream — or a forged one — goes no further than the viewer it claims to belong to.
+    /// </summary>
+    private void OnMediaPacket(IPEndPoint from, ReadOnlySpan<byte> packet)
+    {
+        if (MediaCipher.TryReadHeader(packet, out var kind, out var streamId, out _)
+            && kind is VideoLink.FrameKind or VideoLink.ProbeKind
+            && _viewers.TryGetValue(streamId, out var viewer))
+        {
+            viewer.OnMediaPacket(kind, packet);
+        }
     }
 
     private bool TryGetReady(string peerId, out PeerSession session) =>
@@ -597,6 +624,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
 
         _node.Sessions.SessionReady -= OnSessionReady;
         _node.Sessions.SessionClosed -= OnSessionClosed;
+        _node.MediaPacketReceived -= OnMediaPacket;
         WinMirroring.Input.Screen.MonitorCatalog.Changed -= OnMonitorsChanged;
         if (_input is not null)
         {
