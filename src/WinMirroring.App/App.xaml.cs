@@ -133,6 +133,11 @@ public partial class App : Application
         {
             input.Start();
 
+            // The virtual monitor is two different things and the pointer belongs on only one of them: it is a
+            // second screen somebody is looking at on another device, or it is where a window sent away is parked
+            // out of sight. Only the screen service knows which, so it is asked.
+            WinMirroring.Input.Screen.MonitorCatalog.VirtualMonitorIsHidden = () => screen.ExtendedTo is null;
+
             // Monitors plugged in, removed or rearranged: the layout's per-monitor cells and edges follow at once.
             Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (_, _) => input.RefreshMonitors();
             input.RemoteInputBlocked += (peer, window) => Dispatcher.BeginInvoke(() => ShowNotification(

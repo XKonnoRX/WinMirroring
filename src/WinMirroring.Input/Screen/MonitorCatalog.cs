@@ -22,10 +22,10 @@ public sealed class MonitorSet
             .ThenBy(m => m.Bounds.Top)
             .ToList();
 
-        // Everything that is not the hidden one — and all of them if somehow they all are, since a device with no
-        // screen at all is not a case to invent behaviour for.
+        // Everything that is not the virtual one — and all of them if somehow they all are, since a device with
+        // no screen at all is not a case to invent behaviour for.
         var visible = All.Where(m => !m.IsVirtual).ToList();
-        Screens = visible.Count > 0 ? visible : All;
+        _visible = visible.Count > 0 ? visible : All;
     }
 
     public IReadOnlyList<MonitorInfo> All { get; }
@@ -34,11 +34,18 @@ public sealed class MonitorSet
     public IReadOnlyList<MonitorInfo> ForLayout { get; }
 
     /// <summary>
-    /// The monitors with a screen in front of them. The virtual monitor is a real monitor to Windows and a place
-    /// nobody can see: windows are parked there to hide them. So the pointer has no business being there, and
-    /// everything about where the pointer may go is decided over these rather than over <see cref="All"/>.
+    /// The monitors with a screen in front of them, which is where the pointer may go.
+    ///
+    /// The virtual monitor is the question here, and it is two different things on two different days. A window
+    /// parked on it is parked there to be hidden, and then the monitor is nowhere: the pointer going there simply
+    /// disappears. Shown to another device as its second monitor, the very same monitor is somewhere — somebody
+    /// is looking at it — and the pointer belongs there as much as on any screen. So it is asked, every time,
+    /// rather than decided when this list was built.
     /// </summary>
-    public IReadOnlyList<MonitorInfo> Screens { get; private init; } = [];
+    public IReadOnlyList<MonitorInfo> Screens =>
+        MonitorCatalog.VirtualMonitorIsHidden() ? _visible : All;
+
+    private readonly IReadOnlyList<MonitorInfo> _visible;
 
     public MonitorInfo? At(Point point)
     {
@@ -91,7 +98,7 @@ public sealed class MonitorSet
     }
 
     /// <summary>True when this point is on a monitor nobody can see — a window parked out of sight lives there.</summary>
-    public bool IsOutOfSight(Point point) => At(point) is { IsVirtual: true };
+    public bool IsOutOfSight(Point point) => At(point) is { IsVirtual: true } && MonitorCatalog.VirtualMonitorIsHidden();
 
     /// <summary>The same point, or the nearest one on a monitor that actually shows something.</summary>
     public Point SnapToScreen(Point point)
@@ -162,6 +169,16 @@ public static class MonitorCatalog
     private static readonly object Gate = new();
     private static volatile MonitorSet? _current;
     private static long _readTicks;
+
+    /// <summary>
+    /// Whether the virtual monitor is, at this moment, a place nobody can see — true while windows are parked on
+    /// it to hide them, false while another device is showing it as its second monitor. The app answers this; on
+    /// its own the input side cannot know, and the answer decides whether the pointer may go there at all.
+    ///
+    /// Hidden by default, which is the safe way round: a pointer kept off a monitor that turns out to be visible
+    /// is a nuisance, a pointer lost on one that is not is a mouse that has disappeared.
+    /// </summary>
+    public static Func<bool> VirtualMonitorIsHidden { get; set; } = static () => true;
 
     public static event Action? Changed;
 

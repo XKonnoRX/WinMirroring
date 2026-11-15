@@ -102,15 +102,7 @@ public sealed partial class MainViewModel
             return;
         }
 
-        var onSecondMonitor = _screen.IsExtendedTo(peer.Id);
-        var hidesHere = _node.Settings.Screen.HideSentWindow;
-        StatusText = await _screen.TransferWindowAsync(peer.Id, window.Handle)
-            ? onSecondMonitor
-                ? $"Окно «{window.Title}» перенесено на {peer.Name} (второй монитор)."
-                : hidesHere
-                    ? $"Окно «{window.Title}» показывается на {peer.Name}, с этого экрана скрыто."
-                    : $"Окно «{window.Title}» показывается на {peer.Name}."
-            : $"Не удалось отправить окно на {peer.Name}.";
+        StatusText = await SendWindowToAsync(peer.Id, peer.Name, window.Handle, window.Title);
     }
 
     /// <summary>Sends a window of this device to <paramref name="peerId"/> (picks it first), used from the floating menu.</summary>
@@ -122,15 +114,44 @@ public sealed partial class MainViewModel
             return;
         }
 
+        StatusText = await SendWindowToAsync(peerId, peerName, window.Handle, window.Title);
+    }
+
+    /// <summary>
+    /// Sends one window to a device and, with it, the mouse and keyboard.
+    ///
+    /// A window and the hands working in it are one thing to the person doing it: sending the window and then
+    /// having to find the edge of the screen to follow it is the application's idea of two steps, not theirs.
+    /// So input goes where the window went — unless the window went onto this device's own second monitor, which
+    /// that device is only showing: the pointer reaches that by moving onto it, as it would any other screen, and
+    /// handing input to the device itself would be the wrong place entirely.
+    ///
+    /// Nothing is forced: with input sharing off, the window still goes and the service says so and does nothing.
+    /// </summary>
+    private async Task<string> SendWindowToAsync(string peerId, string peerName, nint window, string title)
+    {
         var onSecondMonitor = _screen.IsExtendedTo(peerId);
         var hidesHere = _node.Settings.Screen.HideSentWindow;
-        StatusText = await _screen.TransferWindowAsync(peerId, window.Handle)
-            ? onSecondMonitor
-                ? $"Окно «{window.Title}» перенесено на {peerName} (второй монитор)."
-                : hidesHere
-                    ? $"Окно «{window.Title}» показывается на {peerName}, с этого экрана скрыто."
-                    : $"Окно «{window.Title}» показывается на {peerName}."
-            : $"Не удалось отправить окно на {peerName}.";
+        if (!await _screen.TransferWindowAsync(peerId, window))
+        {
+            return $"Не удалось отправить окно на {peerName}.";
+        }
+
+        if (onSecondMonitor)
+        {
+            return $"Окно «{title}» перенесено на {peerName} (второй монитор).";
+        }
+
+        var follows = _input.IsEnabled;
+        if (follows)
+        {
+            _input.ControlPeer(peerId);
+        }
+
+        var where = hidesHere
+            ? $"Окно «{title}» показывается на {peerName}, с этого экрана скрыто."
+            : $"Окно «{title}» показывается на {peerName}.";
+        return follows ? $"{where} Управление ушло туда же." : where;
     }
 
     /// <summary>Returns windows that were hidden off-screen or parked on the virtual monitor back to this device.</summary>

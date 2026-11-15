@@ -142,6 +142,28 @@ public class MonitorLayoutTests
         Assert.Equal(new Point(500, 500), Monitors.SnapToScreen(new Point(500, 500)));
     }
 
+    /// <summary>
+    /// The same monitor, while another device is showing it as its second screen, is somewhere again: somebody is
+    /// looking at it, and the pointer belongs there as much as on any screen. The one monitor is used for both
+    /// things, so this is asked every time rather than decided once.
+    /// </summary>
+    [Fact]
+    public void TheVirtualMonitorIsAPlaceAgainWhileSomebodyIsShowingIt()
+    {
+        var lg = Monitors.Find(Lg)!;
+        MonitorCatalog.VirtualMonitorIsHidden = static () => false;
+        try
+        {
+            Assert.True(Monitors.ContinuesBeyond(lg, Edge.Right, new Point(3839, 500)));
+            Assert.False(Monitors.IsOutOfSight(new Point(4200, 400)));
+            Assert.Equal(new Point(4200, 400), Monitors.SnapToScreen(new Point(4200, 400)));
+        }
+        finally
+        {
+            MonitorCatalog.VirtualMonitorIsHidden = static () => true;
+        }
+    }
+
     /// <summary>The real monitors of the machine running the tests (on request only: build agents may have none).</summary>
     [Fact(Explicit = true)]
     public void TheCatalogSeesThisMachinesMonitors()
