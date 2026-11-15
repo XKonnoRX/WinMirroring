@@ -107,6 +107,44 @@ public class VideoDatagramTests
     }
 
     /// <summary>
+    /// A whole picture is seven times the size of an ordinary one — a hundred and fifty-eight datagrams at 1080p,
+    /// measured — and one parity across all of them would cover the first loss and nothing after it. So each block
+    /// of thirty-two carries its own, and a picture that big survives a loss in every one of them.
+    /// </summary>
+    [Fact]
+    public void ABigPictureSurvivesALossInEveryBlockOfIt()
+    {
+        var sent = Picture(158 * VideoDatagram.PayloadSize);
+        var link = new Loopback();
+        var blocks = VideoDatagram.Blocks(VideoDatagram.Fragments(sent.Length));
+        Assert.True(blocks >= 5, $"a picture this size should be more than one block, and it is {blocks}");
+
+        // One piece gone out of each block, which a single parity for the whole picture could never put back.
+        var lose = Enumerable.Range(0, blocks).Select(b => (b * VideoDatagram.ParityBlock) + 1).ToArray();
+        link.SendPicture(1, sent, lose);
+
+        Assert.Equal(sent, Assert.Single(link.Delivered).Picture);
+        Assert.Equal(blocks, link.Reassembly.Repaired);
+        Assert.Equal(0, link.Reassembly.Lost);
+    }
+
+    /// <summary>...and two out of the same block is where that ends, because one parity cannot tell them apart.</summary>
+    [Fact]
+    public void TwoLostOutOfOneBlockIsBeyondTheParity()
+    {
+        var sent = Picture(158 * VideoDatagram.PayloadSize);
+        var next = Picture(3000, seed: 7);
+        var link = new Loopback();
+
+        link.SendPicture(1, sent, 3, 7);
+        link.SendPicture(2, next);
+        link.SendPicture(3, next);
+
+        Assert.Equal([1u], link.GivenUp);
+        Assert.Equal(1, link.Reassembly.Lost);
+    }
+
+    /// <summary>
     /// Two holes in one picture cannot be told apart by a single parity, so that picture is given up on — and the
     /// point is what happens next: the one after it is handed over rather than held, and the viewer is told so it
     /// can both acknowledge the loss and ask for a whole picture. A moment is allowed first, because a piece that

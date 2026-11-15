@@ -61,6 +61,13 @@ internal sealed class ScreenSource : IAsyncDisposable
     private static readonly TimeSpan EncoderOwesFor = TimeSpan.FromMilliseconds(60);
 
     /// <summary>
+    /// How still the screen has to be before one whole, sharp picture is sent. Long enough that it does not fire
+    /// between the frames of something moving, short enough that it is already there by the time anyone has
+    /// finished moving their eyes to what they were dragging.
+    /// </summary>
+    private static readonly TimeSpan SettleAfter = TimeSpan.FromMilliseconds(180);
+
+    /// <summary>
     /// Frames the encoder may be behind before one is dropped rather than handed over. Two, because the converter
     /// hands out four textures in turn and they have to cover what is waiting, what the encoder is reading and the
     /// one being written.
@@ -140,6 +147,10 @@ internal sealed class ScreenSource : IAsyncDisposable
     /// <summary>The encoder has been fed a frame it has not finished yet, so the next wait for one is a short one.</summary>
     private bool _awaitingEncoder;
     private long _awaitingSince;
+
+    // When the screen last changed, and whether the one sharp picture for this quiet spell has been sent.
+    private long _lastFreshTicks;
+    private bool _settled;
     private Task? _loop;
     private Task? _sendLoop;
 
@@ -768,6 +779,23 @@ internal sealed class ScreenSource : IAsyncDisposable
                     _awaitingEncoder = false;
                     await QueueAsync(BuildVideoMessages(pending.TakePending()), ct).ConfigureAwait(false);
                     continue;
+                }
+
+                if (fresh)
+                {
+                    _lastFreshTicks = Environment.TickCount64;
+                    _settled = false;
+                }
+                else if (!_settled && seen != 0 && Environment.TickCount64 - _lastFreshTicks >= SettleAfter.TotalMilliseconds)
+                {
+                    // The screen has stopped moving. What is on it now was encoded while it was moving, which is
+                    // where a codec spends the least on detail — so the picture sitting in front of someone is the
+                    // blurriest one of the whole burst, and it is the one they are going to read. One whole picture
+                    // puts that right, and now is when it is free: nothing is competing for the link, and with no
+                    // key frames on a clock any more (see H264VideoEncoder's group of pictures) this is the only
+                    // one a quiet stream sends.
+                    _settled = true;
+                    Volatile.Write(ref _forceAll, 1);
                 }
 
                 if (!fresh && (Volatile.Read(ref _forceAll) == 0 || seen == 0))

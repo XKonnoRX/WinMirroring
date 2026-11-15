@@ -87,9 +87,8 @@ internal sealed class VideoReassembly
         var picture = Taken(header);
         if (header.IsParity)
         {
-            (picture.Parity ??= new byte[VideoDatagram.PayloadSize]).AsSpan().Clear();
-            payload.CopyTo(picture.Parity);
-            picture.HasParity = true;
+            picture.Parities[header.Block] ??= new byte[VideoDatagram.PayloadSize];
+            payload.CopyTo(picture.Parities[header.Block]!);
         }
         else if (!picture.Have[header.Index])
         {
@@ -98,29 +97,49 @@ internal sealed class VideoReassembly
             picture.Received++;
         }
 
-        Repair(picture);
+        Repair(picture, header.Block);
         Flush();
     }
 
     /// <summary>
-    /// The one piece missing out of a picture, rebuilt from the parity and the pieces that did arrive. Only ever
-    /// one: the parity is a single exclusive-or, so two holes in the same picture cannot be told apart.
+    /// The one piece missing out of a block, rebuilt from that block's parity and the pieces of it that did
+    /// arrive. Only ever one per block: a parity is a single exclusive-or, so two holes under the same one cannot
+    /// be told apart. Blocks are what make a whole picture survivable — one parity across a hundred and fifty-eight
+    /// datagrams would cover the first loss and nothing after it.
     /// </summary>
-    private void Repair(Picture picture)
+    private void Repair(Picture picture, int block)
     {
-        if (picture.Complete || !picture.HasParity || picture.Received != picture.Count - 1)
+        if (picture.Complete || picture.Parities[block] is not { } parity)
         {
             return;
         }
 
-        var missing = Array.IndexOf(picture.Have, false);
+        var start = block * VideoDatagram.ParityBlock;
+        var length = Math.Min(VideoDatagram.ParityBlock, picture.Count - start);
+        var missing = -1;
+        for (var i = start; i < start + length; i++)
+        {
+            if (picture.Have[i])
+            {
+                continue;
+            }
+
+            if (missing >= 0)
+            {
+                return; // two holes under one parity; this block cannot be rebuilt
+            }
+
+            missing = i;
+        }
+
         if (missing < 0)
         {
             return;
         }
 
-        var rebuilt = picture.Parity!.AsSpan();
-        for (var i = 0; i < picture.Count; i++)
+        // In place: the parity is of no further use once the block it covers is whole.
+        var rebuilt = parity.AsSpan();
+        for (var i = start; i < start + length; i++)
         {
             if (i == missing)
             {
@@ -136,8 +155,9 @@ internal sealed class VideoReassembly
         }
 
         var hole = missing * VideoDatagram.PayloadSize;
-        var length = Math.Min(VideoDatagram.PayloadSize, picture.Total - hole);
-        rebuilt[..length].CopyTo(picture.Data.AsSpan(hole, length));
+        var holeLength = Math.Min(VideoDatagram.PayloadSize, picture.Total - hole);
+        rebuilt[..holeLength].CopyTo(picture.Data.AsSpan(hole, holeLength));
+        picture.Parities[block] = null;
         picture.Have[missing] = true;
         picture.Received++;
         _repaired++;
@@ -210,6 +230,7 @@ internal sealed class VideoReassembly
         {
             Data = new byte[header.Total],
             Have = new bool[header.Count],
+            Parities = new byte[VideoDatagram.Blocks(header.Count)][],
             Total = header.Total,
             Count = header.Count,
             Width = header.Width,
@@ -225,8 +246,9 @@ internal sealed class VideoReassembly
     {
         public byte[] Data = [];
         public bool[] Have = [];
-        public byte[]? Parity;
-        public bool HasParity;
+
+        /// <summary>One slot per block, holding that block's parity until it is used or the picture is done.</summary>
+        public byte[]?[] Parities = [];
         public int Total;
         public int Count;
         public int Received;

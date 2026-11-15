@@ -26,11 +26,29 @@ internal static class VideoDatagram
     /// <summary>What one datagram carries of a picture, once the sealing and this header are paid for.</summary>
     public const int PayloadSize = SafeDatagramBytes - Core.Media.MediaCipher.Overhead - HeaderSize;
 
-    /// <summary>The index that marks the parity datagram rather than a piece of the picture itself.</summary>
-    public const ushort ParityIndex = 0xFFFF;
+    /// <summary>
+    /// Pieces each parity datagram covers. One parity for a whole picture is right for an ordinary one — about
+    /// twenty-three datagrams at 1080p — but a whole picture is measured at seven times that, and one parity over a
+    /// hundred and fifty-eight datagrams repairs the first loss and nothing after it. At thirty-two the ordinary
+    /// picture still carries exactly one, so it costs no more than it did, and the big one carries five.
+    /// </summary>
+    public const int ParityBlock = 32;
 
-    /// <summary>Pictures are cut into at most this many pieces; at 1152 bytes each that is a quarter of a megabyte.</summary>
-    public const int MaxFragments = 0xFFFE;
+    /// <summary>
+    /// Indices from here down mark parity datagrams rather than pieces of the picture: <see cref="ParityIndex"/>
+    /// less the number of the block it covers. Counting down from the top is what keeps them out of the way of the
+    /// pieces' own indices — and what makes a peer that does not understand them refuse them outright rather than
+    /// mistake one for a piece, since an index that high is past the end of any picture.
+    /// </summary>
+    public const ushort ParityIndex = 0xFFFE;
+
+    public static int Blocks(int fragments) => Math.Max(1, (fragments + ParityBlock - 1) / ParityBlock);
+
+    /// <summary>
+    /// Pictures are cut into at most this many pieces — four megabytes' worth, which is <see cref="MaxPictureBytes"/>
+    /// and far below where the parity indices begin counting down from.
+    /// </summary>
+    public const int MaxFragments = 4096;
 
     /// <summary>
     /// The largest picture a datagram may claim to be part of. A whole 1080p key frame is a couple of hundred
@@ -41,7 +59,15 @@ internal static class VideoDatagram
 
     public readonly record struct Header(uint FrameNo, int Total, int Width, int Height, int Count, int Index, bool Keyframe)
     {
-        public bool IsParity => Index == ParityIndex;
+        public bool IsParity => Index <= ParityIndex && Index > ParityIndex - Blocks(Count);
+
+        /// <summary>Which run of pieces this parity covers; meaningless for a piece.</summary>
+        public int Block => IsParity ? ParityIndex - Index : Index / ParityBlock;
+
+        /// <summary>The first piece of this datagram's block, and how many pieces are in it.</summary>
+        public int BlockStart => Block * ParityBlock;
+
+        public int BlockLength => Math.Min(ParityBlock, Count - BlockStart);
 
         /// <summary>Where this piece belongs in the picture, and how much of it there is.</summary>
         public int Offset => Index * PayloadSize;
@@ -52,36 +78,39 @@ internal static class VideoDatagram
     public static int Fragments(int total) => Math.Max(1, (total + PayloadSize - 1) / PayloadSize);
 
     /// <summary>
-    /// How many datagrams one picture becomes: its pieces, and a parity behind them when there is more than one.
-    /// A picture of a single piece gets none, since losing that piece loses the picture whatever travels with it.
+    /// How many datagrams one picture becomes: its pieces, and a parity behind each block of them. A picture of a
+    /// single piece gets no parity at all, since losing that piece loses the picture whatever travels with it.
     /// </summary>
     public static int Pieces(int total)
     {
         var fragments = Fragments(total);
-        return fragments > 1 ? fragments + 1 : 1;
+        return fragments > 1 ? fragments + Blocks(fragments) : 1;
     }
 
     /// <summary>
     /// Writes piece <paramref name="piece"/> of a picture — header and payload — into <paramref name="plaintext"/>
-    /// and returns its length. The last of <see cref="Pieces"/> is the parity.
+    /// and returns its length. The pieces come first and the parities behind them, one per block.
     /// </summary>
     public static int Write(Span<byte> plaintext, uint frameNo, int width, int height, bool keyframe, ReadOnlySpan<byte> picture, int piece)
     {
         var count = Fragments(picture.Length);
         var parity = piece >= count;
-        var index = parity ? ParityIndex : piece;
+        var block = parity ? piece - count : 0;
+        var index = parity ? ParityIndex - block : piece;
         WriteHeader(plaintext, new Header(frameNo, picture.Length, width, height, count, index, keyframe));
 
         if (parity)
         {
-            Parity(picture, plaintext[HeaderSize..]);
+            var start = block * ParityBlock * PayloadSize;
+            var length = Math.Min(ParityBlock * PayloadSize, picture.Length - start);
+            Parity(picture.Slice(start, length), plaintext[HeaderSize..]);
             return HeaderSize + PayloadSize;
         }
 
         var offset = piece * PayloadSize;
-        var length = Math.Min(PayloadSize, picture.Length - offset);
-        picture.Slice(offset, length).CopyTo(plaintext[HeaderSize..]);
-        return HeaderSize + length;
+        var pieceLength = Math.Min(PayloadSize, picture.Length - offset);
+        picture.Slice(offset, pieceLength).CopyTo(plaintext[HeaderSize..]);
+        return HeaderSize + pieceLength;
     }
 
     public static void WriteHeader(Span<byte> plaintext, Header header)
@@ -108,7 +137,15 @@ internal static class VideoDatagram
         var total = BinaryPrimitives.ReadUInt32LittleEndian(plaintext[4..]);
         var count = BinaryPrimitives.ReadUInt16LittleEndian(plaintext[12..]);
         var index = BinaryPrimitives.ReadUInt16LittleEndian(plaintext[14..]);
-        if (total == 0 || total > MaxPictureBytes || count == 0 || count > MaxFragments || (index != ParityIndex && index >= count))
+        if (total == 0 || total > MaxPictureBytes || count == 0 || count > MaxFragments)
+        {
+            return false;
+        }
+
+        // Either a piece inside the picture, or a parity for one of its blocks. Anything else — a piece past the
+        // end, a parity for a block the picture does not have — is refused rather than acted on.
+        var parity = index <= ParityIndex && index > ParityIndex - Blocks(count);
+        if (!parity && index >= count)
         {
             return false;
         }

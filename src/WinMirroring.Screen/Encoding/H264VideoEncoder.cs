@@ -299,11 +299,19 @@ internal sealed class H264VideoEncoder : IDisposable
         Set(VideoInterop.AVEncCommonRateControlMode, CodecPropVariant.UInt32(VideoInterop.RateControlCbr));
         Set(VideoInterop.AVEncMPVDefaultBPictureCount, CodecPropVariant.UInt32(0));
 
-        // Two seconds between key frames: often enough that a viewer joining or recovering sees a picture soon,
-        // rare enough that the big frames do not dominate a thin link. Set once, here, and never touched again —
-        // changing it on a running encoder makes it start a fresh key frame, and doing that whenever the frame
-        // rate was nudged put a visible hitch in the picture about once a second.
-        Set(VideoInterop.AVEncMPVGOPSize, CodecPropVariant.UInt32((uint)Math.Clamp(fps * 2, 1, 600)));
+        // No key frames of its own accord. Measured on this encoder at 1080p and twelve megabits a second: an
+        // ordinary frame is twenty-seven kilobytes, which is its budget, and a key frame is a hundred and
+        // thirty-three — seven times as much, and at that bitrate a hundred and twenty milliseconds of wire. One of
+        // those every two seconds, which is what a two-second group of pictures asks for, is a stall every two
+        // seconds; nothing downstream of it can hide that, because the bytes genuinely have to cross the link.
+        //
+        // A screen stream does not need them on a clock. It is not broadcast: a viewer that needs a whole picture
+        // asks for one, over the session's reliable connection, and it asks whenever it joins, loses a picture for
+        // good, or moves onto another transport. Everything else it can read against what it already has. So the
+        // group is made long enough to never come round in a sitting, and a key frame happens when something has
+        // actually asked for one — and, by preference, when the screen has stopped moving and it is free (see
+        // ScreenSource's settling).
+        Set(VideoInterop.AVEncMPVGOPSize, CodecPropVariant.UInt32((uint)Math.Clamp(fps * 600, 1, 36_000)));
         ApplyBitrate(bitrateKbps);
     }
 
