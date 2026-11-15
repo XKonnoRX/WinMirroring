@@ -12,11 +12,26 @@ export function Panel() {
   useEffect(() => {
     void load()
     const stop = on('panel.changed', () => void load())
-    // The panel is always on top of everything, so it has to notice changes by itself as well.
-    const timer = window.setInterval(() => void load(), 900)
+
+    // The panel is always on top of everything, so while it is on the screen it has to notice changes by itself
+    // as well. While it is not — and it is put away far more of the time than it is open — asking the app how it
+    // is doing once a second costs a wake-up of this page, a round trip and a redraw, about once a second, for
+    // nothing anyone can see. So the asking stops with the page and starts again when it is back, beginning with
+    // one straight away, since anything could have changed while nobody was looking.
+    let timer = 0
+    const watch = () => {
+      window.clearInterval(timer)
+      if (document.hidden) return
+      void load()
+      timer = window.setInterval(() => void load(), 900)
+    }
+
+    watch()
+    document.addEventListener('visibilitychange', watch)
     return () => {
       stop()
       window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', watch)
     }
   }, [load])
 

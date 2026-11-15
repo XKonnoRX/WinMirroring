@@ -58,6 +58,12 @@ public sealed class PeerSessionManager : IAsyncDisposable
     /// <summary>A device was added to or removed from the list this one is paired with.</summary>
     public event Action? PairedPeersChanged;
 
+    /// <summary>
+    /// That device, by name, has unpaired from this one, so this one has now forgotten it as well. Worth saying
+    /// out loud: a pairing disappearing is something the person here should hear about rather than discover.
+    /// </summary>
+    public event Action<string>? UnpairedByPeer;
+
     public bool TryGetSession(string peerId, out PeerSession session)
     {
         if (_sessions.TryGetValue(peerId, out var found) && found.State != SessionState.Closed)
@@ -323,6 +329,8 @@ public sealed class PeerSessionManager : IAsyncDisposable
         _logger.LogInformation("Session with {Peer} ({Remote}) established as {Role}, state {State}, {Protocol}",
             session.PeerName, session.RemoteEndPoint, session.IsInitiator ? "initiator" : "responder", session.State, connection.NegotiatedProtocol);
 
+        ForgetIfTheyHaveForgottenUs(session);
+
         if (session.State == SessionState.Ready)
         {
             RememberAddress(session);
@@ -354,11 +362,46 @@ public sealed class PeerSessionManager : IAsyncDisposable
         }
 
         _directory.Update(session.PeerId, info => info.State = ToPeerState(session.State));
+        ForgetIfTheyHaveForgottenUs(session);
         if (session.State == SessionState.Ready)
         {
             RememberAddress(session);
             SessionReady?.Invoke(session);
         }
+    }
+
+    /// <summary>
+    /// Forgetting a device used to be one-sided: it was removed here and went on listing this one over there,
+    /// offering it in its menus and introducing it to other devices as something it knows. The device that had
+    /// been forgotten had no way to find out — and if it was switched off at the time, no way to be told either.
+    ///
+    /// Nothing new had to be said for it. The handshake already asks both sides whether they have the other
+    /// paired, and a session is only Ready when both say yes; one that is merely Unpaired means at least one said
+    /// no. So if this device's own answer was yes — the record is there, by the same certificate and the same id,
+    /// which is exactly the question <see cref="IsPaired"/> answers and exactly what the handshake asked — then
+    /// the no was theirs. There is no other way to arrive here. The pairing is over, and keeping half of it only
+    /// means offering a device that will refuse.
+    ///
+    /// Nothing here takes anyone's word for anything new: that answer came over a connection whose certificate
+    /// was pinned when the two were paired, and the only thing it can do is end a pairing with the device that
+    /// sent it. A device can make this one forget it. It cannot make it forget anyone else.
+    /// </summary>
+    private void ForgetIfTheyHaveForgottenUs(PeerSession session)
+    {
+        if (session.State != SessionState.Unpaired || !IsPaired(session.PeerFingerprint, session.PeerId))
+        {
+            return;
+        }
+
+        _settings.PairedPeers.RemoveAll(p => string.Equals(p.Id, session.PeerId, StringComparison.Ordinal));
+        _saveSettings();
+        _logger.LogInformation(
+            "{Peer} no longer has this device paired, so the pairing is forgotten here as well",
+            session.PeerName);
+
+        _directory.Update(session.PeerId, info => info.IsPaired = false);
+        PairedPeersChanged?.Invoke();
+        UnpairedByPeer?.Invoke(session.PeerName);
     }
 
     private void OnSessionClosed(PeerSession session, Exception? error)

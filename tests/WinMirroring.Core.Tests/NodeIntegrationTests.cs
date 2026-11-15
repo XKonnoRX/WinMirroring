@@ -143,6 +143,82 @@ public sealed class NodeIntegrationTests : IAsyncLifetime
             TimeSpan.FromSeconds(15), "a late handler was told nothing about what B said first", ct);
     }
 
+    /// <summary>
+    /// Forgetting a device used to be one-sided. It went out of the list here and went on living in the list over
+    /// there — offered in menus, and introduced to other devices as something that one knows — while the device
+    /// that had been forgotten had no way to find out, and none to be told if it was switched off at the time.
+    ///
+    /// Nothing is said for it even now: the handshake already asks both sides whether they have the other paired,
+    /// and a session that is merely Unpaired with a device this one does have paired can only mean the answer
+    /// over there was no. So the news arrives by the forgotten device simply connecting again.
+    /// </summary>
+    [Fact]
+    public async Task ForgettingADeviceReachesTheDeviceThatWasForgotten()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var discoveryA = FreeUdpPort();
+        var discoveryB = FreeUdpPort();
+        var a = CreateNode("ForgetA", discoveryA, FreeTcpPort(), [$"127.0.0.1:{discoveryB}"]);
+        var b = CreateNode("ForgetB", discoveryB, FreeTcpPort(), [$"127.0.0.1:{discoveryA}"]);
+
+        await a.StartAsync();
+        await b.StartAsync();
+        await WaitUntilAsync(
+            () => a.Peers.TryGet(b.Identity.Id, out var peer) && peer.TransportEndPoint is not null,
+            TimeSpan.FromSeconds(15), "A never discovered B", ct);
+        Assert.True(await a.PairAsync(b.Identity.Id, ct), "A could not pair with B");
+        await WaitUntilAsync(() => IsReady(b, a), TimeSpan.FromSeconds(10), "B has no ready session to A", ct);
+
+        var toldOnB = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        b.Sessions.UnpairedByPeer += peer => toldOnB.TrySetResult(peer);
+
+        await a.Sessions.UnpairAsync(b.Identity.Id);
+        Assert.Empty(a.Settings.PairedPeers);
+
+        // B still has A, and still tries to reach it, which is how it finds out.
+        await WaitUntilAsync(
+            () => b.Settings.PairedPeers.Count == 0,
+            TimeSpan.FromSeconds(45), "B never learned that A had forgotten it", ct);
+
+        Assert.Equal("ForgetA", await toldOnB.Task.WaitAsync(TimeSpan.FromSeconds(5), ct));
+        Assert.True(b.Peers.TryGet(a.Identity.Id, out var remembered));
+        Assert.False(remembered.IsPaired);
+    }
+
+    /// <summary>
+    /// And a pairing that never happened is not a pairing that was broken. Both sides are unpaired while one is
+    /// asking the other, and when the answer is no they stay that way — which must not look to either of them
+    /// like the other has just forgotten it, or the first attempt at pairing would tear up a list for nothing.
+    /// </summary>
+    [Fact]
+    public async Task APairingThatWasRefusedIsNotTakenForOneThatWasBroken()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var discoveryA = FreeUdpPort();
+        var discoveryB = FreeUdpPort();
+        var a = CreateNode("RefusedA", discoveryA, FreeTcpPort(), [$"127.0.0.1:{discoveryB}"]);
+        var b = CreateNode("RefusedB", discoveryB, FreeTcpPort(), [$"127.0.0.1:{discoveryA}"], accept: false);
+
+        var told = new List<string>();
+        a.Sessions.UnpairedByPeer += peer => { lock (told) { told.Add(peer); } };
+        b.Sessions.UnpairedByPeer += peer => { lock (told) { told.Add(peer); } };
+
+        await a.StartAsync();
+        await b.StartAsync();
+        await WaitUntilAsync(
+            () => a.Peers.TryGet(b.Identity.Id, out var peer) && peer.TransportEndPoint is not null,
+            TimeSpan.FromSeconds(15), "A never discovered B", ct);
+
+        Assert.False(await a.PairAsync(b.Identity.Id, ct));
+        Assert.True(a.Sessions.TryGetSession(b.Identity.Id, out var session));
+        Assert.Equal(SessionState.Unpaired, session.State);
+
+        lock (told)
+        {
+            Assert.Empty(told);
+        }
+    }
+
     /// <summary>What a handler subscribing right now is handed about the session so far.</summary>
     private static List<ControlMessage> Replayed(PeerSession session)
     {

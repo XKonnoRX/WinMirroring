@@ -52,6 +52,10 @@ public partial class WebWindow : Window
         _panel = panel;
         Loaded += OnLoaded;
         Closed += OnClosed;
+
+        // Shown and put away rather than created and destroyed, so this is where the page inside is put away too.
+        // Not OnActivated: the panel is shown without taking focus and would never be activated at all.
+        IsVisibleChanged += (_, _) => Asleep(!IsVisible);
     }
 
     private readonly bool _panel;
@@ -82,6 +86,29 @@ public partial class WebWindow : Window
         }
 
         base.OnClosing(e);
+    }
+
+    /// <summary>
+    /// A page nobody is looking at should cost nothing, and this is what tells it so.
+    ///
+    /// The window is kept rather than thrown away, because building a WebView2 and loading a page into it takes a
+    /// noticeable moment and doing that at every opening is worse. But a hidden window is not a hidden page:
+    /// WebView2 goes on drawing and running timers for a window Windows is not showing, unless the view itself is
+    /// told it is not visible. Which means the side panel — a page that looks at the app once a second so that a
+    /// panel over everything notices changes by itself — went on doing that for the whole life of the app,
+    /// whether anyone had opened it in the last hour or not. Told it is not visible, the page is told so as well
+    /// (its own visibility changes, which is what the panel watches) and the browser stops rendering it.
+    /// </summary>
+    private void Asleep(bool asleep)
+    {
+        if (View.Visibility == Visibility.Collapsed && asleep)
+        {
+            return;
+        }
+
+        // Hidden rather than collapsed: the view keeps its size, so coming back shows the page as it was rather
+        // than laying it out again at nothing by nothing.
+        View.Visibility = asleep || _page is null ? Visibility.Hidden : Visibility.Visible;
     }
 
     /// <summary>

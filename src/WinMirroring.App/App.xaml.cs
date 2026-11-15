@@ -109,6 +109,14 @@ public partial class App : Application
         var audio = _services.GetRequiredService<AudioService>();
         var screen = _services.GetRequiredService<ScreenStreamingService>();
 
+        // A pairing can now end from the other side — a device that was forgotten over there is forgotten here as
+        // soon as it says so, which it does by connecting. That is a thing to be told about rather than to find
+        // out later from a device that is suddenly missing from the list.
+        node.Sessions.UnpairedByPeer += peer => Dispatcher.BeginInvoke(() => ShowNotification(
+            "Сопряжение разорвано",
+            $"«{peer}» больше не сопряжено с этим устройством — там его разорвали, поэтому и здесь оно убрано из списка. "
+            + "Чтобы снова работать вместе, устройства нужно сопрячь заново."));
+
         try
         {
             await node.StartAsync();
