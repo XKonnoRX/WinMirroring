@@ -117,7 +117,7 @@ public sealed partial class MainViewModel : ObservableObject
         InitializeDiagnostics();
         pairingUi.StatusChanged += text => _dispatcher.InvokeAsync(() => StatusText = text);
 
-        _statsTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => RefreshStats(), _dispatcher);
+        _statsTimer = new DispatcherTimer(StatsWhileWatched, DispatcherPriority.Background, (_, _) => RefreshStatsIfAnyoneIsLooking(), _dispatcher);
         _statsTimer.Start();
         _initialized = true;
     }

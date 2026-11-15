@@ -13,6 +13,9 @@ namespace WinMirroring.Screen.Injection;
 internal sealed class TouchInjector : IDisposable
 {
     private const int MaxContacts = 10;
+
+    /// <summary>How often resting fingers are re-sent, so the system does not decide they have gone.</summary>
+    private const int KeepAliveMs = 50;
     private const uint PointerFlagInRange = 0x00000002;
     private const uint PointerFlagInContact = 0x00000004;
     private const uint PointerFlagDown = 0x00010000;
@@ -25,12 +28,15 @@ internal sealed class TouchInjector : IDisposable
     private readonly Dictionary<uint, Point> _contacts = [];
     private readonly Timer _keepAlive;
     private long _lastInjectTicks;
+    private bool _ticking;
 
     public TouchInjector(ILogger logger, IInjectionSink? sink = null)
     {
         _ = logger;
         _sink = sink ?? InjectionRouter.Instance;
-        _keepAlive = new Timer(_ => KeepAlive(), null, 50, 50);
+
+        // Stopped until a finger arrives; see KeepAliveWhileFingersRest.
+        _keepAlive = new Timer(_ => KeepAlive(), null, Timeout.Infinite, Timeout.Infinite);
     }
 
     public enum Action : byte
@@ -69,6 +75,20 @@ internal sealed class TouchInjector : IDisposable
                     _contacts.Remove(id);
                     break;
             }
+
+            KeepAliveWhileFingersRest();
+        }
+    }
+
+    /// <summary>Whether the keepalive is ticking, which it should be exactly while something is touched.</summary>
+    internal bool KeepingAlive
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _ticking;
+            }
         }
     }
 
@@ -82,14 +102,34 @@ internal sealed class TouchInjector : IDisposable
                 Inject(id, PointerFlagUp | PointerFlagCanceled);
                 _contacts.Remove(id);
             }
+
+            KeepAliveWhileFingersRest();
         }
+    }
+
+    /// <summary>
+    /// The keepalive runs while something is being touched and not otherwise. It used to tick twenty times a
+    /// second from the moment a stream was opened, finding nothing to do every time: a finger resting is rare and
+    /// a stream with nobody touching it is the usual state. Called with the lock held.
+    /// </summary>
+    private void KeepAliveWhileFingersRest()
+    {
+        var wanted = _contacts.Count > 0;
+        if (wanted == _ticking)
+        {
+            return;
+        }
+
+        _ticking = wanted;
+        var every = wanted ? KeepAliveMs : Timeout.Infinite;
+        _keepAlive.Change(every, every);
     }
 
     private void KeepAlive()
     {
         lock (_gate)
         {
-            if (_contacts.Count == 0 || Environment.TickCount64 - _lastInjectTicks < 50)
+            if (_contacts.Count == 0 || Environment.TickCount64 - _lastInjectTicks < KeepAliveMs)
             {
                 return;
             }

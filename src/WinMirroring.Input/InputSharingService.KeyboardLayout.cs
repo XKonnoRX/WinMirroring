@@ -15,6 +15,9 @@ namespace WinMirroring.Input;
 public sealed partial class InputSharingService
 {
     private static readonly TimeSpan LayoutPollInterval = TimeSpan.FromMilliseconds(150);
+
+    /// <summary>How often the same loop looks while nobody is in control of this device and nothing can change.</summary>
+    private static readonly TimeSpan IdleLayoutPollInterval = TimeSpan.FromSeconds(1);
     private static readonly long MissingLayoutNoticeMs = (long)TimeSpan.FromMinutes(30).TotalMilliseconds;
 
     private readonly object _layoutGate = new();
@@ -141,14 +144,22 @@ public sealed partial class InputSharingService
 
     // ---- controlled side ---------------------------------------------------------------------------------
 
-    /// <summary>While another device controls this one, reports the user's layout switches here back to it.</summary>
+    /// <summary>
+    /// While another device controls this one, reports the user's layout switches here back to it.
+    ///
+    /// Six and a half times a second is what following a switch needs while someone is typing here — and nobody
+    /// is typing here most of the time. With no controller there is nothing this can see change, so the loop
+    /// idles at a second instead: on a device doing nothing at all, this was a third of everything the app woke
+    /// up for. Noticing a controller up to a second late costs nothing either, because a controller sends its own
+    /// layout when it takes over.
+    /// </summary>
     private async Task WatchKeyboardLayoutAsync(CancellationToken ct)
     {
-        using var timer = new PeriodicTimer(LayoutPollInterval);
         try
         {
-            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+            while (!ct.IsCancellationRequested)
             {
+                await Task.Delay(_player.HasOwner ? LayoutPollInterval : IdleLayoutPollInterval, ct).ConfigureAwait(false);
                 if (_player.Owner is not PeerSession controller)
                 {
                     lock (_layoutGate)

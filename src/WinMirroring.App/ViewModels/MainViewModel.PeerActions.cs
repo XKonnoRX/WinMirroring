@@ -122,6 +122,32 @@ public sealed partial class MainViewModel
         }
     }
 
+    /// <summary>How often the live numbers are refreshed while a window of this app is on the screen.</summary>
+    private static readonly TimeSpan StatsWhileWatched = TimeSpan.FromSeconds(2);
+
+    /// <summary>And how often the timer so much as wakes up while none is. Nothing is refreshed on those ticks.</summary>
+    private static readonly TimeSpan StatsWhileNobodyWatches = TimeSpan.FromSeconds(6);
+
+    /// <summary>
+    /// The round trips, the smoothing and what is playing where are numbers on a screen, and this app spends most
+    /// of its life with no screen of its own open at all — it sits in the tray while two devices get on with it.
+    /// Working them out every two seconds for nobody kept the interface thread awake for the whole of that time,
+    /// so now the timer looks first and does the work only when there is somewhere for it to show.
+    /// </summary>
+    private void RefreshStatsIfAnyoneIsLooking()
+    {
+        // The floating button does not count: it is a window, it is almost always on the screen, and it shows
+        // none of this.
+        var watched = System.Windows.Application.Current?.Windows
+            .OfType<System.Windows.Window>()
+            .Any(w => w.IsVisible && w is not Views.FloatingMenuWindow) == true;
+        _statsTimer.Interval = watched ? StatsWhileWatched : StatsWhileNobodyWatches;
+        if (watched)
+        {
+            RefreshStats();
+        }
+    }
+
     private void RefreshStats()
     {
         foreach (var peer in Peers)
