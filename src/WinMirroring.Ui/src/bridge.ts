@@ -178,7 +178,7 @@ const sampleSettings = {
     windowDrag: true,
     hideSentWindow: true,
     closeUnusedMinutes: 5,
-    maxFps: 30,
+    maxFps: 60,
     quality: 70,
     codec: 'Auto',
     codecs: [

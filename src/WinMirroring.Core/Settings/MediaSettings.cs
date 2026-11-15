@@ -38,7 +38,14 @@ public sealed class ScreenSettings
     /// <summary>Viewers may also control this device with pointer and keyboard.</summary>
     public bool AllowControl { get; set; } = true;
 
-    public int MaxFps { get; set; } = 30;
+    /// <summary>
+    /// Frames a second to aim for. Sixty rather than thirty: at thirty a frame stands for thirty-three
+    /// milliseconds of the other device's screen, so every hesitation anywhere in the chain is at least that long
+    /// and reads as a stutter. At sixty each frame is worth half as much, the same hesitation costs half as much
+    /// picture, and the rate the link can actually carry is decided by the send window and the bitrate rather than
+    /// by this number. It costs nothing when nothing is moving, because a still screen produces no frames.
+    /// </summary>
+    public int MaxFps { get; set; } = 60;
 
     /// <summary>JPEG quality of streamed tiles, 30–95.</summary>
     public int Quality { get; set; } = 70;

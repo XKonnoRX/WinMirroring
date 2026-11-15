@@ -104,7 +104,7 @@ public partial class ScreenViewerWindow : Window
         Surface.PreviewMouseDown += OnSurfacePreviewDown;
         Surface.PreviewTouchDown += OnSurfacePreviewDown;
 
-        _viewer.PointerMoved += (_, cursor) => Dispatcher.BeginInvoke(DispatcherPriority.Input, () => OnRemotePointer(cursor));
+        _viewer.PointerMoved += (_, _) => DrawPointerSoon();
         _viewer.InfoChanged += _ => Dispatcher.BeginInvoke(UpdateInfo);
         _viewer.Closed += (_, reason) => Dispatcher.BeginInvoke(() => OnRemoteClosed(reason));
         // Input priority, not Render: Render sits above Input in WPF, so painting the stream used to overtake the
@@ -398,21 +398,43 @@ public partial class ScreenViewerWindow : Window
     // already is, a round trip later. When nobody here is driving — watching, or control turned off — it is drawn
     // where the other device says it is, because then that is news.
 
-    private ScreenCursor? _pointer;
     private (float X, float Y)? _pointerHere;
     private readonly Dictionary<uint, BitmapSource> _pointerShapes = [];
+    private int _pointerWaiting;
 
-    private void OnRemotePointer(ScreenCursor cursor)
+    /// <summary>
+    /// Asks for the pointer to be drawn where it is now. At most one of these is ever waiting, and it reads the
+    /// latest position when it runs rather than carrying one with it.
+    ///
+    /// This matters more than it looks. A mouse reports about a hundred times a second, and the window paints on one
+    /// thread that is also decoding frames into it; one of these per message meant a queue that filled faster than
+    /// it drained, every item in it a position the mouse had already left. The pointer then crawled behind the
+    /// mouse and went on travelling for twenty seconds after it stopped, replaying where it had been — and since
+    /// the queue is the same one the window's own mouse events wait in, everything else here crawled with it.
+    /// Frames never had this problem because the viewer holds one back until the window says it has painted the
+    /// last; this is that, for something too small and too frequent to hand over one at a time.
+    /// </summary>
+    private void DrawPointerSoon()
     {
-        _pointer = cursor;
-        PlacePointer();
+        if (Interlocked.Exchange(ref _pointerWaiting, 1) != 0)
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
+        {
+            Volatile.Write(ref _pointerWaiting, 0);
+            PlacePointer();
+        });
     }
 
     private void PlacePointer()
     {
         var width = ScreenImage.ActualWidth;
         var height = ScreenImage.ActualHeight;
-        if (_pointer is not { Visible: true } cursor || width <= 0 || height <= 0 || PointerPicture(cursor.ShapeId) is not var (shape, picture))
+
+        // Taken now, not when the drawing was asked for: what matters is where the pointer is, not where it was.
+        if (_viewer.Pointer is not { Visible: true } cursor || width <= 0 || height <= 0 || PointerPicture(cursor.ShapeId) is not var (shape, picture))
         {
             PointerImage.Visibility = Visibility.Collapsed;
             ScreenImage.Cursor = null;

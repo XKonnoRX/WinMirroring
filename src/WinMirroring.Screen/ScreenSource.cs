@@ -34,12 +34,14 @@ internal sealed class ScreenSource : IAsyncDisposable
 {
     /// <summary>
     /// Frame messages allowed on the wire at once, which is also the most picture that can be in the air unseen —
-    /// so it is kept as small as the arithmetic allows. The arithmetic: a stream can only run at the window
-    /// divided by the round trip, and a round trip on this link is seventy milliseconds, so thirty frames a second
-    /// needs 30 × 0.070 ≈ 2.1 of them outstanding. Two therefore capped the stream at twenty-eight frames a second
-    /// however good everything else was — and with a slot held across the encoder as well, as it used to be, at
-    /// nineteen. Three clears thirty with a little to spare and nothing more; when the link cannot carry it the
-    /// bitrate comes down (see <see cref="StreamPacing"/>) and the grace below bounds the worst case.
+    /// so it is kept as small as the arithmetic allows. The arithmetic: a stream can only run at the window divided
+    /// by the round trip, so the window has to be the frame rate times the round trip. Once the viewer decodes on
+    /// its graphics card a round trip is ten to twenty milliseconds, which three slots clear at sixty frames a
+    /// second several times over; three still reaches sixty at fifty milliseconds, and past that the rate comes
+    /// down rather than the picture piling up unseen, which is the right way round. (Two used to cap a thirty-frame
+    /// stream at twenty-eight on a seventy-millisecond round trip, and at nineteen while a slot was also held
+    /// across the encoder.) When the link cannot carry the bitrate it comes down instead (see
+    /// <see cref="StreamPacing"/>), and the grace below bounds the worst case.
     /// </summary>
     private const int MaxInFlight = 3;
 

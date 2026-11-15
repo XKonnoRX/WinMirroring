@@ -266,6 +266,13 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
             var middle = new System.Drawing.Point(monitor.Bounds.Left + (monitor.Bounds.Width / 2), monitor.Bounds.Top + (monitor.Bounds.Height / 2));
             Assert.True(SetCursorPos(middle.X, middle.Y));
 
+            // Windows hides the mouse pointer once a screen has been touched and does not bring it back for a
+            // SetCursorPos — only real movement does. There is then nothing for the source to send and nothing for
+            // this to hold it to, which is the behaviour wanted rather than a failure.
+            Assert.SkipUnless(
+                Capture.CursorReader.TryRead(out _, out _, out var showing) && showing,
+                "the system is not showing a mouse pointer at all (a screen here has been touched)");
+
             // Waiting for a pointer at the place it was put, not merely for one: wherever the mouse already was is
             // also a visible pointer, and it will have arrived before this moved it.
             bool AtTheMiddle() =>
@@ -274,7 +281,20 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
                 && Math.Abs(screen.X - middle.X) <= 4
                 && Math.Abs(screen.Y - middle.Y) <= 4;
 
-            await WaitUntilAsync(AtTheMiddle, ct);
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
+            while (!AtTheMiddle())
+            {
+                if (DateTimeOffset.UtcNow >= deadline)
+                {
+                    GetCursorPos(out var где);
+                    var seen = viewer.Pointer is { } p
+                        ? $"{p.X:F4},{p.Y:F4} visible {p.Visible} shape {p.ShapeId}" + (source.TryMapToScreen(viewerId, viewer.StreamId, p.X, p.Y, out var s) ? $" → {s}" : " (not mappable)")
+                        : "nothing at all";
+                    Assert.Fail($"the pointer was put at {middle} and is at {где.X},{где.Y}, but the viewer has {seen}");
+                }
+
+                await Task.Delay(50, ct);
+            }
 
             // The shape its id names must have arrived too, or there would be nothing to draw.
             var pointer = viewer.Pointer!;
