@@ -40,6 +40,7 @@ public sealed partial class MainViewModel : ObservableObject
         WinMirroring.Clipboard.ClipboardSyncService clipboard,
         WinMirroring.Audio.AudioService audio,
         WinMirroring.Screen.ScreenStreamingService screen,
+        WinMirroring.Shell.ShellService shell,
         DialogPairingUi pairingUi,
         FeatureHealth health,
         DiagnosticsService diagnostics,
@@ -52,6 +53,7 @@ public sealed partial class MainViewModel : ObservableObject
         _clipboard = clipboard;
         _audio = audio;
         _screen = screen;
+        _shell = shell;
         _health = health;
         _diagnostics = diagnostics;
         _devices = devices;
@@ -74,6 +76,7 @@ public sealed partial class MainViewModel : ObservableObject
         _autoUpdateReady = false;
         AutoUpdate = node.Settings.AutoUpdate;
         _autoUpdateReady = true;
+        AllowRemoteCommands = node.Settings.Shell.AllowCommands;
 
         foreach (var address in node.Settings.ManualPeerAddresses)
         {

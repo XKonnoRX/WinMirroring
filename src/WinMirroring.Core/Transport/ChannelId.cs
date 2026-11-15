@@ -9,4 +9,7 @@ public enum ChannelId : byte
     File = 3,
     Audio = 4,
     Screen = 5,
+
+    /// <summary>Commands run on a device and what they print back (see WinMirroring.Shell).</summary>
+    Shell = 6,
 }

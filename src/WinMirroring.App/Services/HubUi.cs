@@ -319,6 +319,9 @@ public sealed class HubUi
             case "remoteDesktop":
                 return _vm.RemoteDesktopTo(id);
 
+            case "console":
+                return _vm.OpenConsoleOn(id);
+
             case "ping":
                 return _vm.PingTo(id);
 

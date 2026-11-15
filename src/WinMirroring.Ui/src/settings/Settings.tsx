@@ -213,6 +213,19 @@ export function Settings() {
               <Num label="Кадров в секунду, не больше" value={state.screen.maxFps} onChange={(v) => void set('screen.maxFps', v)} />
             </Section>
 
+            <Section title="Выполнение команд">
+              <Toggle
+                label="Разрешить выполнение команд с других устройств"
+                checked={state.shell.allowCommands}
+                onChange={(v) => void set('shell.allowCommands', v)}
+              />
+              <p className="note">
+                Спаренное устройство сможет открыть здесь консоль и запускать команды от вашего имени — так же, как
+                если бы вошло по SSH. Первое разрешение каждому устройству вы подтверждаете здесь, и оно действует до
+                перезапуска приложения; об открытой консоли приложение сообщает уведомлением.
+              </p>
+            </Section>
+
             <Section title="Второй монитор">
               <p className="note">{state.screen.virtualDisplay}</p>
             </Section>

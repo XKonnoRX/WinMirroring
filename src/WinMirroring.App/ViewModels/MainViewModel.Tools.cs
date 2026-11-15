@@ -16,6 +16,30 @@ namespace WinMirroring.App.ViewModels;
 /// </summary>
 public sealed partial class MainViewModel
 {
+    private readonly WinMirroring.Shell.ShellService _shell;
+
+    /// <summary>
+    /// Whether a paired device may open a console here. Off until it is turned on: a paired device can already move
+    /// this one's mouse and type on its keyboard, so this grants nothing new — but it makes that power convenient,
+    /// and the first console each device opens is still confirmed by whoever is sitting here.
+    /// </summary>
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
+    public partial bool AllowRemoteCommands { get; set; }
+
+    partial void OnAllowRemoteCommandsChanged(bool value)
+    {
+        if (!_initialized)
+        {
+            return;
+        }
+
+        _node.Settings.Shell.AllowCommands = value;
+        _node.SaveSettings();
+        Say(value
+            ? "Другие устройства могут выполнять здесь команды — при первом разрешении вы его подтвердите."
+            : "Выполнение команд с других устройств выключено.");
+    }
+
     /// <summary>The address without a port, which is what all of these need; empty when it is not known.</summary>
     public string HostOf(string peerId) => Peers.FirstOrDefault(p => p.Id == peerId)?.Host ?? string.Empty;
 
@@ -46,6 +70,24 @@ public sealed partial class MainViewModel
 
     public string RemoteDesktopTo(string peerId) =>
         WithHost(peerId, host => Launch("mstsc.exe", $"/v:{host}", "удалённый рабочий стол") ?? Say($"Открываю удалённый рабочий стол {host}…"));
+
+    /// <summary>
+    /// A console on the device itself — the one tool here that does something on the other machine rather than
+    /// something on this one with its address. In the place of logging into it: the session is already there and
+    /// already authenticated, so there is nothing to connect and no password to have.
+    /// </summary>
+    public string OpenConsoleOn(string peerId)
+    {
+        var name = NameOf(peerId);
+        if (_shell.Open(peerId) is not { } console)
+        {
+            return Say($"Консоль на {name} не открыть: нет готового соединения.");
+        }
+
+        var window = new Views.RemoteConsoleWindow(console);
+        window.Show();
+        return Say($"Открываю консоль на {name}…");
+    }
 
     public string PingTo(string peerId) =>
         WithHost(peerId, host => Launch("cmd.exe", $"/k ping -t {host}", $"ping {host}") ?? Say($"Ping {host} запущен в консоли."));

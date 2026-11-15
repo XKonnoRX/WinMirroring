@@ -28,14 +28,18 @@ internal sealed class VideoReassembly
 
     private readonly PictureHandler _deliver;
     private readonly Action<uint> _giveUp;
+    private readonly Func<long> _now;
     private readonly Dictionary<uint, Picture> _pictures = [];
 
     private uint _next;
     private uint _newest;
     private bool _started;
 
-    /// <summary>When a later picture first turned up while this one was still missing a piece, or 0.</summary>
-    private long _overdueSince;
+    /// <summary>
+    /// When a later picture first turned up while this one was still missing a piece; absent while none has. Not a
+    /// zero standing for "none": a clock is free to read zero, and one that did would be mistaken for no clock.
+    /// </summary>
+    private long? _overdueSince;
     private long _delivered;
     private long _repaired;
     private long _lost;
@@ -43,11 +47,17 @@ internal sealed class VideoReassembly
     /// <summary>
     /// <paramref name="deliver"/> takes each whole picture in order; <paramref name="giveUp"/> is told the number
     /// of each one that will never be whole, so the viewer can acknowledge it and ask for a fresh picture.
+    ///
+    /// <paramref name="now"/> is the clock in milliseconds, and exists so that what this does about time can be
+    /// decided rather than waited for. Deciding to give up on a picture turns on eight milliseconds having passed,
+    /// and a test that has to actually let them pass is a test that fails whenever the machine is busy — which is
+    /// what it did, about one run in three under the load of the whole suite.
     /// </summary>
-    public VideoReassembly(PictureHandler deliver, Action<uint> giveUp)
+    public VideoReassembly(PictureHandler deliver, Action<uint> giveUp, Func<long>? now = null)
     {
         _deliver = deliver;
         _giveUp = giveUp;
+        _now = now ?? (() => Environment.TickCount64);
     }
 
     /// <summary>Pictures handed over whole, of which this many had a lost piece rebuilt from the parity.</summary>
@@ -79,9 +89,9 @@ internal sealed class VideoReassembly
             _newest = header.FrameNo;
         }
 
-        if (_newest > _next && _overdueSince == 0)
+        if (_newest > _next && _overdueSince is null)
         {
-            _overdueSince = Environment.TickCount64;
+            _overdueSince = _now();
         }
 
         var picture = Taken(header);
@@ -182,7 +192,7 @@ internal sealed class VideoReassembly
 
             var overdue = _newest > _next
                 && (_newest - _next >= Lead
-                    || (_overdueSince != 0 && Environment.TickCount64 - _overdueSince >= Reorder.TotalMilliseconds));
+                    || (_overdueSince is { } since && _now() - since >= Reorder.TotalMilliseconds));
             if (!overdue)
             {
                 return;
@@ -201,7 +211,7 @@ internal sealed class VideoReassembly
         _next++;
 
         // The wait for this one starts now, however long the one before it took.
-        _overdueSince = _newest > _next ? Environment.TickCount64 : 0;
+        _overdueSince = _newest > _next ? _now() : null;
     }
 
     /// <summary>

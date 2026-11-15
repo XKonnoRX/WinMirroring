@@ -11,13 +11,24 @@ if (options is null)
     return 1;
 }
 
+// Running a command is meant to be used from a script, so in that mode standard output belongs to the command
+// being run and nothing else. Rather than hunting down every line this tool prints, its output is pointed at
+// standard error wholesale, and the command's own output is written through the writer kept here, which is the
+// real one. Before the log is built, not after: the console logger keeps hold of whichever writer it was made
+// with, so a log built first would go on writing to the output a script is reading.
+var stdout = Console.Out;
+if (options.IsExec)
+{
+    Console.SetOut(Console.Error);
+}
+
 using var loggerFactory = LoggerFactory.Create(builder => builder
     .AddSimpleConsole(console =>
     {
         console.SingleLine = true;
         console.TimestampFormat = "HH:mm:ss.fff ";
     })
-    .SetMinimumLevel(options.Verbose ? LogLevel.Debug : LogLevel.Information));
+    .SetMinimumLevel(options.Verbose ? LogLevel.Debug : options.IsExec ? LogLevel.Warning : LogLevel.Information));
 
 var nodeOptions = new NodeOptions
 {
@@ -103,6 +114,19 @@ Console.CancelKeyPress += (_, e) =>
 if (options.TimeoutSeconds is { } seconds)
 {
     shutdown.CancelAfter(TimeSpan.FromSeconds(seconds));
+}
+
+// A console both ways: this node can run commands on another device, and — with --accept, and only when its own
+// settings allow commands at all — let another device run them here. That second half is what makes a headless
+// node something a script can manage rather than only something that manages.
+await using var shell = new WinMirroring.Shell.ShellService(node, loggerFactory.CreateLogger<WinMirroring.Shell.ShellService>());
+shell.Confirm = (_, _) => Task.FromResult(options.AutoAccept);
+shell.Notify = (title, text) => Console.WriteLine($"SHELL {title}: {text}");
+shell.Start();
+
+if (options.IsExec)
+{
+    return await Exec.RunAsync(node, shell, options, stdout, shutdown.Token).ConfigureAwait(false);
 }
 
 try

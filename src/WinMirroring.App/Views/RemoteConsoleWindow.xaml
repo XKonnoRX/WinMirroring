@@ -1,0 +1,45 @@
+<Window x:Class="WinMirroring.App.Views.RemoteConsoleWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Консоль устройства"
+        Width="860" Height="520" MinWidth="520" MinHeight="300"
+        Background="#111827" Foreground="#E5E7EB"
+        WindowStartupLocation="CenterOwner">
+  <Grid Margin="10">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <DockPanel Grid.Row="0" Margin="0,0,0,8">
+      <TextBlock x:Name="WhereText" DockPanel.Dock="Left" Foreground="#9CA3AF" FontSize="12"
+                 VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+      <Button x:Name="StopButton" DockPanel.Dock="Right" Content="Прервать" Padding="10,3" Margin="8,0,0,0"
+              IsEnabled="False" Click="OnStop"
+              ToolTip="Завершает оболочку на устройстве: консоль закроется, и её придётся открыть заново" />
+      <TextBlock x:Name="StateText" HorizontalAlignment="Right" Foreground="#FBBF24" FontSize="12"
+                 VerticalAlignment="Center" />
+    </DockPanel>
+
+    <!-- The scrollback. Read-only and selectable, so what a command said can be copied out of it. -->
+    <Border Grid.Row="1" Background="#0B1220" BorderBrush="#374151" BorderThickness="1" CornerRadius="4">
+      <ScrollViewer x:Name="Scroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" Padding="8">
+        <TextBox x:Name="OutputText" IsReadOnly="True" IsReadOnlyCaretVisible="True" BorderThickness="0"
+                 Background="Transparent" Foreground="#D1D5DB" FontFamily="Consolas" FontSize="13"
+                 TextWrapping="NoWrap" AcceptsReturn="True" VerticalScrollBarVisibility="Disabled"
+                 HorizontalScrollBarVisibility="Disabled" />
+      </ScrollViewer>
+    </Border>
+
+    <DockPanel Grid.Row="2" Margin="0,8,0,0">
+      <TextBlock DockPanel.Dock="Left" Text="&gt;" Foreground="#6B7280" FontFamily="Consolas" FontSize="14"
+                 VerticalAlignment="Center" Margin="2,0,6,0" />
+      <Button x:Name="RunButton" DockPanel.Dock="Right" Content="Выполнить" Padding="12,4" Margin="8,0,0,0"
+              IsDefault="True" IsEnabled="False" Click="OnRun" />
+      <TextBox x:Name="CommandText" FontFamily="Consolas" FontSize="14" Padding="6,4"
+               Background="#0B1220" Foreground="#E5E7EB" BorderBrush="#374151" CaretBrush="#E5E7EB"
+               IsEnabled="False" PreviewKeyDown="OnCommandKey" />
+    </DockPanel>
+  </Grid>
+</Window>

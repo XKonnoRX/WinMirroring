@@ -156,6 +156,18 @@ public partial class App : Application
             peerFiles.Notify = (title, text) => Dispatcher.BeginInvoke(() => ShowNotification(title, text));
             peerFiles.Start();
         });
+        health.Start("Выполнение команд", () =>
+        {
+            var shell = _services.GetRequiredService<WinMirroring.Shell.ShellService>();
+
+            // A console here is never opened behind the user's back: the setting is off until they turn it on, the
+            // first one each device asks for is confirmed in front of whoever is sitting here, and both opening and
+            // closing one say so on the screen.
+            shell.Confirm = (title, text) => Dispatcher.InvokeAsync(() =>
+                MessageBox.Show(text, title, MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes).Task;
+            shell.Notify = (title, text) => Dispatcher.BeginInvoke(() => ShowNotification($"WinMirroring: {title}", text));
+            shell.Start();
+        });
         health.Start("Главное окно", () =>
         {
             var hub = _services.GetRequiredService<HubUi>();
@@ -464,6 +476,7 @@ public partial class App : Application
         services.AddSingleton<AudioService>();
         services.AddSingleton<DragDropCoordinator>();
         services.AddSingleton<ScreenStreamingService>();
+        services.AddSingleton<WinMirroring.Shell.ShellService>();
         services.AddSingleton<GithubUpdater>();
         services.AddSingleton<ButtonBarService>();
         services.AddSingleton<DeviceInfoService>();

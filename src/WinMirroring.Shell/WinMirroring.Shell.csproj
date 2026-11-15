@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>WinMirroring.Shell</RootNamespace>
+    <Description>Running commands on a paired device over the session it already has: a console for managing a device, in the place of an SSH login.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WinMirroring.Core\WinMirroring.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.14" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="WinMirroring.Shell.Tests" />
+  </ItemGroup>
+
+</Project>

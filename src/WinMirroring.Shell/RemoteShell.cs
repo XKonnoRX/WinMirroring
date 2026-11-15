@@ -1,0 +1,231 @@
+using System.Diagnostics;
+using System.Text;
+using Microsoft.Extensions.Logging;
+
+namespace WinMirroring.Shell;
+
+/// <summary>
+/// One PowerShell on this device, kept alive and fed commands, with its output handed back as it appears.
+///
+/// Kept alive rather than started per command, because a console that forgets where it is between commands is not
+/// a console: <c>cd</c>, variables and anything else a person sets up have to still be there for the next line.
+/// PowerShell started with <c>-Command -</c> reads commands from its input and runs them as they arrive, which is
+/// exactly what is wanted — measured on this machine: a command's output comes back within a few hundred
+/// milliseconds of being sent, and a command that prints as it goes is seen printing.
+///
+/// What a command's output ends with is the problem that has to be solved: there is no prompt to look for and no
+/// end-of-output signal in a pipe. So after each command a line is sent that prints a marker made up for this
+/// console, the exit code and the current directory. Everything before it belongs to the command; the marker line
+/// itself is never shown. The marker is random per console, so nothing a command prints can be mistaken for it.
+///
+/// Encoding has to be said four times over, and all four matter: the three pipes are UTF-8 here, and the console's
+/// own output encoding is set inside the shell so that PowerShell and the native programs it starts also write
+/// UTF-8. Without the input one, a command typed in Russian arrives at the shell as mojibake.
+/// </summary>
+internal sealed class RemoteShell : IDisposable
+{
+    /// <summary>How long a shell that has been asked to close is given before it is ended outright.</summary>
+    private static readonly TimeSpan GraceOnClose = TimeSpan.FromSeconds(2);
+
+    private readonly Process _process;
+    private readonly string _marker;
+    private readonly ILogger _logger;
+    private readonly object _writeGate = new();
+    private bool _disposed;
+
+    private RemoteShell(Process process, string marker, ILogger logger)
+    {
+        _process = process;
+        _marker = marker;
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// A piece of what a command is saying, as it says it. Raised on the thread that reads the shell's output, so a
+    /// handler that blocks stops the shell being read at all — nothing here may wait on anything.
+    /// </summary>
+    public event Action<ShellStreamKind, string>? Output;
+
+    /// <summary>A command finished: its exit code, and where the console is now. Same thread, same rule.</summary>
+    public event Action<int, string>? Done;
+
+    /// <summary>The shell itself ended — it was told to exit, or it fell over.</summary>
+    public event Action? Ended;
+
+    /// <summary>
+    /// Completes when the shell has finished its own first command and said where it is. Waited on before the far
+    /// side is told the console is open — both so that it is told the right directory, and because that first
+    /// command's own "finished" is nobody else's business: a caller that saw it would take it for the answer to the
+    /// first command it ran, which is a mistake that looks exactly like a command producing nothing at all.
+    /// </summary>
+    public Task Ready => _ready.Task;
+
+    public string Directory { get; private set; } = string.Empty;
+
+    private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _opened;
+
+    /// <summary>Null when PowerShell could not be started at all.</summary>
+    public static RemoteShell? TryStart(ILogger logger)
+    {
+        var marker = "wm" + Guid.NewGuid().ToString("N");
+        var start = new ProcessStartInfo("powershell.exe", "-NoProfile -NoLogo -NonInteractive -Command -")
+        {
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            StandardInputEncoding = Utf8,
+            StandardOutputEncoding = Utf8,
+            StandardErrorEncoding = Utf8,
+            WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        };
+
+        try
+        {
+            if (Process.Start(start) is not { } process)
+            {
+                return null;
+            }
+
+            var shell = new RemoteShell(process, marker, logger);
+            shell.Begin();
+            return shell;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            logger.LogWarning("A console could not be started here: {Message}", ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>Hands one command over. The answer comes as <see cref="Output"/> and then <see cref="Done"/>.</summary>
+    public bool Run(string command)
+    {
+        // Sent as base64 and decoded on the other side rather than written out as itself. Two reasons, both found
+        // the hard way: PowerShell reads its own input in the console's code page whatever encoding the pipe was
+        // opened with, so a command with a Russian word in it arrived as mojibake and was faithfully run as
+        // mojibake; and a command written as itself has to be one line, because the shell runs each line as it
+        // comes. Base64 is ASCII, so no code page can touch it, and it carries newlines without them meaning
+        // anything to the shell.
+        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(command));
+        return Write(
+            $"Invoke-Expression ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{payload}')))"
+            + Environment.NewLine + MarkerCommand());
+    }
+
+    /// <summary>
+    /// Stops what is running. There is no gentle way to interrupt one command of a shell reading from a pipe —
+    /// Ctrl+C belongs to a console a user is sitting at — so the shell is ended and the caller starts another. The
+    /// alternative would be a console that cannot be got out of, which is worse than one that has to be reopened.
+    /// </summary>
+    public void Cancel() => Dispose();
+
+    /// <summary>
+    /// The line that says a command is over: the marker, the exit code and where the console now is. Cast to a
+    /// number on purpose — PowerShell leaves $LASTEXITCODE unset until a program has exited, and an empty one here
+    /// made the line one field short, so the directory was read as the exit code and then lost.
+    /// </summary>
+    private string MarkerCommand() =>
+        $"Write-Output \"{_marker} $([int]$LASTEXITCODE) $((Get-Location).Path)\"";
+
+    private void Begin()
+    {
+        _process.OutputDataReceived += (_, e) => OnLine(e.Data, ShellStreamKind.Output);
+        _process.ErrorDataReceived += (_, e) => OnLine(e.Data, ShellStreamKind.Error);
+        _process.Exited += (_, _) => Ended?.Invoke();
+        _process.EnableRaisingEvents = true;
+        _process.BeginOutputReadLine();
+        _process.BeginErrorReadLine();
+
+        // Before anything else, so that everything this shell and its children print arrives as UTF-8. The marker
+        // line it ends with also tells the caller where the console starts.
+        Write("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8"
+            + Environment.NewLine + MarkerCommand());
+    }
+
+    private void OnLine(string? line, ShellStreamKind kind)
+    {
+        if (line is null)
+        {
+            return;
+        }
+
+        if (kind == ShellStreamKind.Output && line.StartsWith(_marker, StringComparison.Ordinal))
+        {
+            var rest = line[_marker.Length..].TrimStart();
+            var split = rest.IndexOf(' ');
+            var code = split < 0 ? rest : rest[..split];
+            Directory = split < 0 ? Directory : rest[(split + 1)..];
+
+            if (Interlocked.Exchange(ref _opened, 1) == 0)
+            {
+                _ready.TrySetResult(); // the shell's own first command; it belongs to nobody
+                return;
+            }
+
+            Done?.Invoke(int.TryParse(code, out var exit) ? exit : 0, Directory);
+            return;
+        }
+
+        Output?.Invoke(kind, line);
+    }
+
+    private bool Write(string text)
+    {
+        if (_disposed)
+        {
+            return false;
+        }
+
+        try
+        {
+            lock (_writeGate)
+            {
+                _process.StandardInput.WriteLine(text);
+                _process.StandardInput.Flush();
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
+        {
+            _logger.LogDebug("The console here is no longer taking commands: {Message}", ex.Message);
+            return false;
+        }
+    }
+
+    private static readonly UTF8Encoding Utf8 = new(encoderShouldEmitUTF8Identifier: false);
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        try
+        {
+            // Asked to leave first: a shell in the middle of something gets the chance to finish writing.
+            _process.StandardInput.Close();
+            if (!_process.WaitForExit((int)GraceOnClose.TotalMilliseconds))
+            {
+                _process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or System.ComponentModel.Win32Exception or ObjectDisposedException)
+        {
+        }
+
+        _process.Dispose();
+    }
+}
+
+/// <summary>Which of a shell's two streams a line came from.</summary>
+internal enum ShellStreamKind
+{
+    Output,
+    Error,
+}

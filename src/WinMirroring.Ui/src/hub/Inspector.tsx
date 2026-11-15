@@ -139,16 +139,23 @@ export function Inspector({
                 <button className="btn wide" disabled={!device.host} onClick={() => run('remoteDesktop')}>
                   Рабочий стол (RDP)
                 </button>
-                <button className="btn wide" disabled={!device.host} onClick={() => run('ping')}>
-                  Ping в консоли
-                </button>
               </div>
               <div className="inspector-row">
+                {/* Commands run on the device itself, over the session it already has — in the place of an SSH
+                    login. It needs no address, only a live session, which is why this one goes by `online`. */}
+                <button className="btn wide" disabled={!device.online} onClick={() => run('console')}>
+                  Консоль устройства
+                </button>
                 <button className="btn wide" disabled={!device.online} onClick={() => run('latency')}>
                   Проверить задержку
                 </button>
                 <button className="btn wide" disabled={!device.online} onClick={() => run('peerLog')}>
                   Забрать журнал
+                </button>
+              </div>
+              <div className="inspector-row">
+                <button className="btn wide" disabled={!device.host} onClick={() => run('ping')}>
+                  Ping в консоли
                 </button>
               </div>
               <button className="btn wide" disabled={!device.online} onClick={() => run('reconnect')}>

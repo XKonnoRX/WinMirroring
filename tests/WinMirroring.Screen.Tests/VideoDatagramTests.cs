@@ -164,6 +164,7 @@ public class VideoDatagramTests
         // Still within the moment a late piece is allowed, so nothing has been given up on yet.
         Assert.Empty(link.Delivered);
 
+        // And a second newer picture does away with the waiting, whatever the clock says.
         link.SendPicture(3, third);
 
         Assert.Equal(1, link.Reassembly.Lost);
@@ -228,7 +229,7 @@ public class VideoDatagramTests
         // The newer picture is here and whole, and nothing else is coming.
         Assert.Empty(link.Delivered);
 
-        Thread.Sleep(20);
+        link.Clock += 20;
         link.Reassembly.Tick();
 
         Assert.Equal([1u], link.GivenUp);
@@ -248,9 +249,17 @@ public class VideoDatagramTests
     {
         public Loopback() => Reassembly = new VideoReassembly(
             (frameNo, width, height, keyframe, picture) => Delivered.Add(new Whole(frameNo, width, height, keyframe, picture.ToArray())),
-            GivenUp.Add);
+            GivenUp.Add,
+            () => Clock);
 
         public VideoReassembly Reassembly { get; }
+
+        /// <summary>
+        /// Time, in milliseconds, as this test decides it. Giving up on a picture turns on eight milliseconds
+        /// having passed since a later one turned up, and a test that lets them pass for real is a test that fails
+        /// whenever the machine is busy — which is what this one did under the load of the whole suite.
+        /// </summary>
+        public long Clock { get; set; }
 
         public List<Whole> Delivered { get; } = [];
 

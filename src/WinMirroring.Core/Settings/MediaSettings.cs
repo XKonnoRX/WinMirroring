@@ -76,6 +76,18 @@ public sealed class ScreenSettings
     public bool HideSentWindow { get; set; } = true;
 }
 
+/// <summary>
+/// Letting a paired device run commands here — a console on this machine, in the place of logging into it.
+///
+/// Off until it is turned on, deliberately. A paired device can already move this one's mouse and type on its
+/// keyboard, so this grants nothing it did not have; what it changes is how easy that power is to use, and the
+/// first console each device opens is still asked about by whoever is sitting here.
+/// </summary>
+public sealed class ShellSettings
+{
+    public bool AllowCommands { get; set; }
+}
+
 public sealed class AudioSettings
 {
     /// <summary>Let this device's sound be sent to another device.</summary>
