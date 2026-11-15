@@ -26,7 +26,7 @@ public sealed class ShellService : IAsyncDisposable
     private readonly ILogger<ShellService> _logger;
 
     /// <summary>Consoles other devices have opened here, by the device that opened each one.</summary>
-    private readonly ConcurrentDictionary<(string PeerId, uint Id), RemoteShell> _hosted = new();
+    private readonly ConcurrentDictionary<(string PeerId, uint Id), IHostedShell> _hosted = new();
 
     /// <summary>Devices whose consoles the person here has already agreed to, until this app restarts.</summary>
     private readonly ConcurrentDictionary<string, byte> _allowed = new(StringComparer.Ordinal);
@@ -38,14 +38,7 @@ public sealed class ShellService : IAsyncDisposable
     /// What has arrived so far of a command too long for one message, by the console it is for. A whole script
     /// comes this way; nothing is run until the message that ends it.
     /// </summary>
-    private readonly ConcurrentDictionary<(string PeerId, uint Id), System.Text.StringBuilder> _arriving = new();
-
-    /// <summary>
-    /// The longest command that will be put back together. A script is text and a megabyte of it is a very long
-    /// script indeed; past that, something is either wrong or not a command, and this is memory held on someone
-    /// else's say-so.
-    /// </summary>
-    private const int LongestCommand = 1 << 20;
+    private readonly ConcurrentDictionary<(string PeerId, uint Id), CommandAssembly> _arriving = new();
 
     private int _disposed;
 
@@ -91,7 +84,7 @@ public sealed class ShellService : IAsyncDisposable
     /// agreed arrives on the console itself, as <see cref="RemoteConsole.Opened"/> or
     /// <see cref="RemoteConsole.Refused"/>, because the person over there may be being asked about it.
     /// </summary>
-    public RemoteConsole? Open(string peerId)
+    public RemoteConsole? Open(string peerId, bool elevated = false)
     {
         if (!_node.Sessions.TryGetSession(peerId, out var session) || session.State != SessionState.Ready)
         {
@@ -102,8 +95,12 @@ public sealed class ShellService : IAsyncDisposable
         var console = new RemoteConsole(session, id, _logger);
         console.Finished += () => _mine.TryRemove(id, out _);
         _mine[id] = console;
-        Send(session, ShellCodec.Encode(ShellMessageType.Open, id));
-        _logger.LogInformation("Asked {Peer} for a console (console {Console})", session.PeerName, id);
+        Send(session, ShellCodec.Encode(elevated ? ShellMessageType.OpenElevated : ShellMessageType.Open, id));
+        _logger.LogInformation(
+            "Asked {Peer} for {Kind} console (console {Console})",
+            session.PeerName,
+            elevated ? "an administrator" : "a",
+            id);
         return console;
     }
 
@@ -174,33 +171,35 @@ public sealed class ShellService : IAsyncDisposable
         var key = (session.PeerId, id);
         switch (type)
         {
-            case ShellMessageType.Open:
-                // Off the receive loop: starting a shell takes a moment and the person here may be asked first.
-                _ = Task.Run(() => OpenHereAsync(session, id), ct);
+            case ShellMessageType.Open or ShellMessageType.OpenElevated:
+                // Off the receive loop: starting a shell takes a moment and the person here may be asked first —
+                // and for an administrator one, Windows asks as well.
+                var elevated = type == ShellMessageType.OpenElevated;
+                _ = Task.Run(() => OpenHereAsync(session, id, elevated), ct);
                 break;
 
-            case ShellMessageType.RunPart when _hosted.ContainsKey(key) && ShellCodec.TryDecodeText(span, out var part):
-                Arriving(key).Append(part);
-                break;
-
-            case ShellMessageType.Run when _hosted.TryGetValue(key, out var running) && ShellCodec.TryDecodeText(span, out var last):
-                var command = Whole(key, last);
-                if (command is null)
+            case ShellMessageType.RunPart or ShellMessageType.Run when _hosted.TryGetValue(key, out var running)
+                && ShellCodec.TryDecodeText(span, out var piece):
+                switch (Arriving(key).Add(type, piece, out var command))
                 {
-                    _logger.LogWarning("{Peer} sent a command longer than this will put back together", session.PeerName);
-                    _ = session.SendAsync(ChannelId.Shell, ShellCodec.EncodeOutput(id, ShellStream.Error, "Команда слишком длинная."), ct);
-                    _ = session.SendAsync(ChannelId.Shell, ShellCodec.EncodeDone(id, 1, running.Directory), ct);
-                    break;
+                    case CommandPiece.Whole:
+                        // The first line and its length, not the whole thing: a command here is as often a script
+                        // of a hundred lines as it is one line, and a log is not the place to keep a copy of it.
+                        _logger.LogInformation(
+                            "{Peer} runs in console {Console}: {Command}",
+                            session.PeerName,
+                            id,
+                            Describe(command));
+                        running.Run(command);
+                        break;
+
+                    case CommandPiece.TooLong:
+                        _logger.LogWarning("{Peer} sent a command longer than this will put back together", session.PeerName);
+                        _ = session.SendAsync(ChannelId.Shell, ShellCodec.EncodeOutput(id, ShellStream.Error, "Команда слишком длинная."), ct);
+                        _ = session.SendAsync(ChannelId.Shell, ShellCodec.EncodeDone(id, 1, running.Directory), ct);
+                        break;
                 }
 
-                // The first line and its length, not the whole thing: a command here is as often a script of a
-                // hundred lines as it is one line, and a log is not the place to keep a copy of it.
-                _logger.LogInformation(
-                    "{Peer} runs in console {Console}: {Command}",
-                    session.PeerName,
-                    id,
-                    Describe(command));
-                running.Run(command);
                 break;
 
             case ShellMessageType.Cancel when _hosted.TryRemove(key, out var cancelled):
@@ -221,22 +220,8 @@ public sealed class ShellService : IAsyncDisposable
         return ValueTask.CompletedTask;
     }
 
-    private System.Text.StringBuilder Arriving((string PeerId, uint Id) key) =>
-        _arriving.GetOrAdd(key, _ => new System.Text.StringBuilder());
-
-    /// <summary>
-    /// The command that just ended, with whatever arrived before it in front of it; null when more of it arrived
-    /// than will be put back together. Either way nothing of it is kept afterwards.
-    /// </summary>
-    private string? Whole((string PeerId, uint Id) key, string last)
-    {
-        if (!_arriving.TryRemove(key, out var arriving))
-        {
-            return last.Length <= LongestCommand ? last : null;
-        }
-
-        return arriving.Length + last.Length <= LongestCommand ? arriving.Append(last).ToString() : null;
-    }
+    private CommandAssembly Arriving((string PeerId, uint Id) key) =>
+        _arriving.GetOrAdd(key, _ => new CommandAssembly());
 
     /// <summary>A command as one line for the log: the first line of it, and how long the rest is.</summary>
     private static string Describe(string command)
@@ -250,8 +235,13 @@ public sealed class ShellService : IAsyncDisposable
     /// A device wants a console here. Refused outright while the setting is off, and otherwise asked about once per
     /// device: a yes lasts until this app restarts, so managing a device does not mean answering a dialog per
     /// command, and a no is remembered for nothing.
+    ///
+    /// An administrator console is asked about every single time and never remembered, and needs a setting of its
+    /// own as well. It is a different thing to agree to: an ordinary console can do what the person at this device
+    /// can do, and that one can do anything to it. Windows asks its own question too — the helper that runs it
+    /// cannot start without the prompt — so agreeing here is agreeing twice, which is the right number of times.
     /// </summary>
-    private async Task OpenHereAsync(PeerSession session, uint id)
+    private async Task OpenHereAsync(PeerSession session, uint id, bool elevated)
     {
         if (!_node.Settings.Shell.AllowCommands)
         {
@@ -259,7 +249,13 @@ public sealed class ShellService : IAsyncDisposable
             return;
         }
 
-        if (!_allowed.ContainsKey(session.PeerId))
+        if (elevated && !_node.Settings.Shell.AllowElevatedCommands)
+        {
+            await RefuseAsync(session, id, "команды с правами администратора выключены на этом устройстве").ConfigureAwait(false);
+            return;
+        }
+
+        if (elevated || !_allowed.ContainsKey(session.PeerId))
         {
             if (Confirm is not { } ask)
             {
@@ -267,11 +263,18 @@ public sealed class ShellService : IAsyncDisposable
                 return;
             }
 
-            var agreed = await ask(
-                "Выполнение команд",
-                $"{session.PeerName} хочет выполнять команды на этом устройстве.\n\n"
-                + "Это то же, что дать ему консоль здесь: он сможет запускать всё, что можете вы, от вашего имени. "
-                + "Разрешение действует до перезапуска приложения.\n\nРазрешить?").ConfigureAwait(false);
+            var agreed = elevated
+                ? await ask(
+                    "Команды с правами администратора",
+                    $"{session.PeerName} хочет выполнять здесь команды с правами администратора.\n\n"
+                    + "Это больше, чем обычная консоль: с такими правами можно изменить в этой системе всё что угодно, "
+                    + "включая службы, драйверы и защиту. Windows спросит отдельно, при запуске помощника.\n\n"
+                    + "Разрешение действует только на эту консоль и не запоминается.\n\nРазрешить?").ConfigureAwait(false)
+                : await ask(
+                    "Выполнение команд",
+                    $"{session.PeerName} хочет выполнять команды на этом устройстве.\n\n"
+                    + "Это то же, что дать ему консоль здесь: он сможет запускать всё, что можете вы, от вашего имени. "
+                    + "Разрешение действует до перезапуска приложения.\n\nРазрешить?").ConfigureAwait(false);
             if (!agreed)
             {
                 _logger.LogInformation("Refused a console to {Peer}: the user said no", session.PeerName);
@@ -279,13 +282,21 @@ public sealed class ShellService : IAsyncDisposable
                 return;
             }
 
-            _allowed[session.PeerId] = 1;
+            if (!elevated)
+            {
+                _allowed[session.PeerId] = 1;
+            }
         }
 
-        var shell = RemoteShell.TryStart(_logger);
+        IHostedShell? shell = elevated
+            ? await Elevated.ElevatedShell.TryStartAsync(_logger, CancellationToken.None).ConfigureAwait(false)
+            : RemoteShell.TryStart(_logger);
         if (shell is null)
         {
-            await RefuseAsync(session, id, "не удалось запустить PowerShell").ConfigureAwait(false);
+            await RefuseAsync(
+                session,
+                id,
+                elevated ? "права администратора здесь не подтвердили" : "не удалось запустить PowerShell").ConfigureAwait(false);
             return;
         }
 

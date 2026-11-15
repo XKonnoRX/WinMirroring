@@ -1,8 +1,7 @@
 using System.IO.Pipes;
-using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.Principal;
-using Microsoft.Win32.SafeHandles;
+using WinMirroring.Core.Local;
 
 namespace WinMirroring.Input.Injection;
 
@@ -46,62 +45,16 @@ public static class InjectionPipe
     /// <summary>The helper's exe, which the app expects on the other end of the pipe.</summary>
     public static string HelperPath => Path.Combine(AppContext.BaseDirectory, "WinMirroring.InputHost.exe");
 
-    /// <summary>The process at the other end of <paramref name="pipe"/> is <paramref name="expectedImage"/>.</summary>
-    public static bool IsPeer(uint pid, string expectedImage)
-    {
-        if (pid == 0)
-        {
-            return false;
-        }
-
-        var image = ProcessImagePath(pid);
-        return image is not null
-            && string.Equals(Path.GetFullPath(image), Path.GetFullPath(expectedImage), StringComparison.OrdinalIgnoreCase);
-    }
+    /// <summary>
+    /// The process at the other end of a pipe is the exe it should be. The how of it lives in
+    /// <see cref="PipePeer"/>, in the core, because the console's elevated helper asks exactly the same question
+    /// of exactly the same pair of programs, and a check like this is not one to have two copies of.
+    /// </summary>
+    public static bool IsPeer(uint pid, string expectedImage) => PipePeer.Is(pid, expectedImage);
 
     public static bool TryGetServerProcessId(NamedPipeClientStream pipe, out uint pid) =>
-        GetNamedPipeServerProcessId(pipe.SafePipeHandle, out pid) && pid != 0;
+        PipePeer.TryGetServerProcessId(pipe, out pid);
 
     public static bool TryGetClientProcessId(NamedPipeServerStream pipe, out uint pid) =>
-        GetNamedPipeClientProcessId(pipe.SafePipeHandle, out pid) && pid != 0;
-
-    private static string? ProcessImagePath(uint pid)
-    {
-        const uint queryLimited = 0x1000;
-        var process = OpenProcess(queryLimited, false, pid);
-        if (process == 0)
-        {
-            return null;
-        }
-
-        try
-        {
-            var capacity = 1024;
-            var buffer = new char[capacity];
-            return QueryFullProcessImageNameW(process, 0, buffer, ref capacity) ? new string(buffer, 0, capacity) : null;
-        }
-        finally
-        {
-            CloseHandle(process);
-        }
-    }
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint serverProcessId);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetNamedPipeClientProcessId(SafePipeHandle pipe, out uint clientProcessId);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern nint OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint processId);
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool QueryFullProcessImageNameW(nint process, uint flags, [Out] char[] exeName, ref int size);
-
-    [DllImport("kernel32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CloseHandle(nint handle);
+        PipePeer.TryGetClientProcessId(pipe, out pid);
 }

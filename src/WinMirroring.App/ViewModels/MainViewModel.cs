@@ -77,6 +77,7 @@ public sealed partial class MainViewModel : ObservableObject
         AutoUpdate = node.Settings.AutoUpdate;
         _autoUpdateReady = true;
         AllowRemoteCommands = node.Settings.Shell.AllowCommands;
+        AllowElevatedRemoteCommands = node.Settings.Shell.AllowElevatedCommands;
 
         foreach (var address in node.Settings.ManualPeerAddresses)
         {

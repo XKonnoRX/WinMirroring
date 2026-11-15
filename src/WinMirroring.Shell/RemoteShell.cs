@@ -22,7 +22,7 @@ namespace WinMirroring.Shell;
 /// own output encoding is set inside the shell so that PowerShell and the native programs it starts also write
 /// UTF-8. Without the input one, a command typed in Russian arrives at the shell as mojibake.
 /// </summary>
-internal sealed class RemoteShell : IDisposable
+internal sealed class RemoteShell : IHostedShell
 {
     /// <summary>How long a shell that has been asked to close is given before it is ended outright.</summary>
     private static readonly TimeSpan GraceOnClose = TimeSpan.FromSeconds(2);
@@ -177,11 +177,23 @@ internal sealed class RemoteShell : IDisposable
             return;
         }
 
-        if (kind == ShellStreamKind.Output && line.StartsWith(_marker, StringComparison.Ordinal))
+        // The marker is looked for anywhere in the line, not only at the start of one. A program that ends its
+        // output without a newline — powercfg /getactivescheme is one — leaves the line open, and the marker that
+        // follows is then printed onto the end of it. Looked for only at the start, that marker was never seen:
+        // the command never appeared to finish, the console sat there, and the whole thing ended as a lost
+        // connection. What came before the marker on such a line is the command's own last words, and is passed
+        // on as output. The marker itself is made up per console, so finding it inside a line means it is there.
+        var at = kind == ShellStreamKind.Output ? line.IndexOf(_marker, StringComparison.Ordinal) : -1;
+        if (at >= 0)
         {
+            if (at > 0)
+            {
+                Output?.Invoke(kind, line[..at]);
+            }
+
             // The exit code, whether it worked, and the directory — which is last because a path has spaces in it
             // and the other two never do.
-            var parts = line[_marker.Length..].TrimStart().Split(' ', 3);
+            var parts = line[(at + _marker.Length)..].TrimStart().Split(' ', 3);
             var code = parts.Length > 0 && int.TryParse(parts[0], out var exit) ? exit : 0;
             var worked = parts.Length < 2 || parts[1] != "0";
             if (parts.Length > 2)

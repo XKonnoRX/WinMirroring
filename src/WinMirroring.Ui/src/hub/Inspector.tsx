@@ -146,6 +146,12 @@ export function Inspector({
                 <button className="btn wide" disabled={!device.online} onClick={() => run('console')}>
                   Консоль устройства
                 </button>
+                {/* The same console with administrator rights. It needs its own setting turned on over there, is
+                    confirmed there every time, and Windows asks there as well — so it only works on a device
+                    somebody is sitting at. */}
+                <button className="btn wide" disabled={!device.online} onClick={() => run('consoleElevated')}>
+                  Консоль администратора
+                </button>
                 <button className="btn wide" disabled={!device.online} onClick={() => run('latency')}>
                   Проверить задержку
                 </button>

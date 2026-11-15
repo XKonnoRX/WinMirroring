@@ -40,6 +40,7 @@ public static class RemoteCommand
         Action<ShellStream, string> output,
         Action<string> failed,
         TimeSpan? wait = null,
+        bool elevated = false,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(node);
@@ -62,7 +63,7 @@ public static class RemoteCommand
             await Task.Delay(20, ct).ConfigureAwait(false);
         }
 
-        var console = shell.Open(session.PeerId);
+        var console = shell.Open(session.PeerId, elevated);
         if (console is null)
         {
             failed($"{session.PeerName}: сессия закрылась, консоль открыть не на чем.");

@@ -128,6 +128,7 @@ public sealed class SettingsUi
         shell = new
         {
             allowCommands = _vm.AllowRemoteCommands,
+            allowElevatedCommands = _vm.AllowElevatedRemoteCommands,
         },
         network = new
         {
@@ -182,6 +183,7 @@ public sealed class SettingsUi
             case "screen.allowViewing": _vm.ScreenAllowViewing = Flag(); break;
             case "screen.allowControl": _vm.ScreenAllowControl = Flag(); break;
             case "shell.allowCommands": _vm.AllowRemoteCommands = Flag(); break;
+            case "shell.allowElevatedCommands": _vm.AllowElevatedRemoteCommands = Flag(); break;
             case "screen.windowDrag": _vm.ScreenWindowDrag = Flag(); break;
             case "screen.hideSentWindow": _vm.ScreenHideSentWindow = Flag(); break;
             case "screen.maxFps": _vm.ScreenMaxFps = Number(); break;

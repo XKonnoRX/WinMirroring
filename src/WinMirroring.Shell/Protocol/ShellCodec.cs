@@ -34,6 +34,13 @@ public enum ShellMessageType : byte
     /// until the <see cref="Run"/> that ends it.
     /// </summary>
     RunPart = 10,
+
+    /// <summary>
+    /// Controller → device: open a console with administrator rights here. A kind of its own rather than a flag on
+    /// <see cref="Open"/>, so that a device on an older build — which knows nothing of this and answers nothing —
+    /// cannot quietly give an ordinary console to someone who asked for an administrator one.
+    /// </summary>
+    OpenElevated = 11,
 }
 
 /// <summary>Which of a command's two streams a piece of output came from.</summary>

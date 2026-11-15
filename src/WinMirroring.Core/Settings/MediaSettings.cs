@@ -86,6 +86,15 @@ public sealed class ScreenSettings
 public sealed class ShellSettings
 {
     public bool AllowCommands { get; set; }
+
+    /// <summary>
+    /// Also let a paired device ask for a console with administrator rights. A setting of its own, and off until
+    /// it is turned on, because unlike the one above this is not a power the asking device already had: an
+    /// ordinary console can do what the person at this machine can do, an administrator one can do anything to
+    /// the machine. Every such console is confirmed here, each time, and Windows asks as well — the helper that
+    /// runs it cannot start without its prompt.
+    /// </summary>
+    public bool AllowElevatedCommands { get; set; }
 }
 
 public sealed class AudioSettings

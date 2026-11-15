@@ -8,6 +8,9 @@ internal sealed class CliOptions
 
     public string? DataDirectory { get; private set; }
 
+    /// <summary>Ask for a console with administrator rights on the device (--elevated).</summary>
+    public bool Elevated { get; private set; }
+
     public int? DiscoveryPort { get; private set; }
 
     public int? TransportPort { get; private set; }
@@ -64,6 +67,7 @@ internal sealed class CliOptions
                 {
                     case "--name": options.Name = Next(); break;
                     case "--data-dir": options.DataDirectory = Next(); break;
+                    case "--elevated": options.Elevated = true; break;
                     case "--discovery-port": options.DiscoveryPort = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                     case "--port": options.TransportPort = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                     case "--manual": options.ManualAddresses.Add(Next()); break;
@@ -125,6 +129,9 @@ internal sealed class CliOptions
                                         "allow commands from other devices" turned on)
               -c, --command "<text>"    the command; PowerShell, as the signed-in user over there
               --command-file <path>     read the command from a file instead (a whole script, any length)
+              --elevated                with administrator rights over there. Needs its own setting turned on at
+                                        that device, is confirmed there every time, and Windows asks there as
+                                        well — so this is for a device someone is sitting at
 
             In this mode only what the command prints goes to standard output; everything of ours goes to
             standard error, and wm-cli exits with the command's own exit code. So it composes:

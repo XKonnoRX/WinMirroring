@@ -35,15 +35,28 @@ internal static class Exec
         TextWriter stdout,
         CancellationToken ct)
     {
-        var code = await app.RunAsync(
-            options.ExecOn!,
-            command,
-            (stream, text) => Write(stream, text, stdout),
-            Complain,
-            ct).ConfigureAwait(false);
+        try
+        {
+            var code = await app.RunAsync(
+                options.ExecOn!,
+                command,
+                (stream, text) => Write(stream, text, stdout),
+                Complain,
+                ct,
+                options.Elevated).ConfigureAwait(false);
 
-        stdout.Flush();
-        return code;
+            stdout.Flush();
+            return code;
+        }
+        catch (OperationCanceledException)
+        {
+            // --timeout, or Ctrl+C. Caught here because this is where the waiting is: left to fall out of the
+            // program it was an unhandled exception and a crash code of its own (-532462766), which is no answer
+            // at all to something reading exit codes.
+            Complain("время ожидания команды вышло.");
+            stdout.Flush();
+            return CouldNotReach;
+        }
     }
 
     /// <summary>As a device of its own, for a machine where no app is running.</summary>
@@ -55,18 +68,28 @@ internal static class Exec
         TextWriter stdout,
         CancellationToken ct)
     {
-        var code = await RemoteCommand.RunAsync(
-            node,
-            shell,
-            options.ExecOn!,
-            command,
-            (stream, text) => Write(stream, text, stdout),
-            Complain,
-            options.TimeoutSeconds is { } seconds ? TimeSpan.FromSeconds(seconds) : RemoteCommand.DefaultWait,
-            ct).ConfigureAwait(false);
+        try
+        {
+            var code = await RemoteCommand.RunAsync(
+                node,
+                shell,
+                options.ExecOn!,
+                command,
+                (stream, text) => Write(stream, text, stdout),
+                Complain,
+                options.TimeoutSeconds is { } seconds ? TimeSpan.FromSeconds(seconds) : RemoteCommand.DefaultWait,
+                options.Elevated,
+                ct).ConfigureAwait(false);
 
-        stdout.Flush();
-        return code;
+            stdout.Flush();
+            return code;
+        }
+        catch (OperationCanceledException)
+        {
+            Complain("время ожидания команды вышло.");
+            stdout.Flush();
+            return CouldNotReach;
+        }
     }
 
     /// <summary>The command itself, or what the file holds — a whole script, of any length.</summary>

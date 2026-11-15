@@ -190,7 +190,7 @@ const sampleSettings = {
     virtualDisplay: 'Драйвер виртуального монитора установлен.',
     sources: [{ streamId: 1, title: 'Монитор 1 (1536×864)', peer: 'DESKTOP-P50HIEF' }],
   },
-  shell: { allowCommands: false },
+  shell: { allowCommands: false, allowElevatedCommands: false },
   network: {
     discoveryPort: 47620,
     transportPort: 47621,

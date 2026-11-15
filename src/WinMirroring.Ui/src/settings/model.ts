@@ -44,7 +44,7 @@ export type SettingsState = {
     virtualDisplay: string
     sources: { streamId: number; title: string; peer: string }[]
   }
-  shell: { allowCommands: boolean }
+  shell: { allowCommands: boolean; allowElevatedCommands: boolean }
   network: {
     discoveryPort: number
     transportPort: number

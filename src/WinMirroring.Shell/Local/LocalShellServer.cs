@@ -126,7 +126,7 @@ public sealed class LocalShellServer : IAsyncDisposable
         {
             // Every ending is a reason and then a code, including these two: the reason is what a person reads and
             // the code is what a script reads, and leaving either out makes one of the two guess.
-            if (await TargetAsync(reader, pipe, connection.Token).ConfigureAwait(false) is not { } target)
+            if (await TargetAsync(reader, pipe, connection.Token).ConfigureAwait(false) is not ({ } target, var elevated))
             {
                 Send(ShellCodec.Encode(ShellMessageType.Refused, 0, "первым сообщением должно быть имя устройства."));
                 Send(ShellCodec.EncodeDone(0, ShellExit.CouldNotReach, string.Empty));
@@ -140,7 +140,10 @@ public sealed class LocalShellServer : IAsyncDisposable
                 return;
             }
 
-            _logger.LogInformation("A tool on this machine runs something on {Device}", target);
+            _logger.LogInformation(
+                "A tool on this machine runs something on {Device}{Elevated}",
+                target,
+                elevated ? " with administrator rights" : string.Empty);
 
             var code = await RemoteCommand.RunAsync(
                 _node,
@@ -150,6 +153,7 @@ public sealed class LocalShellServer : IAsyncDisposable
                 (stream, text) => Send(ShellCodec.EncodeOutput(0, stream, text)),
                 reason => Send(ShellCodec.Encode(ShellMessageType.Refused, 0, reason)),
                 RemoteCommand.DefaultWait,
+                elevated,
                 connection.Token).ConfigureAwait(false);
 
             Send(ShellCodec.EncodeDone(0, code, string.Empty));
@@ -170,20 +174,23 @@ public sealed class LocalShellServer : IAsyncDisposable
         }
     }
 
-    /// <summary>The device named by the opening message, or null when that is not what arrived.</summary>
-    private static async Task<string?> TargetAsync(FrameCodec.Reader reader, Stream pipe, CancellationToken ct)
+    /// <summary>
+    /// The device named by the opening message and whether the tool asked for administrator rights on it, or null
+    /// when that is not what arrived.
+    /// </summary>
+    private static async Task<(string Target, bool Elevated)?> TargetAsync(FrameCodec.Reader reader, Stream pipe, CancellationToken ct)
     {
         if (await reader.ReadAsync(pipe, ct).ConfigureAwait(false) is not { } frame
             || frame.Channel != ChannelId.Shell
             || !ShellCodec.TryReadHeader(frame.Payload, out var type, out _)
-            || type != ShellMessageType.Open
+            || type is not (ShellMessageType.Open or ShellMessageType.OpenElevated)
             || !ShellCodec.TryDecodeText(frame.Payload, out var target)
             || target.Length == 0)
         {
             return null;
         }
 
-        return target;
+        return (target, type == ShellMessageType.OpenElevated);
     }
 
     /// <summary>
@@ -192,7 +199,7 @@ public sealed class LocalShellServer : IAsyncDisposable
     /// </summary>
     private static async Task<string?> CommandAsync(FrameCodec.Reader reader, Stream pipe, CancellationToken ct)
     {
-        var arriving = new StringBuilder();
+        var arriving = new CommandAssembly();
         while (true)
         {
             if (await reader.ReadAsync(pipe, ct).ConfigureAwait(false) is not { } frame
@@ -203,20 +210,13 @@ public sealed class LocalShellServer : IAsyncDisposable
                 return null;
             }
 
-            if (arriving.Length + text.Length > 1 << 20)
+            switch (arriving.Add(type, text, out var command))
             {
-                return null;
-            }
+                case CommandPiece.Whole:
+                    return command;
 
-            arriving.Append(text);
-            if (type == ShellMessageType.Run)
-            {
-                return arriving.ToString();
-            }
-
-            if (type != ShellMessageType.RunPart)
-            {
-                return null;
+                case CommandPiece.Ignored or CommandPiece.TooLong:
+                    return null;
             }
         }
     }

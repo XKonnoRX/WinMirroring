@@ -5,11 +5,12 @@
     <AssemblyName>WinMirroring.InputHost</AssemblyName>
     <RootNamespace>WinMirroring.InputHost</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Description>Elevated input helper: injects mouse, keyboard and touch on behalf of WinMirroring so input can reach administrator windows, while the main app stays at normal integrity.</Description>
+    <Description>Elevated helper: injects mouse, keyboard and touch on behalf of WinMirroring so input can reach administrator windows, and hosts an administrator console when one is asked for, while the main app stays at normal integrity.</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\WinMirroring.Input\WinMirroring.Input.csproj" />
+    <ProjectReference Include="..\WinMirroring.Shell\WinMirroring.Shell.csproj" />
   </ItemGroup>
 
 </Project>

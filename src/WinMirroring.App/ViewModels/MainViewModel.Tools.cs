@@ -40,6 +40,29 @@ public sealed partial class MainViewModel
             : "Выполнение команд с других устройств выключено.");
     }
 
+    /// <summary>
+    /// Whether a paired device may ask for a console with administrator rights here. Its own switch, and off until
+    /// it is turned on, because this one really is new power: an ordinary console can do what the person sitting
+    /// here can do, and this one can do anything to the machine. Every such console is confirmed here, each time,
+    /// and Windows asks as well when the helper that runs it starts.
+    /// </summary>
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
+    public partial bool AllowElevatedRemoteCommands { get; set; }
+
+    partial void OnAllowElevatedRemoteCommandsChanged(bool value)
+    {
+        if (!_initialized)
+        {
+            return;
+        }
+
+        _node.Settings.Shell.AllowElevatedCommands = value;
+        _node.SaveSettings();
+        Say(value
+            ? "Другие устройства могут просить здесь консоль администратора — каждую вы подтвердите отдельно, и Windows спросит тоже."
+            : "Команды с правами администратора с других устройств выключены.");
+    }
+
     /// <summary>The address without a port, which is what all of these need; empty when it is not known.</summary>
     public string HostOf(string peerId) => Peers.FirstOrDefault(p => p.Id == peerId)?.Host ?? string.Empty;
 
@@ -76,17 +99,19 @@ public sealed partial class MainViewModel
     /// something on this one with its address. In the place of logging into it: the session is already there and
     /// already authenticated, so there is nothing to connect and no password to have.
     /// </summary>
-    public string OpenConsoleOn(string peerId)
+    public string OpenConsoleOn(string peerId, bool elevated = false)
     {
         var name = NameOf(peerId);
-        if (_shell.Open(peerId) is not { } console)
+        if (_shell.Open(peerId, elevated) is not { } console)
         {
             return Say($"Консоль на {name} не открыть: нет готового соединения.");
         }
 
         var window = new Views.RemoteConsoleWindow(console);
         window.Show();
-        return Say($"Открываю консоль на {name}…");
+        return Say(elevated
+            ? $"Прошу на {name} консоль администратора — там подтвердят её и ответят на запрос Windows…"
+            : $"Открываю консоль на {name}…");
     }
 
     public string PingTo(string peerId) =>

@@ -140,6 +140,29 @@ public sealed class ShellIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// A command whose output does not end with a newline still finishes, and its last words still arrive.
+    /// powercfg /getactivescheme is one such program: it leaves the line open, the marker that says the command
+    /// is over gets printed onto the end of that line, and a marker looked for only at the start of a line was
+    /// never seen at all — so the command never appeared to finish and the whole thing ended as a lost
+    /// connection. Found by using this on a real tablet.
+    /// </summary>
+    [Fact]
+    public async Task ACommandThatEndsWithoutANewlineStillFinishes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, _) = await ConnectAsync(allowThere: true, agreeThere: true, ct);
+
+        var console = shellA.Open(b.Identity.Id)!;
+        var run = Watch(console);
+        await run.Opened.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+
+        Assert.True(console.Run("[Console]::Out.Write('без перевода строки на конце')"));
+
+        Assert.Equal(0, await run.Done.Task.WaitAsync(TimeSpan.FromSeconds(30), ct));
+        Assert.Contains(run.Lines, line => line.Contains("без перевода строки на конце", StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// A command that failed as PowerShell rather than as a program comes back as a failure. Nothing exited, so
     /// there is no exit code to report, and what used to be reported instead was zero — a script with a syntax
     /// error in it came back a success, which for something a script reads is the worst answer available.
@@ -287,6 +310,49 @@ public sealed class ShellIntegrationTests : IAsyncLifetime
         return null!;
     }
 
+    /// <summary>
+    /// An administrator console needs a setting of its own, and the ordinary one being on is not it. Refused
+    /// before anyone is asked anything: this is not a power the asking device already had, so it does not get to
+    /// put a question about administrator rights on someone's screen just by asking.
+    /// </summary>
+    [Fact]
+    public async Task AnElevatedConsoleIsRefusedWhereThatIsNotAllowed()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, shellB) = await ConnectAsync(allowThere: true, agreeThere: true, ct);
+
+        var console = shellA.Open(b.Identity.Id, elevated: true)!;
+        var run = Watch(console);
+
+        var reason = await run.Refused.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+        Assert.Contains("администратора", reason, StringComparison.Ordinal);
+        Assert.Equal(0, Volatile.Read(ref _asked));
+        Assert.False(shellB.HasConsolesHere);
+    }
+
+    /// <summary>
+    /// And it is asked about every time, with nothing remembered — unlike an ordinary console, where a yes lasts
+    /// until the app restarts. Administrator rights are not something to agree to once and then not be told
+    /// about again.
+    /// </summary>
+    [Fact]
+    public async Task AnElevatedConsoleIsAskedAboutEveryTime()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, shellB) = await ConnectAsync(allowThere: true, agreeThere: false, ct, allowElevatedThere: true);
+
+        for (var attempt = 1; attempt <= 2; attempt++)
+        {
+            var console = shellA.Open(b.Identity.Id, elevated: true)!;
+            var run = Watch(console);
+            var reason = await run.Refused.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+            Assert.Contains("отказал", reason, StringComparison.Ordinal);
+            Assert.Equal(attempt, Volatile.Read(ref _asked));
+        }
+
+        Assert.False(shellB.HasConsolesHere);
+    }
+
     /// <summary>Everything one console says, collected; the waits are off the receive loop on purpose.</summary>
     private sealed class Run
     {
@@ -316,16 +382,21 @@ public sealed class ShellIntegrationTests : IAsyncLifetime
         return run;
     }
 
+    /// <summary>How many times the device has asked whoever is sitting at it. Only B is ever asked here.</summary>
+    private int _asked;
+
     private async Task<(MirroringNode A, MirroringNode B, ShellService ShellA, ShellService ShellB)> ConnectAsync(
         bool allowThere,
         bool agreeThere,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool allowElevatedThere = false)
     {
         var discoveryA = FreeUdpPort();
         var discoveryB = FreeUdpPort();
         var a = CreateNode("ShellA", discoveryA, $"127.0.0.1:{discoveryB}");
         var b = CreateNode("ShellB", discoveryB, $"127.0.0.1:{discoveryA}");
         b.Settings.Shell.AllowCommands = allowThere;
+        b.Settings.Shell.AllowElevatedCommands = allowElevatedThere;
         await a.StartAsync();
         await b.StartAsync();
 
@@ -347,7 +418,11 @@ public sealed class ShellIntegrationTests : IAsyncLifetime
     private ShellService CreateShell(MirroringNode node, bool agree)
     {
         var service = new ShellService(node, NullLogger<ShellService>.Instance);
-        service.Confirm = (_, _) => Task.FromResult(agree);
+        service.Confirm = (_, _) =>
+        {
+            Interlocked.Increment(ref _asked);
+            return Task.FromResult(agree);
+        };
         service.Start();
         _services.Add(service);
         return service;

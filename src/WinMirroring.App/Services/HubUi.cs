@@ -322,6 +322,9 @@ public sealed class HubUi
             case "console":
                 return _vm.OpenConsoleOn(id);
 
+            case "consoleElevated":
+                return _vm.OpenConsoleOn(id, elevated: true);
+
             case "ping":
                 return _vm.PingTo(id);
 

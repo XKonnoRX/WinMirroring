@@ -53,13 +53,15 @@ public sealed class LocalShellClient : IAsyncDisposable
         string command,
         Action<ShellStream, string> output,
         Action<string> failed,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool elevated = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(target);
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(failed);
 
-        await FrameCodec.WriteAsync(_pipe, ChannelId.Shell, ShellCodec.Encode(ShellMessageType.Open, 0, target), ct).ConfigureAwait(false);
+        var opening = elevated ? ShellMessageType.OpenElevated : ShellMessageType.Open;
+        await FrameCodec.WriteAsync(_pipe, ChannelId.Shell, ShellCodec.Encode(opening, 0, target), ct).ConfigureAwait(false);
         foreach (var piece in ShellCodec.EncodeCommand(0, command))
         {
             await FrameCodec.WriteAsync(_pipe, ChannelId.Shell, piece, ct).ConfigureAwait(false);
