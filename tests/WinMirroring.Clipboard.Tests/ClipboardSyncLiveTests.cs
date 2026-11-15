@@ -7,7 +7,6 @@ using WinMirroring.Core;
 using WinMirroring.Core.Identity;
 using WinMirroring.Core.Network;
 using WinMirroring.Core.Pairing;
-using WinMirroring.Core.Peers;
 using WinMirroring.Core.Transport;
 
 namespace WinMirroring.Clipboard.Tests;
@@ -60,7 +59,10 @@ public sealed class ClipboardSyncLiveTests : IAsyncLifetime
 
         await WaitUntilAsync(() => a.Peers.TryGet(b.Identity.Id, out var peer) && peer.TransportEndPoint is not null, ct);
         Assert.True(await a.PairAsync(b.Identity.Id, ct));
-        await WaitUntilAsync(() => b.Sessions.TryGetSession(a.Identity.Id, out var s) && s.State == SessionState.Ready, ct);
+
+        // B's service, not B's session: the session turns Ready a moment before the service attaches to it, and a
+        // clipboard message sent in between is dropped for want of a handler (see SendFilesIntegrationTests).
+        await WaitUntilAsync(() => syncB.SourceFor(a.Identity.Id) is not null, ct);
         Assert.True(a.Sessions.TryGetSession(b.Identity.Id, out var sessionAtoB));
         Trace("paired");
 

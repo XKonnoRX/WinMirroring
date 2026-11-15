@@ -118,9 +118,14 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
 
     private void OnSessionReady(PeerSession session)
     {
-        _fetchers[session] = new FileFetcher(session);
+        // The channels first and the fetcher last, because the fetcher is what this service shows the outside world
+        // (SourceFor, SendFilesAsync) as "files can be exchanged with that device": it must not appear before the
+        // channels it would speak on are live. Note that a session already reports Ready by the time this runs —
+        // SessionReady is raised after the state has changed, with the settings being saved in between — so anything
+        // that goes by the session state alone can still find this service unattached.
         session.RegisterHandler(ChannelId.Clipboard, OnClipboardFrameAsync);
         session.RegisterHandler(ChannelId.File, OnFileFrameAsync);
+        _fetchers[session] = new FileFetcher(session);
     }
 
     private void OnSessionClosed(PeerSession session)

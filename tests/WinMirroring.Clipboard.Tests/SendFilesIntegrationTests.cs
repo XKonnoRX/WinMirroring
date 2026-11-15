@@ -7,7 +7,6 @@ using WinMirroring.Core;
 using WinMirroring.Core.Identity;
 using WinMirroring.Core.Network;
 using WinMirroring.Core.Pairing;
-using WinMirroring.Core.Peers;
 
 namespace WinMirroring.Clipboard.Tests;
 
@@ -192,12 +191,20 @@ public sealed class SendFilesIntegrationTests : IAsyncLifetime
         var syncA = CreateSync(a);
         var syncB = CreateSync(b);
 
-        await WaitUntilAsync(() => b.Peers.TryGet(a.Identity.Id, out var peer) && peer.TransportEndPoint is not null, ct);
+        await WaitUntilAsync(() => b.Peers.TryGet(a.Identity.Id, out var peer) && peer.TransportEndPoint is not null, ct, "B sees A's transport address");
         Assert.True(await b.PairAsync(a.Identity.Id, ct));
+
+        // Waiting for a ready session is not enough, and waiting for it is what made these tests flaky: the services
+        // attach to a session from the SessionReady event, which is raised only after the session already reports
+        // Ready (and after the newly learnt address has been saved to disk in between). A test that went by the
+        // session state could send files before its own service had attached and be answered "устройство не на
+        // связи" instead of whatever the test was about — about half the time under the load of the whole suite, and
+        // never on its own. A file source is the service's own word that it is attached to that device, so that is
+        // what the tests wait for; it also covers the session being ready, which it checks itself.
         await WaitUntilAsync(
-            () => a.Sessions.TryGetSession(b.Identity.Id, out var s) && s.State == SessionState.Ready
-                && b.Sessions.TryGetSession(a.Identity.Id, out var t) && t.State == SessionState.Ready,
-            ct);
+            () => syncA.SourceFor(b.Identity.Id) is not null && syncB.SourceFor(a.Identity.Id) is not null,
+            ct,
+            "both clipboard services are attached to the session");
         return (a, b, syncA, syncB);
     }
 
@@ -233,12 +240,13 @@ public sealed class SendFilesIntegrationTests : IAsyncLifetime
         return node;
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition, CancellationToken ct)
+    /// <param name="what">Named in the failure, so a timeout says which step of the set-up never happened.</param>
+    private static async Task WaitUntilAsync(Func<bool> condition, CancellationToken ct, string what)
     {
         var deadline = DateTimeOffset.UtcNow.AddSeconds(20);
         while (!condition())
         {
-            Assert.True(DateTimeOffset.UtcNow < deadline, "condition not reached in time");
+            Assert.True(DateTimeOffset.UtcNow < deadline, $"not reached in time: {what}");
             await Task.Delay(100, ct);
         }
     }
