@@ -535,6 +535,41 @@ public sealed class ShellIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// A device that stops answering is not a device that refused, and must not be reported as one. A tablet that
+    /// falls asleep while a command is running ends the console exactly as a person saying no does — and the two
+    /// call for opposite things from whoever is reading: go and wake the device, or stop asking. It used to read
+    /// "отказал" and exit with the code for a refusal, and the night that was spent on it was spent looking for
+    /// somebody's no.
+    /// </summary>
+    [Fact]
+    public async Task ADeviceThatStopsAnsweringIsNotADeviceThatRefused()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, shellB) = await ConnectAsync(allowThere: true, agreeThere: true, ct);
+
+        var pipe = $"WinMirroring-tests-{Guid.NewGuid():N}";
+        await using var server = new Local.LocalShellServer(a, shellA, NullLogger<Local.LocalShellServer>.Instance, pipe);
+        server.Start();
+
+        var reasons = new List<string>();
+        await using var tool = await ConnectToolAsync(pipe, ct);
+        var running = tool.RunAsync(b.Identity.Id, "Start-Sleep -Seconds 30", (_, _) => { }, reasons.Add, ct);
+
+        // Open over there first, so what ends it is the device going and not the asking.
+        await WaitUntilAsync(() => shellB.HasConsolesHere, ct, "the console is open on the device");
+
+        // And now the device is simply not there any more, which is what sleeping looks like from here.
+        Assert.True(a.Sessions.TryGetSession(b.Identity.Id, out var session));
+        await session!.CloseAsync("устройство уснуло");
+
+        var code = await running.WaitAsync(TimeSpan.FromSeconds(30), ct);
+
+        Assert.Equal(ShellExit.CouldNotReach, code);
+        Assert.Contains(reasons, reason => reason.Contains("перестал отвечать", StringComparison.Ordinal));
+        Assert.DoesNotContain(reasons, reason => reason.Contains("отказал", StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// A tool that connects and never says what it wants is let go of. Anything after that may take as long as it
     /// takes — a command can run for an hour, a person can be asked for a day — but a connection that has not
     /// even asked for anything is waiting for nothing, and it was holding one of the pipe's few instances while

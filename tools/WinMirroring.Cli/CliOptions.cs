@@ -130,11 +130,13 @@ internal sealed class CliOptions
               -c, --command "<text>"    the command; PowerShell, as the signed-in user over there
               --command-file <path>     read the command from a file instead (a whole script, any length)
               --elevated                with administrator rights over there. Needs its own setting turned on at
-                                        that device, is confirmed there every time, and Windows asks there as
-                                        well — so this is for a device someone is sitting at
+                                        that device; the first one per run of the app there is confirmed by
+                                        whoever is at it, and Windows asks there too — after that, neither again
 
             In this mode only what the command prints goes to standard output; everything of ours goes to
-            standard error, and wm-cli exits with the command's own exit code. So it composes:
+            standard error, and wm-cli exits with the command's own exit code — or 64 when the device could not be
+            reached or stopped answering (asleep, gone), and 65 when it was reached and said no. Waiting on a
+            person at that device is said so on standard error rather than left as silence. So it composes:
 
               wm-cli --exec tablet -c "Get-Service W32Time | Select-Object -Expand Status"
               wm-cli --exec tablet --command-file .\collect-logs.ps1 > logs.txt

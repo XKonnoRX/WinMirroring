@@ -175,7 +175,7 @@ public sealed class ShellService : IAsyncDisposable
 
         foreach (var console in _mine.Values.Where(c => ReferenceEquals(c.Session, session)).ToList())
         {
-            console.OnClosed("соединение закрыто");
+            console.OnClosed("соединение с устройством закрылось", lost: true);
         }
     }
 

@@ -38,6 +38,7 @@ public partial class RemoteConsoleWindow : Window
         _console.Opened += directory => Dispatcher.BeginInvoke(() => OnOpened(directory));
         _console.Refused += reason => Dispatcher.BeginInvoke(() => OnRefused(reason));
         _console.Asking += question => Dispatcher.BeginInvoke(() => OnAsking(question));
+        _console.Lost += reason => Dispatcher.BeginInvoke(() => OnLost(reason));
         _console.Output += (stream, text) => Dispatcher.BeginInvoke(() => OnOutput(stream, text));
         _console.Done += (code, directory) => Dispatcher.BeginInvoke(() => OnDone(code, directory));
         _console.Finished += () => Dispatcher.BeginInvoke(OnFinished);
@@ -63,6 +64,16 @@ public partial class RemoteConsoleWindow : Window
     {
         StateText.Text = "Ждём человека за устройством";
         Say($"{question}.");
+    }
+
+    /// <summary>
+    /// The device stopped answering. Said as that and not as a refusal: nobody decided anything, and what helps
+    /// is waking the device rather than looking for who said no.
+    /// </summary>
+    private void OnLost(string reason)
+    {
+        StateText.Text = "Устройство пропало";
+        Say($"{_console.PeerName} перестал отвечать: {reason}. Возможно, устройство уснуло — разбудите его и откройте консоль заново.");
     }
 
     private void OnRefused(string reason)

@@ -13,6 +13,7 @@ namespace WinMirroring.Screen.Tests;
 /// memory, but the two have to agree on colour to the eye or a stream would change its look the moment one of them
 /// took over from the other.
 /// </summary>
+[Collection<HardwareVideoCollection>]
 public class GpuDecodingTests
 {
     private static bool CanUseCard => GpuFrameReader.TryCreate(NullLogger.Instance) is { } reader && Dispose(reader);

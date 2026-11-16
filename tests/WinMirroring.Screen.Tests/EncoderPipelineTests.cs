@@ -12,6 +12,7 @@ namespace WinMirroring.Screen.Tests;
 /// Waiting inside the capture loop for the frame just handed over — which is what it used to do — also made every
 /// slow frame of the encoder's into a gap in the capture, and an uneven stream is what a stutter is.
 /// </summary>
+[Collection<HardwareVideoCollection>]
 public class EncoderPipelineTests
 {
     private const int Width = 1280;

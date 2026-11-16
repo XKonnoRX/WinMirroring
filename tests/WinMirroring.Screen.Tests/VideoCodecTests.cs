@@ -5,6 +5,7 @@ using WinMirroring.Screen.Protocol;
 
 namespace WinMirroring.Screen.Tests;
 
+[Collection<HardwareVideoCollection>]
 public class VideoCodecTests
 {
     private static byte[] Gradient(int width, int height)
@@ -150,9 +151,21 @@ public class VideoCodecTests
         using var decoder = H264VideoDecoder.TryCreate(width, height, NullLogger.Instance)!;
         var output = Array.Empty<byte>();
         var produced = false;
-        foreach (var unit in encoder.Encode(source, width, crop, forceKeyframe: true))
+
+        // Fed until something comes back rather than once: a hardware encoder is allowed to hold the frame it was
+        // given and hand it over a frame or two later, and that is not a colour problem — it is what this is
+        // about. One frame in, one frame out is an assumption about a busy machine that does not hold.
+        for (var frame = 0; frame < 30 && !produced; frame++)
         {
-            produced |= decoder.DecodeInto(unit.Data, ref output, out var w, out var h) && (w, h) == (width, height);
+            foreach (var unit in encoder.Encode(source, width, crop, forceKeyframe: frame == 0))
+            {
+                produced |= decoder.DecodeInto(unit.Data, ref output, out var w, out var h) && (w, h) == (width, height);
+            }
+
+            if (!produced)
+            {
+                Thread.Sleep(5);
+            }
         }
 
         Assert.True(produced, "the 1080p frame did not come back");

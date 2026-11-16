@@ -612,6 +612,14 @@ public sealed class PeerSession : IAsyncDisposable
     /// A ping every few seconds: it measures the round trip and it is how a link that has quietly died is
     /// noticed. On a battery it is sent half as often — twice within the silence that counts as dead, which is
     /// the margin that matters, and a packet on the wire is a radio waking up.
+    ///
+    /// Sending it has a deadline of its own, and that is the part that was missing. A device that goes to sleep on
+    /// Wi-Fi does not close anything: the socket stays open, the data simply never arrives, and TCP goes on
+    /// retransmitting it for the better part of an hour before giving up. The write never comes back, so this loop
+    /// never reaches its next turn, so the silence that would have ended the session is never looked at — a tablet
+    /// that fell asleep stayed listed as connected for fifty-three minutes, and whatever was waiting on it waited
+    /// that long to be told. A ping that cannot be written within the silence this loop already allows says
+    /// exactly what a silence that long says.
     /// </summary>
     private async Task HeartbeatLoopAsync(CancellationToken ct)
     {
@@ -625,7 +633,31 @@ public sealed class PeerSession : IAsyncDisposable
                 throw new TimeoutException($"No data from {PeerName} for {silence / 1000} s.");
             }
 
-            await SendControlAsync(new PingMessage(Stopwatch.GetTimestamp()), ct).ConfigureAwait(false);
+            var ping = SendControlAsync(new PingMessage(Stopwatch.GetTimestamp()), ct).AsTask();
+            await SentWithinAsync(ping, ProtocolConstants.IdleTimeout, PeerName, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Waits for a heartbeat to be written, and no longer than the silence that already counts as a dead link.
+    ///
+    /// Waited on rather than cancelled: a write cut off in the middle leaves an encrypted stream in a state nobody
+    /// can describe, and the session is about to be closed and the stream disposed anyway, which ends the write
+    /// for real. The abandoned task's exception is picked up so that letting go of it stays quiet.
+    ///
+    /// Apart from the loop so that the rule can be read and tested on its own, which a write that hangs for an
+    /// hour cannot be.
+    /// </summary>
+    internal static async Task SentWithinAsync(Task send, TimeSpan within, string peerName, CancellationToken ct)
+    {
+        try
+        {
+            await send.WaitAsync(within, ct).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            _ = send.ContinueWith(static abandoned => _ = abandoned.Exception, TaskScheduler.Default);
+            throw new TimeoutException($"{peerName} did not take a heartbeat within {within.TotalSeconds:F0} s; it is asleep or gone.");
         }
     }
 

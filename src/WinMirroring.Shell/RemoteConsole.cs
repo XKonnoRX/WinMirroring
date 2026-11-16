@@ -49,6 +49,13 @@ public sealed class RemoteConsole
     /// </summary>
     public event Action<string>? Asking;
 
+    /// <summary>
+    /// The device stopped answering, which is not the same as refusing and must not read like one. A tablet that
+    /// goes to sleep while a question is on its screen ends a console exactly like a person saying no — and the
+    /// two call for opposite things from whoever asked: one to go and wake the device, the other not to ask again.
+    /// </summary>
+    public event Action<string>? Lost;
+
     public event Action<ShellStream, string>? Output;
 
     /// <summary>A command finished: its exit code and where the console is now.</summary>
@@ -125,8 +132,12 @@ public sealed class RemoteConsole
         }
     }
 
-    /// <summary>The far side is finished with this console; <paramref name="reason"/> is shown when there is one.</summary>
-    internal void OnClosed(string? reason)
+    /// <summary>
+    /// The far side is finished with this console; <paramref name="reason"/> is shown when there is one.
+    /// <paramref name="lost"/> says the console ended because the device stopped being there, rather than because
+    /// anybody decided anything.
+    /// </summary>
+    internal void OnClosed(string? reason, bool lost = false)
     {
         if (Interlocked.Exchange(ref _finished, 1) != 0)
         {
@@ -136,7 +147,14 @@ public sealed class RemoteConsole
         Running = false;
         if (reason is { Length: > 0 })
         {
-            Refused?.Invoke(reason);
+            if (lost)
+            {
+                Lost?.Invoke(reason);
+            }
+            else
+            {
+                Refused?.Invoke(reason);
+            }
         }
 
         Finished?.Invoke();
@@ -166,7 +184,7 @@ public sealed class RemoteConsole
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
         {
             _logger.LogDebug("Console {Console} lost its connection: {Message}", Id, ex.Message);
-            OnClosed("соединение потеряно");
+            OnClosed("соединение потеряно", lost: true);
         }
     }
 }

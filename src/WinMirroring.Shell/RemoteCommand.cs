@@ -7,10 +7,17 @@ namespace WinMirroring.Shell;
 /// <summary>What became of an attempt to run something somewhere, when it was not the command's own exit code.</summary>
 public static class ShellExit
 {
-    /// <summary>The device was not reachable: not discovered, not connected, or not paired with this one.</summary>
+    /// <summary>
+    /// The device was not reachable: not discovered, not connected, not paired with this one — or there and then
+    /// gone, which is what a device falling asleep mid-command looks like. Nothing was decided and nothing ran;
+    /// the thing to do about it is usually to go and wake the device.
+    /// </summary>
     public const int CouldNotReach = 64;
 
-    /// <summary>The device said no: commands are turned off over there, or whoever is at it refused.</summary>
+    /// <summary>
+    /// The device said no: commands are turned off over there, or whoever is at it refused. Somebody decided
+    /// this, so asking again unchanged will get the same answer.
+    /// </summary>
     public const int Refused = 65;
 }
 
@@ -86,6 +93,16 @@ public static class RemoteCommand
         {
             failed($"{session.PeerName} отказал: {reason}.");
             finished.TrySetResult(ShellExit.Refused);
+        };
+
+        // Not a refusal, and it used to be reported as one: a device that goes to sleep mid-question ends a
+        // console exactly as a person saying no does, and the answer read "отказал" with the exit code for it. The
+        // two want opposite things from whoever is reading — go and wake the device, or stop asking — so they are
+        // different words and different codes.
+        console.Lost += reason =>
+        {
+            failed($"{session.PeerName} перестал отвечать ({reason}) — возможно, устройство уснуло; команда не выполнена.");
+            finished.TrySetResult(ShellExit.CouldNotReach);
         };
 
         console.Output += (stream, text) => output(stream, text);

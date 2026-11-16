@@ -14,6 +14,7 @@ namespace WinMirroring.Screen.Tests;
 /// colours, the same crop, the same picture out the other end — because a wrong colour matrix or a misread plane
 /// looks like a working stream until you look at it.
 /// </summary>
+[Collection<HardwareVideoCollection>]
 public class GpuEncodingTests
 {
     /// <summary>Wide flat bands of saturated colour: a wrong colour matrix shows up as a large, even error.</summary>
