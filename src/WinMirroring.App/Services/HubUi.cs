@@ -56,8 +56,16 @@ public sealed class HubUi
         _bridge.On("hub.save", args =>
         {
             var saved = args.Deserialize<SaveArgs>(UiBridge.Json);
-            _input.ApplyLayout((saved?.Cells ?? []).Select(c =>
-                new LayoutCell(c.DeviceId, c.Column, c.Row, string.IsNullOrEmpty(c.Monitor) ? null : c.Monitor)));
+            if (saved?.Placements is { } placements)
+            {
+                _input.ApplyPlacements(placements.Select(p => new LayoutPlacement(p.DeviceId, p.X, p.Y)));
+            }
+            else
+            {
+                _input.ApplyLayout((saved?.Cells ?? []).Select(c =>
+                    new LayoutCell(c.DeviceId, c.Column, c.Row, string.IsNullOrEmpty(c.Monitor) ? null : c.Monitor)));
+            }
+
             return "Раскладка сохранена и отправлена устройствам.";
         });
 
@@ -115,6 +123,12 @@ public sealed class HubUi
                 .Where(c => known.Contains(c.DeviceId))
                 .Select(c => new CellDto(c.DeviceId, c.Monitor, c.Column, c.Row))
                 .ToList(),
+
+            // Empty for a layout made before devices could stand freely: the page then works one out of the grid.
+            placements = _input.Layout.Placements
+                .Where(p => known.Contains(p.DeviceId))
+                .Select(p => new PlacementDto(p.DeviceId, p.X, p.Y))
+                .ToList(),
         };
     }
 
@@ -171,6 +185,21 @@ public sealed class HubUi
     private List<MonitorDto> Monitors(string id, bool self)
     {
         var monitors = self ? _input.LocalMonitors : _input.PeerMonitors(id);
+        if (monitors.Count == 0 && !self && _input.KeptMonitors(id) is { Count: > 0 } kept)
+        {
+            // Not connected now: drawn as the layout remembers it, so it keeps its shape on the field.
+            monitors = kept
+                .Select(r => new WinMirroring.Core.Messages.LayoutMonitor(
+                    r.Key,
+                    WinMirroring.Input.Screen.MonitorSet.DisplayNumber(r.Key) is { } n ? $"Монитор {n}" : "Монитор",
+                    r.Left == 0 && r.Top == 0,
+                    r.Width,
+                    r.Height,
+                    r.Left,
+                    r.Top))
+                .ToList();
+        }
+
         return monitors
             .Select(m => new MonitorDto(
                 m.Key,
@@ -314,7 +343,7 @@ public sealed class HubUi
                 return _vm.CopyAddressOf(id);
 
             case "openShare":
-                return _vm.OpenShareOf(id);
+                return await _vm.OpenShareOfAsync(id);
 
             case "remoteDesktop":
                 return _vm.RemoteDesktopTo(id);
@@ -410,7 +439,9 @@ public sealed class HubUi
 
     private sealed record CellDto(string DeviceId, string? Monitor, int Column, int Row);
 
-    private sealed record SaveArgs(List<CellDto>? Cells);
+    private sealed record PlacementDto(string DeviceId, int X, int Y);
+
+    private sealed record SaveArgs(List<CellDto>? Cells, List<PlacementDto>? Placements);
 
     private sealed record CommandArgs(string Name, string? DeviceId, string? Monitor, string? Text);
 }

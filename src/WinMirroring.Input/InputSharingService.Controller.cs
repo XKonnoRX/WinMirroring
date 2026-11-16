@@ -22,8 +22,10 @@ public sealed partial class InputSharingService
 
     private abstract record Command;
 
-    /// <param name="From">The cell of this device (one of its monitors, or the whole device) the cursor leaves.</param>
-    private sealed record CrossEdgeCommand(Edge Edge, float Relative, Core.Settings.LayoutCell From) : Command;
+    /// <param name="Monitor">The monitor of this device the cursor leaves.</param>
+    /// <param name="Relative">Along the edge of the monitor the cursor leaves.</param>
+    /// <param name="RelativeToScreen">Along the edge of this device's whole desktop.</param>
+    private sealed record CrossEdgeCommand(Edge Edge, float Relative, float RelativeToScreen, string Monitor) : Command;
 
     /// <param name="Relative">Along the edge of the monitor the cursor leaves.</param>
     /// <param name="RelativeToScreen">Along the edge of that device's whole desktop.</param>
@@ -323,12 +325,12 @@ public sealed partial class InputSharingService
         {
             ResetPush();
 
-            // A monitor placed on its own measures along its own edge; the whole device along its whole desktop.
-            if (layout.CellOf(self, monitor.Key) is { } from)
-            {
-                var along = from.Monitor is null ? VirtualScreen.Current : bounds;
-                _commands.Writer.TryWrite(new CrossEdgeCommand(edge, EdgeMath.RelativeAlong(along, edge, cursor), from));
-            }
+            // Both measures go along: the layout decides which one it needs (a monitor of its own, or the whole desktop).
+            _commands.Writer.TryWrite(new CrossEdgeCommand(
+                edge,
+                EdgeMath.RelativeAlong(bounds, edge, cursor),
+                EdgeMath.RelativeAlong(VirtualScreen.Current, edge, cursor),
+                monitor.Key));
         }
     }
 
@@ -389,21 +391,21 @@ public sealed partial class InputSharingService
         switch (command)
         {
             case CrossEdgeCommand cross when capture is null:
-                // Another monitor of this device next in the grid: Windows decides how its own monitors connect.
-                var next = _layout.Neighbor(cross.From, cross.Edge);
-                if (next is null || next.DeviceId == _node.Identity.Id)
+                // Another monitor of this device next in the layout: Windows decides how its own monitors connect.
+                var next = _layout.Across(_node.Identity.Id, cross.Monitor, cross.Edge, cross.Relative, cross.RelativeToScreen);
+                if (next is not { } to || to.DeviceId == _node.Identity.Id)
                 {
                     break;
                 }
 
-                if (IsCrossingSuppressed?.Invoke(next.DeviceId) == true)
+                if (IsCrossingSuppressed?.Invoke(to.DeviceId) == true)
                 {
                     break; // that device shows our desktop as a second monitor: it is not a separate computer now
                 }
 
-                if (TryGetUsableSession(next.DeviceId, out var neighbor))
+                if (TryGetUsableSession(to.DeviceId, out var neighbor))
                 {
-                    BeginCapture(neighbor, atCenter: false, EdgeMath.Opposite(cross.Edge), cross.Relative, next.Monitor);
+                    BeginCapture(neighbor, atCenter: false, to.Entry, to.Relative, to.Monitor);
                 }
 
                 break;
@@ -467,23 +469,20 @@ public sealed partial class InputSharingService
             return;
         }
 
-        // The cell of the monitor the cursor leaves there (or of that whole device), and what is next to it.
-        var from = _layout.CellOf(reached.PeerId, reached.Monitor);
-        var to = from is null ? null : _layout.Neighbor(from, reached.Edge);
-        if (from is null || to is null || to.DeviceId == reached.PeerId)
+        // The monitor the cursor leaves there (or that whole device), and what is next to it at that point.
+        if (_layout.Across(reached.PeerId, reached.Monitor, reached.Edge, reached.Relative, reached.RelativeToScreen) is not { } to
+            || to.DeviceId == reached.PeerId)
         {
             return;
         }
 
-        var relative = from.Monitor is null ? reached.RelativeToScreen : reached.Relative;
-        var entryEdge = EdgeMath.Opposite(reached.Edge);
         if (string.Equals(to.DeviceId, _node.Identity.Id, StringComparison.Ordinal))
         {
-            EndCapture(capture, sendLeave: true, placement: (entryEdge, relative, to.Monitor), "cursor came back");
+            EndCapture(capture, sendLeave: true, placement: (to.Entry, to.Relative, to.Monitor), "cursor came back");
         }
         else if (TryGetUsableSession(to.DeviceId, out var next))
         {
-            SwitchCapture(capture, next, atCenter: false, entryEdge, relative, to.Monitor);
+            SwitchCapture(capture, next, atCenter: false, to.Entry, to.Relative, to.Monitor);
         }
     }
 

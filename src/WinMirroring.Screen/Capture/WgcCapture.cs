@@ -77,7 +77,11 @@ internal sealed class WgcCapture : IDisposable
         _session = _pool.CreateCaptureSession(item);
         try
         {
-            _session.IsBorderRequired = false;
+            // The property exists from Windows 10 20348 on; older builds simply keep the border.
+            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 20348))
+            {
+                _session.IsBorderRequired = false;
+            }
         }
         catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or InvalidCastException)
         {

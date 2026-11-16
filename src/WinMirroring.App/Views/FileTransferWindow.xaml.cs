@@ -14,6 +14,10 @@ public partial class FileTransferWindow : Window
 {
     private readonly DispatcherTimer _hideTimer;
 
+    /// <summary>Recent (time, bytes done) points, for the speed over the last few seconds rather than since the start.</summary>
+    private readonly System.Collections.Generic.Queue<(long Ticks, long Done)> _samples = new();
+    private string _job = string.Empty;
+
     public FileTransferWindow()
     {
         InitializeComponent();
@@ -39,12 +43,27 @@ public partial class FileTransferWindow : Window
         _hideTimer.Stop();
         WhatText.Text = what;
 
+        // A different job, or the same one started over: the speed is measured afresh.
+        var job = $"{title}|{what}|{total}";
+        if (job != _job || (_samples.Count > 0 && done < _samples.Peek().Done))
+        {
+            _job = job;
+            _samples.Clear();
+        }
+
+        var now = Environment.TickCount64;
+        _samples.Enqueue((now, done));
+        while (_samples.Count > 2 && now - _samples.Peek().Ticks > 4000)
+        {
+            _samples.Dequeue();
+        }
+
         if (total > 0)
         {
             Bar.IsIndeterminate = false;
             var percent = (int)Math.Clamp(done * 100.0 / total, 0, 100);
             Bar.Value = percent;
-            PercentText.Text = $"{FormatSize(done)} из {FormatSize(total)} · {percent}%";
+            PercentText.Text = $"{FormatSize(done)} из {FormatSize(total)} · {percent}%{Pace(done, total)}";
         }
         else
         {
@@ -80,6 +99,22 @@ public partial class FileTransferWindow : Window
         var area = SystemParameters.WorkArea;
         Left = area.Right - Width - 16;
         Top = area.Bottom - ActualHeight - 16;
+    }
+
+    /// <summary>" · 42 МБ/с · ещё 1:05", once there is enough to tell.</summary>
+    private string Pace(long done, long total)
+    {
+        var (startTicks, startDone) = _samples.Peek();
+        var seconds = (Environment.TickCount64 - startTicks) / 1000.0;
+        if (seconds < 0.7 || done <= startDone)
+        {
+            return string.Empty;
+        }
+
+        var speed = (done - startDone) / seconds;
+        var left = TimeSpan.FromSeconds(Math.Max(0, (total - done) / speed));
+        var eta = left.TotalHours >= 1 ? left.ToString(@"h\:mm\:ss") : left.ToString(@"m\:ss");
+        return $" · {FormatSize((long)speed)}/с · ещё {eta}";
     }
 
     private static string FormatSize(long bytes)

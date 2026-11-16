@@ -42,6 +42,7 @@ export type SettingsState = {
     codecs: { value: string; label: string }[]
     videoBitrate: number
     virtualDisplay: string
+    virtualDisplayInstalled: boolean
     sources: { streamId: number; title: string; peer: string }[]
   }
   shell: { allowCommands: boolean; allowElevatedCommands: boolean }

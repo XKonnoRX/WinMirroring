@@ -107,6 +107,7 @@
 /* Where the cursor crosses from one device to another. */
 .hub-seam {
   position: absolute;
+  z-index: 2;
   border-radius: 999px;
   background: linear-gradient(90deg, #5b6cff00, var(--accent-bright), #5b6cff00);
   box-shadow: 0 0 14px var(--accent-glow);
@@ -115,11 +116,11 @@
 }
 
 .hub-seam.is-h {
-  height: 3px;
+  height: 4px;
 }
 
 .hub-seam.is-v {
-  width: 3px;
+  width: 4px;
   background: linear-gradient(180deg, #5b6cff00, var(--accent-bright), #5b6cff00);
 }
 
@@ -131,11 +132,14 @@
   transition: filter 150ms var(--ease);
 }
 
+/* The outline around a device's monitors. It sits under every monitor on the field (z-index 0 against the panes'
+   1), so two devices standing edge to edge do not cover each other's screens with it. */
 .device::before {
   content: '';
   position: absolute;
-  inset: -12px;
-  border-radius: 20px;
+  z-index: 0;
+  inset: -7px;
+  border-radius: 14px;
   border: 1px solid var(--border);
   background: #141a24b8;
   box-shadow: var(--shadow);
@@ -156,9 +160,16 @@
   box-shadow: 0 0 0 1px var(--accent-glow), var(--shadow-lift);
 }
 
-.device.is-offline {
+.device.is-offline .pane-screen {
   filter: saturate(0.6);
   opacity: 0.72;
+}
+
+/* Being carried: drawn where it would land, lifted a little. */
+.device.is-carried::before {
+  border-color: var(--accent-bright);
+  border-style: dashed;
+  box-shadow: 0 0 0 1px var(--accent-glow), var(--shadow-lift);
 }
 
 .device:active {
@@ -167,8 +178,9 @@
 
 .device-bar {
   position: absolute;
+  z-index: 1;
   left: 0;
-  top: -40px;
+  top: -36px;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -183,10 +195,12 @@
   white-space: nowrap;
 }
 
+/* A monitor stands exactly where it stands on its desktop; the thin inset is only the seam between two of them. */
 .device-pane {
   position: absolute;
+  z-index: 1;
   display: flex;
-  padding: 10px;
+  padding: 1.5px;
 }
 
 .pane-screen {
@@ -198,10 +212,10 @@
   gap: 2px;
   flex: 1 1 auto;
   min-height: 0;
-  width: auto;
-  max-width: 100%;
-  margin: auto;
-  border-radius: 9px;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
   background: linear-gradient(165deg, #1d2534 0%, #10151e 100%);
   box-shadow: inset 0 0 0 1px #ffffff14, inset 0 14px 28px #5b6cff10;
   overflow: hidden;
@@ -221,13 +235,19 @@
 
 .pane-label {
   position: relative;
-  max-width: 90%;
-  font-size: 13px;
+  max-width: 92%;
+  font-size: 12.5px;
   font-weight: 500;
+  line-height: 1.25;
   text-align: center;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.pane-screen.is-primary {
+  box-shadow: inset 0 0 0 1px #5b6cff40, inset 0 14px 28px #5b6cff18;
 }
 
 .pane-size {
@@ -510,6 +530,17 @@
   display: flex;
   gap: 6px;
   margin-bottom: 6px;
+}
+
+/* Two equal columns: a long label wraps inside its own button instead of pushing the row past the panel. */
+.inspector-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.inspector-grid .btn {
+  min-width: 0;
 }
 
 .inspector-note {

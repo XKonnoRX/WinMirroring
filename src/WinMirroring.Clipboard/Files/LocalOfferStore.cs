@@ -139,6 +139,27 @@ internal sealed class LocalOfferStore
         }
     }
 
+    /// <summary>All of an offer at once: its entries and where each file is (null for a folder).</summary>
+    public bool TryGetOffer(long offerId, out IReadOnlyList<FileOfferEntry> entries, out IReadOnlyList<string?> fullPaths)
+    {
+        lock (_gate)
+        {
+            foreach (var offer in _offers)
+            {
+                if (offer.Id == offerId)
+                {
+                    entries = offer.Entries;
+                    fullPaths = offer.FullPaths;
+                    return true;
+                }
+            }
+        }
+
+        entries = [];
+        fullPaths = [];
+        return false;
+    }
+
     public bool TryGetFile(long offerId, int index, out string fullPath)
     {
         lock (_gate)

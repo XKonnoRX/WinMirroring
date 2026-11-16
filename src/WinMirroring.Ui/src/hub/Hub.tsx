@@ -1,30 +1,37 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke, on } from '../bridge'
 import {
-  Cell,
   Device,
   Group,
   Hub as HubState,
-  anchorOf,
-  cellKey,
-  cellsOf,
+  Placement,
+  Point,
+  Rect,
   groupOf,
-  neighbourOffsets,
-  sameCells,
+  isAlone,
+  placementsFromCells,
+  rectsAt,
+  samePlacements,
+  seamsBetween,
+  settle,
+  unionOf,
 } from './model'
 import { Inspector } from './Inspector'
 import { Tray } from './Tray'
 import './Hub.css'
 
-// Cells sit far enough apart that the outline around a device and the seam between two of them both have room.
-export const PITCH_X = 292
-export const PITCH_Y = 204
-export const CARD_W = 228
-export const CARD_H = 150
+/**
+ * Field pixels (the devices' own desktop pixels) to page pixels at zoom 1. Monitors are drawn at their real sizes
+ * and where they really are, so a 1920×1080 monitor is about 210 page pixels wide.
+ */
+export const SCALE = 0.11
 
-const MIN_ZOOM = 0.3
-const MAX_ZOOM = 1.8
+const MIN_ZOOM = 0.25
+const MAX_ZOOM = 2.5
 const TRAY_H = 164
+
+/** How close, in page pixels on the screen, an edge has to come to another to be drawn onto it. */
+const SNAP_PX = 14
 
 /**
  * How far a press has to travel before it counts as carrying a device rather than just picking it. Until it does,
@@ -38,14 +45,14 @@ const TRAY_H = 164
 const dragStartsAfter = (pointerType: string) => (pointerType === 'touch' ? 8 : 3)
 
 type View = { x: number; y: number; zoom: number }
-type Anchor = { column: number; row: number }
 
 type Drag = {
   group: Group
+  /** The pointer, on the field element. */
   x: number
   y: number
-  grabX: number
-  grabY: number
+  /** Where the device was taken hold of: the pointer's offset from the device's origin, in field pixels. */
+  grab: Point
 
   /** Where the press began, to measure how far it has travelled since.  */
   fromX: number
@@ -60,8 +67,8 @@ type Drag = {
 export function Hub() {
   const surface = useRef<HTMLDivElement>(null)
   const [hub, setHub] = useState<HubState | null>(null)
-  const [cells, setCells] = useState<Cell[]>([])
-  const [saved, setSaved] = useState<Cell[]>([])
+  const [places, setPlaces] = useState<Placement[]>([])
+  const [saved, setSaved] = useState<Placement[]>([])
   const [view, setView] = useState<View>({ x: 0, y: 0, zoom: 1 })
   const [drag, setDrag] = useState<Drag | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
@@ -69,35 +76,13 @@ export function Hub() {
   const [busy, setBusy] = useState(false)
 
   const groups = useMemo(() => (hub?.devices ?? []).map(groupOf), [hub])
-  const anchors = useMemo(() => {
-    const map = new Map<string, Anchor>()
-    for (const group of groups) {
-      const anchor = anchorOf(group, cells)
-      if (anchor) map.set(group.device.id, anchor)
-    }
-    return map
-  }, [groups, cells])
+  const groupById = useMemo(() => new Map(groups.map((g) => [g.device.id, g])), [groups])
+  const placeOf = useMemo(() => new Map(places.map((p) => [p.deviceId, { x: p.x, y: p.y }])), [places])
 
-  /** Which device owns each cell, so neighbours and free space are known at a glance. */
-  const owners = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const group of groups) {
-      const anchor = anchors.get(group.device.id)
-      if (!anchor) continue
-      for (const pane of group.panes) {
-        map.set(cellKey(anchor.column + pane.dc, anchor.row + pane.dr), group.device.id)
-      }
-    }
-    return map
-  }, [groups, anchors])
-
-  const placedGroups = useMemo(() => groups.filter((g) => anchors.has(g.device.id)), [groups, anchors])
-  const unplaced = useMemo(
-    () => groups.filter((g) => !anchors.has(g.device.id) && g.device.paired),
-    [groups, anchors],
-  )
+  const placedGroups = useMemo(() => groups.filter((g) => placeOf.has(g.device.id)), [groups, placeOf])
+  const unplaced = useMemo(() => groups.filter((g) => !placeOf.has(g.device.id) && g.device.paired), [groups, placeOf])
   const discovered = useMemo(() => groups.map((g) => g.device).filter((d) => !d.paired), [groups])
-  const dirty = useMemo(() => !sameCells(cells, saved), [cells, saved])
+  const dirty = useMemo(() => !samePlacements(places, saved), [places, saved])
   const selectedDevice = useMemo(() => hub?.devices.find((d) => d.id === selected) ?? null, [hub, selected])
 
   // ---- loading ------------------------------------------------------------------------------------------
@@ -107,43 +92,33 @@ export function Hub() {
    * that a state updater can read it. It has to be read before the new snapshot replaces it, because an updater
    * runs later than the call that queues it.
    */
-  const savedRef = useRef<Cell[]>([])
-  const remember = useCallback((list: Cell[]) => {
+  const savedRef = useRef<Placement[]>([])
+  const remember = useCallback((list: Placement[]) => {
     savedRef.current = list
     setSaved(list)
   }, [])
 
-  const load = useCallback(async (recentre: boolean) => {
-    const state = await invoke<HubState>('hub.get')
-    const wasSaved = savedRef.current
-    setHub(state)
-
-    // A layout changed on another device arrives here as an ordinary update, and this is where it used to stop:
-    // the grid kept whatever it was showing, so the new arrangement only appeared when the window was opened
-    // again — which is exactly what one had to do to see it. Now it follows, unless this grid is mid-edit, in
-    // which case what is on the screen is the user's own unsaved arrangement and must not be pulled out from
-    // under them. "Отменить" then takes the new one, since that is what is saved.
-    setCells((current) =>
-      recentre || current.length === 0 || sameCells(current, wasSaved) ? state.cells : current)
-    remember(state.cells)
-    if (recentre) fitTo(state.cells)
-  }, [remember])
-
-  const fitTo = useCallback((list: Cell[]) => {
+  const fitTo = useCallback((list: Placement[], all: Group[]) => {
     const box = surface.current?.getBoundingClientRect()
     if (!box) return
-    if (list.length === 0) {
+    const byId = new Map(all.map((g) => [g.device.id, g]))
+    const rects = list.flatMap((p) => {
+      const group = byId.get(p.deviceId)
+      return group ? rectsAt(group, p) : []
+    })
+    if (rects.length === 0) {
       setView({ x: box.width / 2, y: (box.height - TRAY_H) / 2, zoom: 1 })
       return
     }
 
-    const left = Math.min(...list.map((c) => c.column)) * PITCH_X - CARD_W / 2
-    const right = Math.max(...list.map((c) => c.column)) * PITCH_X + CARD_W / 2
-    const top = Math.min(...list.map((c) => c.row)) * PITCH_Y - CARD_H / 2
-    const bottom = Math.max(...list.map((c) => c.row)) * PITCH_Y + CARD_H / 2
-    const margin = 80
+    const bounds = unionOf(rects)
+    const left = bounds.left * SCALE
+    const right = bounds.right * SCALE
+    const top = bounds.top * SCALE - 40 // the names above the devices
+    const bottom = bounds.bottom * SCALE
+    const margin = 70
     const zoom = clamp(
-      Math.min((box.width - margin * 2) / (right - left), (box.height - TRAY_H - margin) / (bottom - top), 1.1),
+      Math.min((box.width - margin * 2) / (right - left), (box.height - TRAY_H - margin) / (bottom - top), 1.6),
       MIN_ZOOM,
       MAX_ZOOM,
     )
@@ -154,6 +129,28 @@ export function Hub() {
     })
   }, [])
 
+  const load = useCallback(
+    async (recentre: boolean) => {
+      const state = await invoke<HubState>('hub.get')
+      const wasSaved = savedRef.current
+      const all = state.devices.map(groupOf)
+
+      // A layout from before devices stood freely has only its grid; it is shown worked out into places, and
+      // becomes a free one when it is saved from here.
+      const fresh = state.placements.length > 0 ? state.placements : placementsFromCells(all, state.cells)
+      setHub(state)
+
+      // A layout changed on another device arrives here as an ordinary update, and this is where it used to stop:
+      // the field kept whatever it was showing, so the new arrangement only appeared when the window was opened
+      // again. Now it follows, unless this field is mid-edit, in which case what is on the screen is the user's
+      // own unsaved arrangement and must not be pulled out from under them. "Отменить" then takes the new one.
+      setPlaces((current) => (recentre || current.length === 0 || samePlacements(current, wasSaved) ? fresh : current))
+      remember(fresh)
+      if (recentre) fitTo(fresh, all)
+    },
+    [remember, fitTo],
+  )
+
   useEffect(() => {
     void load(true)
     return on('hub.changed', () => void load(false))
@@ -163,17 +160,20 @@ export function Hub() {
   const fitted = useRef(false)
   useEffect(() => {
     const element = surface.current
-    if (!element) return
-    const observer = new ResizeObserver(() => {
-      if (!fitted.current && element.clientWidth > 0 && hub) {
+    if (!element || !hub || fitted.current) return
+    const fit = () => {
+      if (!fitted.current && element.clientWidth > 0) {
         fitted.current = true
-        fitTo(cells)
+        fitTo(places, groups)
       }
-    })
+    }
 
+    // At once if the field already has its size; otherwise when it gets one.
+    fit()
+    const observer = new ResizeObserver(fit)
     observer.observe(element)
     return () => observer.disconnect()
-  }, [hub, cells, fitTo])
+  }, [hub, places, groups, fitTo])
 
   // ---- commands -----------------------------------------------------------------------------------------
 
@@ -189,8 +189,8 @@ export function Hub() {
   const save = async () => {
     setBusy(true)
     try {
-      setStatus(await invoke<string>('hub.save', { cells }))
-      remember(cells)
+      setStatus(await invoke<string>('hub.save', { placements: places }))
+      remember(places)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Не удалось сохранить.')
     } finally {
@@ -205,44 +205,56 @@ export function Hub() {
     return { x: clientX - box.left, y: clientY - box.top }
   }, [])
 
-  /**
-   * Where the dragged device's first cell is being held, in field coordinates: the cursor, less the point inside
-   * the card that was taken hold of, plus half a card — because a cell is placed by its centre. Both the carried
-   * card and the outline of where it would land come from this one point, so they cannot drift apart, and the grab
-   * is in field units while the cursor is in pixels on screen, so the zoom belongs on exactly one of them.
-   */
-  const heldAt = useMemo(() => {
-    if (!drag) return null
-    return {
-      x: (drag.x - view.x) / view.zoom - drag.grabX + CARD_W / 2,
-      y: (drag.y - view.y) / view.zoom - drag.grabY + CARD_H / 2,
+  /** A point on the field element, in field pixels. */
+  const toField = useCallback(
+    (x: number, y: number): Point => ({ x: (x - view.x) / view.zoom / SCALE, y: (y - view.y) / view.zoom / SCALE }),
+    [view],
+  )
+
+  /** Over the tray: letting go there takes the device off the field. */
+  const isOverTray = useCallback((d: Drag) => {
+    if (!surface.current) return false
+    return d.y > surface.current.getBoundingClientRect().height - TRAY_H
+  }, [])
+  const overTray = useMemo(() => (drag ? isOverTray(drag) : false), [drag, isOverTray])
+
+  /** The monitors of every device except the one being carried, which is what the carried one settles against. */
+  const otherRects = useMemo(() => {
+    const rects: Rect[] = []
+    for (const group of placedGroups) {
+      if (group.device.id === drag?.group.device.id) continue
+      rects.push(...rectsAt(group, placeOf.get(group.device.id)!))
     }
-  }, [drag, view])
+    return rects
+  }, [placedGroups, placeOf, drag?.group.device.id])
 
-  /** The same point back in pixels on the field, which is what the carried card is positioned by. */
-  const heldOnScreen = useMemo(() => {
-    if (!heldAt) return null
-    return { x: view.x + heldAt.x * view.zoom, y: view.y + heldAt.y * view.zoom }
-  }, [heldAt, view])
+  /** Where the carried device would land if let go now: snapped to its neighbours' edges, never on top of them. */
+  const landingOf = useCallback(
+    (d: Drag): Point | null => {
+      if (!d.moved || isOverTray(d)) return null
+      const pointer = toField(d.x, d.y)
+      const wanted = { x: pointer.x - d.grab.x, y: pointer.y - d.grab.y }
+      return settle(d.group, wanted, otherRects, SNAP_PX / (view.zoom * SCALE))
+    },
+    [isOverTray, toField, otherRects, view.zoom],
+  )
+  const landing = useMemo(() => (drag ? landingOf(drag) : null), [drag, landingOf])
 
-  const hoveredAnchor = useMemo<Anchor | null>(() => {
-    if (!heldAt || !heldOnScreen || !surface.current) return null
-    const box = surface.current.getBoundingClientRect()
-    if (heldOnScreen.y > box.height - TRAY_H) return null
-    return {
-      column: Math.round(heldAt.x / PITCH_X),
-      row: Math.round(heldAt.y / PITCH_Y),
+  /** Every device where it stands right now, the carried one where it would land. */
+  const standing = useMemo(() => {
+    const list: { group: Group; at: Point }[] = []
+    for (const group of placedGroups) {
+      if (drag?.moved && drag.group.device.id === group.device.id) continue
+      list.push({ group, at: placeOf.get(group.device.id)! })
     }
-  }, [heldAt, heldOnScreen])
+    if (drag?.moved && landing) list.push({ group: drag.group, at: landing })
+    return list
+  }, [placedGroups, placeOf, drag, landing])
 
-  /** A device may stand here only if none of its monitors would land on another device. */
-  const canDrop = useMemo(() => {
-    if (!drag || !hoveredAnchor) return false
-    return drag.group.panes.every((pane) => {
-      const owner = owners.get(cellKey(hoveredAnchor.column + pane.dc, hoveredAnchor.row + pane.dr))
-      return owner === undefined || owner === drag.group.device.id
-    })
-  }, [drag, hoveredAnchor, owners])
+  const seams = useMemo(
+    () => seamsBetween(standing.map((s) => ({ id: s.group.device.id, rects: rectsAt(s.group, s.at) }))),
+    [standing],
+  )
 
   const panning = useRef<{ x: number; y: number; view: View } | null>(null)
 
@@ -323,14 +335,24 @@ export function Hub() {
       return
     }
 
-    if (!drag.moved) {
+    // Worked out from where the pointer is let go, not from the last frame drawn: a quick flick can end before
+    // the field has drawn the move that started it.
+    const up = toSurface(event.clientX, event.clientY)
+    const moved = drag.moved || Math.hypot(up.x - drag.fromX, up.y - drag.fromY) > drag.threshold
+    const final = { ...drag, x: up.x, y: up.y, moved }
+    const landing = landingOf(final)
+    const overTray = isOverTray(final)
+
+    if (!moved) {
       setSelected(drag.group.device.id)
     } else if (pinch.current) {
       // The drag turned into a pinch: leave the device where it was.
-    } else if (hoveredAnchor && canDrop) {
-      place(drag.group, hoveredAnchor)
-    } else if (!hoveredAnchor && !drag.fromTray) {
-      setCells((current) => current.filter((c) => c.deviceId !== drag.group.device.id))
+    } else if (landing) {
+      const id = drag.group.device.id
+      setPlaces((current) => [...current.filter((p) => p.deviceId !== id), { deviceId: id, x: landing.x, y: landing.y }])
+      setStatus(null)
+    } else if (overTray && !drag.fromTray) {
+      setPlaces((current) => current.filter((p) => p.deviceId !== drag.group.device.id))
     }
 
     setDrag(null)
@@ -362,15 +384,20 @@ export function Hub() {
 
   const startDrag = (group: Group, event: React.PointerEvent, fromTray: boolean) => {
     event.stopPropagation()
-    const card = (event.currentTarget as HTMLElement).getBoundingClientRect()
     const point = toSurface(event.clientX, event.clientY)
+    const pointer = toField(point.x, point.y)
+    const at = placeOf.get(group.device.id)
+    const b = group.bounds
     setSelected(group.device.id)
     setDrag({
       group,
       x: point.x,
       y: point.y,
-      grabX: fromTray ? CARD_W / 2 : (event.clientX - card.left) / view.zoom,
-      grabY: fromTray ? CARD_H / 2 : (event.clientY - card.top) / view.zoom,
+      // Out of the tray it is carried by its middle; on the field, by the point that was pressed.
+      grab:
+        fromTray || !at
+          ? { x: (b.left + b.right) / 2, y: (b.top + b.bottom) / 2 }
+          : { x: pointer.x - at.x, y: pointer.y - at.y },
       fromX: point.x,
       fromY: point.y,
       threshold: dragStartsAfter(event.pointerType),
@@ -380,16 +407,13 @@ export function Hub() {
     ;(surface.current as HTMLElement).setPointerCapture(event.pointerId)
   }
 
-  const place = (group: Group, anchor: Anchor) => {
-    setCells((current) => [...current.filter((c) => c.deviceId !== group.device.id), ...cellsOf(group, anchor)])
-    setStatus(null)
-  }
-
   const thisDevicePlaced = placedGroups.some((g) => g.device.isThisDevice)
 
   if (!hub) {
     return <div className="hub-loading">Загрузка…</div>
   }
+
+  const dot = 24 * view.zoom
 
   return (
     <div className="hub">
@@ -401,8 +425,8 @@ export function Hub() {
         <div className="hub-actions">
           <button className="btn btn-ghost btn-icon" onClick={() => zoomBy(1 / 1.25)} title="Отдалить">−</button>
           <button className="btn btn-ghost btn-icon" onClick={() => zoomBy(1.25)} title="Приблизить">+</button>
-          <button className="btn btn-ghost" onClick={() => fitTo(cells)}>По центру</button>
-          <button className="btn" onClick={() => setCells(saved)} disabled={!dirty || busy}>Отменить</button>
+          <button className="btn btn-ghost" onClick={() => fitTo(places, groups)}>По центру</button>
+          <button className="btn" onClick={() => setPlaces(saved)} disabled={!dirty || busy}>Отменить</button>
           <button className="btn btn-accent" onClick={() => void save()} disabled={!dirty || busy}>
             {busy ? 'Сохраняю…' : 'Сохранить раскладку'}
           </button>
@@ -422,53 +446,51 @@ export function Hub() {
         >
           <div
             className="hub-grid"
-            style={{
-              backgroundSize: `${PITCH_X * view.zoom}px ${PITCH_Y * view.zoom}px`,
-              backgroundPosition: `${view.x - (PITCH_X / 2) * view.zoom}px ${view.y - (PITCH_Y / 2) * view.zoom}px`,
-            }}
+            style={{ backgroundSize: `${dot}px ${dot}px`, backgroundPosition: `${view.x}px ${view.y}px` }}
           />
 
           <div className="hub-world" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }}>
-            {drag && hoveredAnchor && (
-              <div className={`hub-slot${canDrop ? '' : ' is-blocked'}`} style={groupBox(drag.group, hoveredAnchor)}>
-                {drag.group.panes.map((pane) => (
-                  <div key={pane.key ?? 'whole'} className="hub-slot-pane" style={paneBox(pane.dc, pane.dr)} />
-                ))}
-              </div>
-            )}
-
-            {seams(placedGroups, anchors, owners).map((seam) => (
-              <div key={seam.key} className={`hub-seam ${seam.horizontal ? 'is-h' : 'is-v'}`} style={seam.style} />
-            ))}
-
-            {placedGroups.map((group) => {
-              const anchor = anchors.get(group.device.id)!
-              if (drag?.group.device.id === group.device.id && drag.moved) return null
+            {standing.map(({ group, at }) => {
+              const carried = drag?.moved === true && drag.group.device.id === group.device.id
+              const others = standing.filter((s) => s.group !== group).flatMap((s) => rectsAt(s.group, s.at))
               return (
                 <DeviceGroup
                   key={group.device.id}
                   group={group}
-                  style={groupBox(group, anchor)}
+                  at={at}
                   selected={selected === group.device.id}
-                  lonely={isLonely(group, anchor, owners)}
-                  onPointerDown={(e) => startDrag(group, e, false)}
+                  carried={carried}
+                  lonely={standing.length > 1 && isAlone(rectsAt(group, at), others)}
+                  onPointerDown={carried ? undefined : (e) => startDrag(group, e, false)}
                   onOpenScreen={(monitor) => void run('showScreen', { deviceId: group.device.id, monitor })}
                 />
               )
             })}
+
+            {seams.map((seam) => (
+              <div
+                key={seam.key}
+                className={`hub-seam ${seam.vertical ? 'is-v' : 'is-h'}`}
+                style={
+                  seam.vertical
+                    ? { left: seam.at * SCALE - 2, top: seam.from * SCALE, height: (seam.to - seam.from) * SCALE }
+                    : { top: seam.at * SCALE - 2, left: seam.from * SCALE, width: (seam.to - seam.from) * SCALE }
+                }
+              />
+            ))}
           </div>
 
-          {drag && drag.moved && heldOnScreen && (
+          {/* Over the tray, the device follows the pointer as it is, to be let go of there. */}
+          {drag?.moved && overTray && (
             <div
               className="hub-floating"
               style={{
-                // The card inside is drawn around this point, not from it, the same way a placed one is.
-                left: heldOnScreen.x,
-                top: heldOnScreen.y,
+                left: drag.x - (drag.grab.x - drag.group.bounds.left) * SCALE * view.zoom,
+                top: drag.y - (drag.grab.y - drag.group.bounds.top) * SCALE * view.zoom,
                 transform: `scale(${view.zoom})`,
               }}
             >
-              <DeviceGroup group={drag.group} style={groupBox(drag.group, { column: 0, row: 0 }, true)} selected lonely={false} />
+              <DeviceGroup group={drag.group} at={null} selected carried lonely={false} />
             </div>
           )}
 
@@ -477,7 +499,7 @@ export function Hub() {
             discovered={discovered}
             addresses={hub.manualAddresses}
             dragging={drag !== null && drag.moved && !drag.fromTray}
-            onDragDevice={(group, event) => startDrag(group, event, true)}
+            onDragDevice={(group, event) => startDrag(groupById.get(group.device.id) ?? group, event, true)}
             onCommand={run}
           />
         </div>
@@ -485,10 +507,10 @@ export function Hub() {
         {selectedDevice && (
           <Inspector
             device={selectedDevice}
-            placed={anchors.has(selectedDevice.id)}
+            placed={placeOf.has(selectedDevice.id)}
             onClose={() => setSelected(null)}
             onCommand={run}
-            onRemove={() => setCells((current) => current.filter((c) => c.deviceId !== selectedDevice.id))}
+            onRemove={() => setPlaces((current) => current.filter((p) => p.deviceId !== selectedDevice.id))}
           />
         )}
       </div>
@@ -497,6 +519,12 @@ export function Hub() {
         {!thisDevicePlaced && <span className="hub-warn">Это устройство не на поле: его курсор никуда не перейдёт.</span>}
         {status && <span className="hub-status">{status}</span>}
         {dirty && !status && <span className="hub-status">Есть несохранённые изменения.</span>}
+        {!status && !dirty && thisDevicePlaced && (
+          <span className="hub-status">
+            Курсор переходит там, где края мониторов соприкасаются, — эти места светятся. Сдвиньте устройство, чтобы
+            сдвинуть границу.
+          </span>
+        )}
         <span className="hub-net">{hub.network}</span>
       </footer>
     </div>
@@ -507,25 +535,36 @@ export function Hub() {
 
 function DeviceGroup({
   group,
-  style,
+  at,
   selected,
+  carried,
   lonely,
   onPointerDown,
   onOpenScreen,
 }: {
   group: Group
-  style: React.CSSProperties
+  /** Where its origin stands on the field; null draws it at its own top-left (carried over the tray). */
+  at: Point | null
   selected: boolean
+  carried: boolean
   lonely: boolean
   onPointerDown?: (event: React.PointerEvent) => void
   onOpenScreen?: (monitor: string | null) => void
 }) {
   const device = group.device
+  const b = group.bounds
+  const style: React.CSSProperties = {
+    left: at ? (at.x + b.left) * SCALE : 0,
+    top: at ? (at.y + b.top) * SCALE : 0,
+    width: (b.right - b.left) * SCALE,
+    height: (b.bottom - b.top) * SCALE,
+  }
+
   return (
     <div
       className={`device${device.isThisDevice ? ' is-self' : ''}${device.online ? '' : ' is-offline'}${
         selected ? ' is-selected' : ''
-      }`}
+      }${carried ? ' is-carried' : ''}`}
       style={style}
       onPointerDown={onPointerDown}
     >
@@ -537,8 +576,17 @@ function DeviceGroup({
         {lonely && <span className="chip">отдельно</span>}
       </div>
       {group.panes.map((pane) => (
-        <div key={pane.key ?? 'whole'} className="device-pane" style={paneBox(pane.dc, pane.dr)}>
-          <div className="pane-screen" style={{ aspectRatio: String(pane.aspect) }}>
+        <div
+          key={pane.key ?? 'whole'}
+          className="device-pane"
+          style={{
+            left: (pane.left - b.left) * SCALE,
+            top: (pane.top - b.top) * SCALE,
+            width: pane.width * SCALE,
+            height: pane.height * SCALE,
+          }}
+        >
+          <div className={`pane-screen${pane.primary ? ' is-primary' : ''}`}>
             <div className="pane-glow" />
             <div className="pane-label">{pane.label}</div>
             {pane.size && <div className="pane-size">{pane.size}</div>}
@@ -557,64 +605,6 @@ function DeviceGroup({
       ))}
     </div>
   )
-}
-
-// ---- geometry ---------------------------------------------------------------------------------------------
-
-function groupBox(group: Group, anchor: Anchor, atOrigin = false): React.CSSProperties {
-  const left = (atOrigin ? 0 : anchor.column * PITCH_X) - CARD_W / 2
-  const top = (atOrigin ? 0 : anchor.row * PITCH_Y) - CARD_H / 2
-  return {
-    left,
-    top,
-    width: (group.columns - 1) * PITCH_X + CARD_W,
-    height: (group.rows - 1) * PITCH_Y + CARD_H,
-  }
-}
-
-function paneBox(dc: number, dr: number): React.CSSProperties {
-  return { left: dc * PITCH_X, top: dr * PITCH_Y, width: CARD_W, height: CARD_H }
-}
-
-function isLonely(group: Group, anchor: Anchor, owners: Map<string, string>): boolean {
-  return !group.panes.some((pane) =>
-    neighbourOffsets.some((o) => {
-      const owner = owners.get(cellKey(anchor.column + pane.dc + o.dc, anchor.row + pane.dr + o.dr))
-      return owner !== undefined && owner !== group.device.id
-    }),
-  )
-}
-
-/** The glowing seams: where the cursor crosses from one device to another. */
-function seams(groups: Group[], anchors: Map<string, Anchor>, owners: Map<string, string>) {
-  const found: { key: string; horizontal: boolean; style: React.CSSProperties }[] = []
-  for (const group of groups) {
-    const anchor = anchors.get(group.device.id)
-    if (!anchor) continue
-    for (const pane of group.panes) {
-      const column = anchor.column + pane.dc
-      const row = anchor.row + pane.dr
-      const right = owners.get(cellKey(column + 1, row))
-      if (right !== undefined && right !== group.device.id) {
-        found.push({
-          key: `h${column},${row}`,
-          horizontal: true,
-          style: { left: column * PITCH_X + CARD_W / 2, top: row * PITCH_Y - 1.5, width: PITCH_X - CARD_W },
-        })
-      }
-
-      const below = owners.get(cellKey(column, row + 1))
-      if (below !== undefined && below !== group.device.id) {
-        found.push({
-          key: `v${column},${row}`,
-          horizontal: false,
-          style: { left: column * PITCH_X - 1.5, top: row * PITCH_Y + CARD_H / 2, height: PITCH_Y - CARD_H },
-        })
-      }
-    }
-  }
-
-  return found
 }
 
 function clamp(value: number, min: number, max: number) {

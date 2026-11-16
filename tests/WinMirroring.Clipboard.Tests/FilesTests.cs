@@ -84,7 +84,7 @@ public sealed class FilesTests : IDisposable
         var buffer = new byte[100];
         Assert.Equal(100, stream.Read(buffer));
         Assert.Equal(data.AsSpan(300_000, 100).ToArray(), buffer);
-        Assert.True(source.MaxConcurrent <= 3);
+        Assert.True(source.MaxConcurrent <= RemoteFileStream.Window);
     }
 
     [Fact]

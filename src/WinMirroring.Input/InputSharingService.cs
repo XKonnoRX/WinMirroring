@@ -55,7 +55,7 @@ public sealed partial class InputSharingService : IAsyncDisposable
     {
         _node = node;
         _logger = logger;
-        _layout = DeviceLayout.FromCells(node.Settings.Input.Layout);
+        _layout = BuildLayout();
         _player = new RemoteCursorPlayer(_injector, () => _node.Settings.Input.EdgeResistance, logger);
         _player.EdgeReached += OnPlayerEdgeReached;
         _player.InjectionBlocked += OnInjectionBlocked;
@@ -118,6 +118,7 @@ public sealed partial class InputSharingService : IAsyncDisposable
             }
         }
 
+        _layout = BuildLayout();
         MonitorsChanged?.Invoke();
     }
 
@@ -156,15 +157,7 @@ public sealed partial class InputSharingService : IAsyncDisposable
     /// <summary>Which side of this device the peer sits on in the layout: "right", "left", "top", "bottom" or null.</summary>
     public string? SideOf(string peerId)
     {
-        foreach (var edge in (ReadOnlySpan<Edge>)[Edge.Right, Edge.Left, Edge.Top, Edge.Bottom])
-        {
-            if (_layout.Neighbor(_node.Identity.Id, edge) == peerId)
-            {
-                return edge.ToString().ToLowerInvariant();
-            }
-        }
-
-        return null;
+        return _layout.DirectionOf(_node.Identity.Id, peerId)?.ToString().ToLowerInvariant();
     }
 
     /// <summary>Where the local cursor is parked (and hidden) while input goes to another device.</summary>
@@ -299,15 +292,56 @@ public sealed partial class InputSharingService : IAsyncDisposable
     public void ApplyLayout(IEnumerable<LayoutCell> cells)
     {
         var list = cells.Where(c => !string.IsNullOrEmpty(c.DeviceId)).ToList();
+        Store(list, []);
+    }
+
+    /// <summary>
+    /// Stores a free placement of the devices, applies it here and pushes it to every connected peer, together with
+    /// the grid an older device understands. Each placement keeps the monitors its device has as far as this
+    /// device knows, so the others can draw — and cross to — a device they are not connected to.
+    /// </summary>
+    public void ApplyPlacements(IEnumerable<LayoutPlacement> placements)
+    {
+        var list = placements
+            .Where(p => !string.IsNullOrEmpty(p.DeviceId))
+            .GroupBy(p => p.DeviceId, StringComparer.Ordinal)
+            .Select(g => g.First())
+            .Select(p => p with { Monitors = MonitorRects(p.DeviceId)?.ToList() ?? p.Monitors ?? KeptMonitors(p.DeviceId) })
+            .ToList();
+        var layout = DeviceLayout.From([], list, MonitorRects);
+        Store(layout.ToCells().ToList(), list);
+    }
+
+    private void Store(List<LayoutCell> cells, List<LayoutPlacement> placements)
+    {
         var settings = _node.Settings.Input;
-        settings.Layout = list;
+        settings.Layout = cells;
+        settings.Placements = placements;
         settings.LayoutVersion = WinMirroring.Input.Layout.LayoutVersion.Next(settings.LayoutVersion, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         settings.LayoutOrigin = _node.Identity.Id;
         _node.SaveSettings();
-        _layout = DeviceLayout.FromCells(list);
+        _layout = BuildLayout();
         LayoutChanged?.Invoke();
         SendLayoutToAll(except: null);
     }
+
+    private DeviceLayout BuildLayout() =>
+        DeviceLayout.From(_node.Settings.Input.Layout, _node.Settings.Input.Placements, MonitorRects);
+
+    /// <summary>The monitors of a device as they are now: this one's own, or what a connected one announced.</summary>
+    public IReadOnlyList<LayoutRect>? MonitorRects(string deviceId)
+    {
+        var monitors = string.Equals(deviceId, _node.Identity.Id, StringComparison.Ordinal) ? LocalMonitors : PeerMonitors(deviceId);
+        var rects = monitors
+            .Where(m => m.Width > 0 && m.Height > 0)
+            .Select(m => new LayoutRect(m.Key, m.Left, m.Top, m.Width, m.Height))
+            .ToList();
+        return rects.Count > 0 ? rects : null;
+    }
+
+    /// <summary>The monitors the stored layout remembers for a device that is not connected now.</summary>
+    public List<LayoutRect>? KeptMonitors(string deviceId) =>
+        _node.Settings.Input.Placements.FirstOrDefault(p => p.DeviceId == deviceId)?.Monitors;
 
     private void SendLayoutToAll(PeerSession? except)
     {
@@ -370,6 +404,7 @@ public sealed partial class InputSharingService : IAsyncDisposable
         session.ControlMessageReceived -= OnControlMessage;
         if (_peerMonitors.TryRemove(session.PeerId, out _))
         {
+            _layout = BuildLayout();
             MonitorsChanged?.Invoke();
         }
 
@@ -406,6 +441,7 @@ public sealed partial class InputSharingService : IAsyncDisposable
                     _ = SendMonitorsAsync(session, isReply: true);
                 }
 
+                _layout = BuildLayout();
                 MonitorsChanged?.Invoke();
                 return;
 
@@ -433,10 +469,11 @@ public sealed partial class InputSharingService : IAsyncDisposable
         }
 
         settings.Layout = layout.Cells.Where(c => !string.IsNullOrEmpty(c.DeviceId)).ToList();
+        settings.Placements = layout.Placements?.Where(p => !string.IsNullOrEmpty(p.DeviceId)).ToList() ?? [];
         settings.LayoutVersion = layout.Version;
         settings.LayoutOrigin = layout.Origin ?? string.Empty;
         _node.SaveSettings();
-        _layout = DeviceLayout.FromCells(settings.Layout);
+        _layout = BuildLayout();
         _logger.LogInformation("Adopted layout version {Version} from {Peer}", layout.Version, session.PeerName);
         LayoutChanged?.Invoke();
 
@@ -450,7 +487,11 @@ public sealed partial class InputSharingService : IAsyncDisposable
         {
             var settings = _node.Settings.Input;
             await session.SendControlAsync(
-                new LayoutMessage(settings.LayoutVersion, settings.Layout.ToList(), settings.LayoutOrigin.Length > 0 ? settings.LayoutOrigin : null),
+                new LayoutMessage(
+                    settings.LayoutVersion,
+                    settings.Layout.ToList(),
+                    settings.LayoutOrigin.Length > 0 ? settings.LayoutOrigin : null,
+                    settings.Placements.Count > 0 ? settings.Placements.ToList() : null),
                 _cts.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or OperationCanceledException)

@@ -127,8 +127,47 @@ public sealed partial class MainViewModel
         }
     }
 
-    public string OpenShareOf(string peerId) =>
-        WithHost(peerId, host => Launch("explorer.exe", $@"\\{host}", "сетевую папку") ?? Say($"Открываю \\\\{host}…"));
+    /// <summary>
+    /// The device's shared folders: checked that file sharing answers there, signed in to (with the Windows sign-in
+    /// dialog when what this account has is not enough), and only then opened. See <see cref="Services.NetworkShare"/>.
+    /// </summary>
+    public async Task<string> OpenShareOfAsync(string peerId)
+    {
+        var name = NameOf(peerId);
+        if (HostOf(peerId) is not { Length: > 0 } host)
+        {
+            return Say($"Адрес {name} пока неизвестен.");
+        }
+
+        Say($@"Подключаюсь к общим папкам {name} (\\{host})…");
+        Services.NetworkShare.Result result;
+        try
+        {
+            result = await Services.NetworkShare.OpenAsync(host, GetForegroundWindow()).ConfigureAwait(true);
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            _logger.LogInformation("Share of {Peer} not opened: {Message}", name, ex.Message);
+            return Say($@"Не удалось открыть \\{host}: {ex.Message}");
+        }
+
+        _logger.LogInformation("Share of {Peer} at {Unc}: {Outcome} ({Error})", name, result.Unc, result.Outcome, result.Error);
+        return Say(result.Outcome switch
+        {
+            Services.NetworkShare.Outcome.Opened when result.Shares is { Count: 0 } =>
+                $@"{result.Unc} открыт, но на {name} нет общих папок. Откройте там доступ к нужной папке (Свойства → Доступ) или зайдите в {result.Unc}\C$ под администратором того устройства.",
+            Services.NetworkShare.Outcome.Opened => $"Открыт {result.Unc}.",
+            Services.NetworkShare.Outcome.Unreachable =>
+                $"{name} не отвечает по SMB (порт 445): там выключен «Общий доступ к файлам и принтерам» для этой сети или его закрывает брандмауэр.",
+            Services.NetworkShare.Outcome.Cancelled => "Вход в сетевую папку отменён.",
+            Services.NetworkShare.Outcome.Refused =>
+                $"{name} не пустил с этими учётными данными (ошибка {result.Error}). Нужны имя и пароль учётной записи того устройства.",
+            _ => $"Не удалось подключиться к {result.Unc}: {new System.ComponentModel.Win32Exception(result.Error).Message}",
+        });
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern nint GetForegroundWindow();
 
     public string RemoteDesktopTo(string peerId) =>
         WithHost(peerId, host => Launch("mstsc.exe", $"/v:{host}", "удалённый рабочий стол") ?? Say($"Открываю удалённый рабочий стол {host}…"));

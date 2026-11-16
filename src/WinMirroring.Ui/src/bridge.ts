@@ -105,8 +105,9 @@ const sample = {
       rtt: '',
       sound: null,
       monitors: [
-        { key: 'self-1', label: 'Монитор 1 · основной', size: '1536×864', width: 1536, height: 864, left: 0, top: 0, primary: true },
-        { key: 'self-2', label: 'Монитор 2 · слева', size: '1920×1080', width: 1920, height: 1080, left: -1920, top: 0, primary: false },
+        { key: 'self-2', label: 'Монитор 2 · основной', size: '1920×1080', width: 1920, height: 1080, left: 0, top: 0, primary: true },
+        { key: 'self-3', label: 'Монитор 3 · слева', size: '1080×1920', width: 1080, height: 1920, left: -1080, top: -394, primary: false },
+        { key: 'self-1', label: 'Монитор 1 · справа', size: '1920×1080', width: 1920, height: 1080, left: 1920, top: 104, primary: false },
       ],
     }),
     device({
@@ -130,10 +131,12 @@ const sample = {
     }),
   ],
   cells: [
-    { deviceId: 'self', monitor: 'self-2', column: 0, row: 0 },
-    { deviceId: 'self', monitor: 'self-1', column: 1, row: 0 },
-    { deviceId: 'tablet', monitor: 'tab-1', column: 2, row: 0 },
+    { deviceId: 'self', monitor: 'self-3', column: 0, row: 0 },
+    { deviceId: 'self', monitor: 'self-2', column: 1, row: 1 },
+    { deviceId: 'self', monitor: 'self-1', column: 2, row: 2 },
+    { deviceId: 'tablet', monitor: 'tab-1', column: 3, row: 2 },
   ],
+  placements: [] as { deviceId: string; x: number; y: number }[],
 }
 
 const sampleSettings = {
@@ -188,6 +191,7 @@ const sampleSettings = {
     ],
     videoBitrate: 12000,
     virtualDisplay: 'Драйвер виртуального монитора установлен.',
+    virtualDisplayInstalled: true,
     sources: [{ streamId: 1, title: 'Монитор 1 (1536×864)', peer: 'DESKTOP-P50HIEF' }],
   },
   shell: { allowCommands: false, allowElevatedCommands: false },
@@ -250,7 +254,7 @@ async function mockInvoke<T>(method: string, args?: unknown): Promise<T> {
 
   if (method === 'hub.get') return sample as unknown as T
   if (method === 'hub.save') {
-    sample.cells = (args as { cells: typeof sample.cells }).cells
+    sample.placements = (args as { placements: typeof sample.placements }).placements
     return 'Раскладка сохранена и отправлена устройствам.' as T
   }
 

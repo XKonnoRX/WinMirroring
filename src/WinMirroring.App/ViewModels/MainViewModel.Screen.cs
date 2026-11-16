@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using Microsoft.Extensions.Logging;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -167,6 +168,98 @@ public sealed partial class MainViewModel
     public string VirtualDisplayStatus => ScreenStreamingService.IsVirtualDisplayAvailable
         ? "Драйвер виртуального монитора установлен: экран этого устройства можно расширить на другое (правая кнопка по нему → «Использовать как второй монитор»)."
         : "Драйвер виртуального монитора не установлен. Он нужен только устройству, чей экран расширяется (например, ноутбуку). Установка: winget install --id=VirtualDrivers.Virtual-Display-Driver -e, или приложение Virtual Driver Control с github.com/VirtualDrivers. После установки перезапустите WinMirroring.";
+
+    public bool VirtualDisplayInstalled => ScreenStreamingService.IsVirtualDisplayAvailable;
+
+    private const string VirtualDisplayPackage = "VirtualDrivers.Virtual-Display-Driver";
+    private const string VirtualDisplayReleases = "https://github.com/VirtualDrivers/Virtual-Display-Driver/releases";
+    private int _installingDriver;
+
+    /// <summary>
+    /// Installs (or updates) the Virtual Display Driver with winget, so that it does not have to be looked up and
+    /// typed on every device. winget asks Windows for administrator rights itself, once, for the driver. The
+    /// monitor the driver brings with it is taken off the desktop again at once — it is only wanted while another
+    /// device actually shows it — and the new driver is used without restarting the app, since it is looked for
+    /// every time it is needed.
+    /// </summary>
+    public async Task<string> InstallVirtualDisplayDriverAsync()
+    {
+        if (Interlocked.Exchange(ref _installingDriver, 1) == 1)
+        {
+            return Say("Драйвер уже устанавливается.");
+        }
+
+        try
+        {
+            var update = ScreenStreamingService.IsVirtualDisplayAvailable;
+            Say(update
+                ? "Проверяю обновление драйвера виртуального монитора через winget…"
+                : "Устанавливаю драйвер виртуального монитора через winget — Windows спросит права администратора…");
+
+            var verb = update ? "upgrade" : "install";
+            var start = new System.Diagnostics.ProcessStartInfo("winget.exe",
+                $"{verb} --id={VirtualDisplayPackage} -e --source winget --silent --accept-source-agreements --accept-package-agreements --disable-interactivity")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+
+            System.Diagnostics.Process? process;
+            try
+            {
+                process = System.Diagnostics.Process.Start(start);
+            }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                _logger.LogInformation("winget is not available: {Message}", ex.Message);
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(VirtualDisplayReleases) { UseShellExecute = true });
+                return Say("На этом устройстве нет winget. Открыл страницу драйвера: скачайте установщик оттуда.");
+            }
+
+            if (process is null)
+            {
+                return Say("winget не запустился.");
+            }
+
+            using (process)
+            {
+                var output = process.StandardOutput.ReadToEndAsync();
+                var errors = process.StandardError.ReadToEndAsync();
+                await process.WaitForExitAsync().ConfigureAwait(true);
+                var text = (await output.ConfigureAwait(true)) + (await errors.ConfigureAwait(true));
+                _logger.LogInformation("winget {Verb} {Package} exited with {Code}: {Output}", verb, VirtualDisplayPackage, process.ExitCode, text.Trim());
+
+                // The driver comes up a moment after its installer finishes.
+                for (var i = 0; i < 20 && !ScreenStreamingService.IsVirtualDisplayAvailable; i++)
+                {
+                    await Task.Delay(500).ConfigureAwait(true);
+                }
+
+                _screen.DetachLeftoverDisplay();
+                OnPropertyChanged(nameof(VirtualDisplayStatus));
+                OnPropertyChanged(nameof(VirtualDisplayInstalled));
+
+                // 0x8A15002B: no newer version (upgrade); 0x8A150061: already installed.
+                var nothingToDo = unchecked((uint)process.ExitCode) is 0x8A15002B or 0x8A150061;
+                if (ScreenStreamingService.IsVirtualDisplayAvailable)
+                {
+                    return Say(update && nothingToDo
+                        ? "Драйвер виртуального монитора уже последней версии."
+                        : "Драйвер виртуального монитора установлен — этот экран можно расширять на другие устройства.");
+                }
+
+                return Say(process.ExitCode == 0
+                    ? "winget завершился, но драйвер пока не виден. Если Windows просила перезагрузку — перезагрузите устройство."
+                    : $"Драйвер не установился (winget вернул 0x{process.ExitCode:X8}). Подробности в журнале приложения.");
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref _installingDriver, 0);
+        }
+    }
 
     /// <summary>Turns the device into this device's second monitor, or stops that. Nothing is remembered for next time.</summary>
     public async Task<string> ToggleSecondMonitorAsync(string peerId, string peerName)

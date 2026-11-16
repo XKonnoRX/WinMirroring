@@ -34,6 +34,7 @@ internal sealed class VirtualFileDataObject : ComTypes.IDataObject
     private readonly ComTypes.FORMATETC[] _formats;
     private readonly object _downloadGate = new();
     private IReadOnlyList<string>? _downloaded;
+    private OfferPrefetcher? _prefetcher;
 
     public VirtualFileDataObject(FileOfferManifest manifest, IRemoteFileSource source, bool offerDropFiles, string sourceId, ILogger logger)
     {
@@ -197,7 +198,7 @@ internal sealed class VirtualFileDataObject : ComTypes.IDataObject
 
         var entry = _manifest.Entries[index];
         var stream = new ComStream(
-            new RemoteFileStream(_source, _manifest.OfferId, index, entry.Size),
+            Prefetcher().Open(index) ?? new RemoteFileStream(_source, _manifest.OfferId, index, entry.Size),
             Path.GetFileName(entry.Path),
             entry.LastWriteUtcTicks);
 
@@ -207,6 +208,40 @@ internal sealed class VirtualFileDataObject : ComTypes.IDataObject
             unionmember = Marshal.GetComInterfaceForObject<ComStream, ComTypes.IStream>(stream),
         };
     }
+
+    /// <summary>Runs ahead of Explorer through the files it pulls one at a time (see <see cref="OfferPrefetcher"/>).</summary>
+    private OfferPrefetcher Prefetcher()
+    {
+        lock (_downloadGate)
+        {
+            if (_prefetcher is null)
+            {
+                _prefetcher = new OfferPrefetcher(_manifest, _source, _logger);
+                var reported = false;
+                _prefetcher.Progress += (done, total) =>
+                {
+                    if (!reported)
+                    {
+                        reported = true;
+                        DownloadStarted?.Invoke(_manifest);
+                    }
+
+                    DownloadProgress?.Invoke(_manifest, done, total);
+                    TransferReports.Report(new FileTransferProgress(_manifest.OfferId, Describe(), done, total, false, false));
+                };
+                _prefetcher.Finished += ok =>
+                {
+                    reported = false;
+                    DownloadFinished?.Invoke(_manifest, ok);
+                    TransferReports.Report(new FileTransferProgress(_manifest.OfferId, Describe(), ok ? 1 : 0, 1, true, ok));
+                };
+            }
+
+            return _prefetcher;
+        }
+    }
+
+    private string Describe() => TransferReports.Describe(_manifest);
 
     private IReadOnlyList<string> EnsureDownloaded()
     {
@@ -218,20 +253,29 @@ internal sealed class VirtualFileDataObject : ComTypes.IDataObject
             }
 
             DownloadStarted?.Invoke(_manifest);
+            TransferReports.Report(new FileTransferProgress(_manifest.OfferId, Describe(), 0, _manifest.TotalSize, false, false));
             try
             {
-                _downloaded = OfferDownloader.DownloadAsync(
+                // Off the thread Explorer called in on: that thread is the one that draws its windows, and a
+                // download run on it froze them — the indicator included, which is why nothing seemed to happen.
+                _downloaded = Task.Run(() => OfferDownloader.DownloadAsync(
                     _manifest, _source,
-                    (done, total) => DownloadProgress?.Invoke(_manifest, done, total),
-                    CancellationToken.None).GetAwaiter().GetResult();
+                    (done, total) =>
+                    {
+                        DownloadProgress?.Invoke(_manifest, done, total);
+                        TransferReports.Report(new FileTransferProgress(_manifest.OfferId, Describe(), done, total, false, false));
+                    },
+                    CancellationToken.None)).GetAwaiter().GetResult();
                 _logger.LogInformation("Downloaded {Count} clipboard item(s) from {Source}", _downloaded.Count, _manifest.SourceName);
                 DownloadFinished?.Invoke(_manifest, true);
+                TransferReports.Report(new FileTransferProgress(_manifest.OfferId, Describe(), _manifest.TotalSize, _manifest.TotalSize, true, true));
                 return _downloaded;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 _logger.LogWarning("Pasting files from {Source} failed: {Message}", _manifest.SourceName, ex.Message);
                 DownloadFinished?.Invoke(_manifest, false);
+                TransferReports.Report(new FileTransferProgress(_manifest.OfferId, Describe(), 0, _manifest.TotalSize, true, false));
                 throw new COMException(ex.Message, E_FAIL);
             }
         }

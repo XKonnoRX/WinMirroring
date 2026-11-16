@@ -125,7 +125,8 @@ public sealed record ByeMessage(string? Reason) : ControlMessage;
 /// devices the author is not connected to. The newest (<see cref="Version"/>, then <see cref="Origin"/>) wins
 /// everywhere; a device that gets an older one answers with its own.
 /// </summary>
-public sealed record LayoutMessage(long Version, List<LayoutCell> Cells, string? Origin = null) : ControlMessage;
+/// <param name="Placements">Free placement (newer devices); older ones ignore it and go by <paramref name="Cells"/>.</param>
+public sealed record LayoutMessage(long Version, List<LayoutCell> Cells, string? Origin = null, List<LayoutPlacement>? Placements = null) : ControlMessage;
 
 /// <summary>
 /// The sender's monitors, for placing them one by one in the layout. Sent when a session starts (the other side

@@ -9,6 +9,22 @@ namespace WinMirroring.Core.Settings;
 /// </param>
 public sealed record LayoutCell(string DeviceId, int Column, int Row, string? Monitor = null);
 
+/// <summary>
+/// Where a device stands on the shared field, the way Windows places monitors: <see cref="X"/>, <see cref="Y"/> is
+/// where that device's own desktop origin (the top-left of its primary monitor) lies on the field, in pixels, and
+/// each of its monitors sits around it exactly as on its own desktop. The cursor crosses wherever an edge of one
+/// device's monitor meets an edge of another's, and only along the part where they overlap, at the same height
+/// (or the same horizontal position) it left at — so moving a device on the field moves where its border is.
+/// </summary>
+/// <param name="Monitors">
+/// The device's monitors as the author of the layout knew them: what the field shows for a device that is not
+/// connected right now. A device that is connected answers for its own monitors instead.
+/// </param>
+public sealed record LayoutPlacement(string DeviceId, int X, int Y, List<LayoutRect>? Monitors = null);
+
+/// <summary>One monitor of a device, in that device's own desktop pixels.</summary>
+public sealed record LayoutRect(string Key, int Left, int Top, int Width, int Height);
+
 public sealed class InputSettings
 {
     /// <summary>Install the hooks and take part in input sharing at all.</summary>
@@ -41,5 +57,12 @@ public sealed class InputSettings
     /// <summary>The device that made the current layout; breaks a tie between two equal versions the same way everywhere.</summary>
     public string LayoutOrigin { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The grid of older versions. Still kept and sent, derived from <see cref="Placements"/>, so a device that has
+    /// not been updated goes on understanding where its neighbours are.
+    /// </summary>
     public List<LayoutCell> Layout { get; set; } = [];
+
+    /// <summary>Free placement of the devices (see <see cref="LayoutPlacement"/>); empty: the grid in <see cref="Layout"/> rules.</summary>
+    public List<LayoutPlacement> Placements { get; set; } = [];
 }

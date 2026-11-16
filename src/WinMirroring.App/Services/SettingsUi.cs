@@ -123,6 +123,7 @@ public sealed class SettingsUi
             codecs = _vm.ScreenVideoCodecOptions.Select(o => new { value = o.Value.ToString(), label = o.Label }).ToList(),
             videoBitrate = _vm.ScreenVideoBitrate,
             virtualDisplay = _vm.VirtualDisplayStatus,
+            virtualDisplayInstalled = _vm.VirtualDisplayInstalled,
             sources = _vm.ScreenSources.Select(s => new { streamId = s.StreamId, title = s.Title, peer = s.PeerName }).ToList(),
         },
         shell = new
@@ -241,6 +242,9 @@ public sealed class SettingsUi
     {
         switch (call.Name)
         {
+            case "installVirtualDisplay":
+                return await _vm.InstallVirtualDisplayDriverAsync();
+
             case "applyNetwork":
                 await _vm.ApplyNetworkCommand.ExecuteAsync(null);
                 break;

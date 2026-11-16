@@ -17,7 +17,7 @@ public sealed class MonitorSet
         All = monitors.Count > 0 ? monitors : [new MonitorInfo(string.Empty, VirtualScreen.Current, true)];
         ForLayout = All
             .Where(m => !m.IsVirtual && m.Key.Length > 0)
-            .OrderByDescending(m => m.Primary)
+            .OrderBy(m => DisplayNumber(m.Key) ?? int.MaxValue)
             .ThenBy(m => m.Bounds.Left)
             .ThenBy(m => m.Bounds.Top)
             .ToList();
@@ -30,7 +30,7 @@ public sealed class MonitorSet
 
     public IReadOnlyList<MonitorInfo> All { get; }
 
-    /// <summary>The real monitors in the order they are numbered for the user: primary first, then left to right.</summary>
+    /// <summary>The real monitors in the order Windows numbers them (Settings → Display → Identify).</summary>
     public IReadOnlyList<MonitorInfo> ForLayout { get; }
 
     /// <summary>
@@ -112,14 +112,30 @@ public sealed class MonitorSet
         return new Point(Math.Clamp(point.X, bounds.Left, bounds.Right - 1), Math.Clamp(point.Y, bounds.Top, bounds.Bottom - 1));
     }
 
-    /// <summary>"Монитор 2 · 1920×1080 · справа" (numbered as in <see cref="ForLayout"/>).</summary>
+    /// <summary>
+    /// "Монитор 2 · 1920×1080 · справа", numbered the way Windows numbers it: by its display device (\\.\DISPLAY2
+    /// is the "2" in Windows' display settings), not primary-first — a monitor called 1 here and 2 there is the
+    /// first thing that makes a layout look wrong.
+    /// </summary>
     public string Describe(MonitorInfo monitor)
     {
-        var number = ForLayout.ToList().IndexOf(monitor) + 1;
+        var number = DisplayNumber(monitor.Key) ?? (ForLayout.ToList().IndexOf(monitor) + 1);
         var size = string.Create(CultureInfo.InvariantCulture, $"{monitor.Bounds.Width}×{monitor.Bounds.Height}");
         var where = monitor.Primary ? "основной" : PlaceOf(monitor);
         var name = number > 0 ? $"Монитор {number}" : "Монитор";
         return where is null ? $"{name} · {size}" : $"{name} · {size} · {where}";
+    }
+
+    /// <summary>The n of \\.\DISPLAYn, or null for a name of another shape.</summary>
+    public static int? DisplayNumber(string key)
+    {
+        var digits = key.Length;
+        while (digits > 0 && char.IsAsciiDigit(key[digits - 1]))
+        {
+            digits--;
+        }
+
+        return digits < key.Length && int.TryParse(key.AsSpan(digits), NumberStyles.None, CultureInfo.InvariantCulture, out var n) ? n : null;
     }
 
     public string Signature => string.Join(';', All.Select(m => $"{m.Key}={m.Bounds}{(m.Primary ? "*" : string.Empty)}{(m.IsVirtual ? "v" : string.Empty)}"));

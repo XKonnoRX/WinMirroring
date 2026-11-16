@@ -40,7 +40,10 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
         _node = node;
         _logger = logger;
         _server = new FileServer(_offers, logger);
+        TransferReports.Reported += OnTransferReported;
     }
+
+    private void OnTransferReported(FileTransferProgress progress) => TransferProgress?.Invoke(progress);
 
     /// <summary>Short Russian description of the last clipboard exchange, for the UI.</summary>
     public string LastActivity { get; private set; } = string.Empty;
@@ -134,6 +137,8 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
         {
             fetcher.Close();
         }
+
+        _server.OnSessionClosed(session);
     }
 
     // ---- outgoing ----------------------------------------------------------------------------------------
@@ -394,15 +399,9 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
                     }
 
                     var dataObject = new VirtualFileDataObject(manifest, source, AllowsDirectPaste(manifest), session.PeerId, _logger);
-                    dataObject.DownloadStarted += m =>
-                    {
-                        Report($"Вставка: загрузка {DescribeFiles(m)} с {m.SourceName}…");
-                        TransferProgress?.Invoke(new FileTransferProgress(m.OfferId, DescribeFiles(m), 0, m.TotalSize, false, false));
-                    };
-                    dataObject.DownloadProgress += (m, done, total) =>
-                        TransferProgress?.Invoke(new FileTransferProgress(m.OfferId, DescribeFiles(m), done, total, false, false));
-                    dataObject.DownloadFinished += (m, ok) =>
-                        TransferProgress?.Invoke(new FileTransferProgress(m.OfferId, DescribeFiles(m), ok ? m.TotalSize : 0, m.TotalSize, true, ok));
+                    // The progress itself reaches TransferProgress through TransferReports, the same way it does from a
+                    // drag, which has no service of its own to hand it to.
+                    dataObject.DownloadStarted += m => Report($"Вставка: загрузка {DescribeFiles(m)} с {m.SourceName}…");
                     await thread.SetDataObjectAsync(dataObject).ConfigureAwait(false);
                     _logger.LogInformation("Files from {Peer} put on the clipboard: {What}", session.PeerName, DescribeFiles(manifest));
                     Report($"Получено с {session.PeerName}: {DescribeFiles(manifest)}");
@@ -445,6 +444,16 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
             case FileCodec.ResponseMessage when _fetchers.TryGetValue(session, out var fetcher):
                 fetcher.OnResponse(payload.Span);
                 break;
+
+            // Asked of this device as the one with the files.
+            case BundleCodec.RequestMessage or BundleCodec.AckMessage or BundleCodec.CancelMessage:
+                _server.HandleBundleMessage(session, payload.Span);
+                break;
+
+            // Answers to a bundle this device asked for.
+            case BundleCodec.StartMessage or BundleCodec.BlockMessage or BundleCodec.EndMessage when _fetchers.TryGetValue(session, out var receiver):
+                receiver.OnBundleMessage(payload);
+                break;
         }
 
         return ValueTask.CompletedTask;
@@ -469,23 +478,7 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
         return items.Any(i => i.Kind == ClipboardItemKind.UnicodeText) ? $"текст ({size})" : $"данные ({size})";
     }
 
-    private static string DescribeFiles(FileOfferManifest manifest)
-    {
-        var files = manifest.Entries.Count(e => !e.IsDirectory);
-        var folders = manifest.TopLevel.Count(e => e.IsDirectory);
-        var parts = new List<string>();
-        if (files > 0)
-        {
-            parts.Add($"файлов: {files}");
-        }
-
-        if (folders > 0)
-        {
-            parts.Add($"папок: {folders}");
-        }
-
-        return $"{string.Join(", ", parts)} ({FormatSize(manifest.TotalSize)})";
-    }
+    private static string DescribeFiles(FileOfferManifest manifest) => TransferReports.Describe(manifest);
 
     private static string FormatSize(long bytes) => bytes switch
     {
@@ -505,6 +498,7 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
 
         _node.Sessions.SessionReady -= OnSessionReady;
         _node.Sessions.SessionClosed -= OnSessionClosed;
+        TransferReports.Reported -= OnTransferReported;
         _outbox.Writer.TryComplete();
         await _cts.CancelAsync().ConfigureAwait(false);
         if (_publisher is not null)

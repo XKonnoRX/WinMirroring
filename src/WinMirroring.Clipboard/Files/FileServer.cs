@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.Win32.SafeHandles;
 using WinMirroring.Clipboard.Protocol;
@@ -23,6 +24,7 @@ internal sealed class FileServer : IDisposable
     private readonly ILogger _logger;
     private readonly object _gate = new();
     private readonly Dictionary<string, OpenFile> _open = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<(PeerSession Session, uint Id), BundleSender> _bundles = new();
 
     public FileServer(LocalOfferStore store, ILogger logger)
     {
@@ -86,6 +88,75 @@ internal sealed class FileServer : IDisposable
         }
     }
 
+    /// <summary>A bundle request, acknowledgement or cancellation (see <see cref="BundleCodec"/>).</summary>
+    public void HandleBundleMessage(PeerSession session, ReadOnlySpan<byte> message)
+    {
+        if (!BundleCodec.TryReadId(message, out var id))
+        {
+            return;
+        }
+
+        switch (message[0])
+        {
+            case BundleCodec.RequestMessage when BundleCodec.TryDecodeRequest(message, out _, out var offerId, out var first, out var end, out var window, out var flags):
+                if (!_store.TryGetOffer(offerId, out var entries, out var paths))
+                {
+                    _ = SendQuietlyAsync(session, BundleCodec.EncodeStatus(BundleCodec.StartMessage, id, FileChunkStatus.NotFound));
+                    return;
+                }
+
+                var sender = new BundleSender(session, id, entries, paths, first, end, window, (flags & BundleCodec.FlagBrotli) != 0, _logger);
+                if (_bundles.TryAdd((session, id), sender))
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await sender.RunAsync().ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            _bundles.TryRemove((session, id), out _);
+                        }
+                    });
+                }
+
+                return;
+
+            case BundleCodec.AckMessage when _bundles.TryGetValue((session, id), out var acked):
+                acked.OnAck(BundleCodec.ReadAck(message));
+                return;
+
+            case BundleCodec.CancelMessage when _bundles.TryGetValue((session, id), out var cancelled):
+                cancelled.Cancel();
+                return;
+        }
+    }
+
+    /// <summary>Stops whatever is still being sent over a session that has closed.</summary>
+    public void OnSessionClosed(PeerSession session)
+    {
+        foreach (var key in _bundles.Keys.Where(k => ReferenceEquals(k.Session, session)).ToList())
+        {
+            if (_bundles.TryRemove(key, out var sender))
+            {
+                sender.Cancel();
+            }
+        }
+    }
+
+    private async Task SendQuietlyAsync(PeerSession session, byte[] message)
+    {
+        try
+        {
+            await session.SendAsync(ChannelId.File, message).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
+        {
+            _logger.LogDebug("File message to {Peer} not sent: {Message}", session.PeerName, ex.Message);
+        }
+    }
+
     private SafeFileHandle Acquire(string path)
     {
         lock (_gate)
@@ -129,6 +200,11 @@ internal sealed class FileServer : IDisposable
 
     public void Dispose()
     {
+        foreach (var sender in _bundles.Values)
+        {
+            sender.Cancel();
+        }
+
         lock (_gate)
         {
             foreach (var file in _open.Values)

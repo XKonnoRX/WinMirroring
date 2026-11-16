@@ -8,8 +8,8 @@ namespace WinMirroring.Clipboard.Files;
 /// </summary>
 internal sealed class RemoteFileStream : Stream
 {
-    internal const int ChunkSize = 128 * 1024;
-    private const int Window = 3;
+    internal const int ChunkSize = FileCodec.MaxChunk;
+    internal const int Window = 8;
 
     private readonly IRemoteFileSource _source;
     private readonly long _offerId;

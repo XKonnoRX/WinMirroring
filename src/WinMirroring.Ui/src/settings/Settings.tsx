@@ -23,6 +23,7 @@ export function Settings() {
   const [page, setPage] = useState<PageId>('device')
   const [status, setStatus] = useState<string | null>(null)
   const [address, setAddress] = useState('')
+  const [installing, setInstalling] = useState(false)
 
   const load = useCallback(async () => setState(await invoke<SettingsState>('settings.get')), [])
 
@@ -243,6 +244,22 @@ export function Settings() {
 
             <Section title="Второй монитор">
               <p className="note">{state.screen.virtualDisplay}</p>
+              <div className="row">
+                <button
+                  className={`btn${state.screen.virtualDisplayInstalled ? '' : ' btn-accent'}`}
+                  disabled={installing}
+                  onClick={() => {
+                    setInstalling(true)
+                    void run('installVirtualDisplay').finally(() => setInstalling(false))
+                  }}
+                >
+                  {installing
+                    ? 'Устанавливаю…'
+                    : state.screen.virtualDisplayInstalled
+                      ? 'Обновить драйвер'
+                      : 'Установить драйвер'}
+                </button>
+              </div>
             </Section>
 
             <Section title="Что сейчас показывается другим">

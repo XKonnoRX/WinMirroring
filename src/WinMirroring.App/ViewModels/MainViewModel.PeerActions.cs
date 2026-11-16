@@ -85,7 +85,7 @@ public sealed partial class MainViewModel
     {
         if (SelectedPeer is { } peer)
         {
-            OpenShareOf(peer.Id);
+            _ = OpenShareOfAsync(peer.Id);
         }
     }
 
