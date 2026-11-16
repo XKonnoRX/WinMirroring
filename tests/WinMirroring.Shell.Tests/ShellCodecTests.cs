@@ -67,6 +67,23 @@ public class ShellCodecTests
         Assert.Equal(command, rejoined.ToString());
     }
 
+    /// <summary>
+    /// The message that says a person is being asked, which is text and nothing else, and which a reader that
+    /// does not know the kind must leave alone rather than mistake for an answer.
+    /// </summary>
+    [Fact]
+    public void TheMessageThatSaysSomebodyIsBeingAskedCarriesTheQuestion()
+    {
+        var message = ShellCodec.Encode(ShellMessageType.Asking, 42, "ждём ответа человека за устройством");
+
+        Assert.True(ShellCodec.TryReadHeader(message, out var type, out var console));
+        Assert.Equal((ShellMessageType.Asking, 42u), (type, console));
+        Assert.True(ShellCodec.TryDecodeText(message, out var question));
+        Assert.Equal("ждём ответа человека за устройством", question);
+        Assert.False(ShellCodec.TryDecodeDone(message, out _, out _));
+        Assert.False(ShellCodec.TryDecodeOutput(message, out _, out _));
+    }
+
     private static string Script(int length)
     {
         var text = new StringBuilder();

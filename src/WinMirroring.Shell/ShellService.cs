@@ -16,9 +16,10 @@ namespace WinMirroring.Shell;
 /// already move this one's mouse and type on its keyboard, so this adds no power it did not have — but it makes
 /// that power convenient, and convenient power deserves to be asked for out loud.
 ///
-/// Nothing runs elevated. A console is an ordinary PowerShell as the signed-in user, which is what managing a
-/// device means nine times out of ten; anything needing administrator rights asks for them on that device, in front
-/// of whoever is there, exactly as it would if they had started it themselves.
+/// A console is an ordinary PowerShell as the signed-in user, which is what managing a device means nine times out
+/// of ten. An administrator console is a thing of its own: a setting of its own, a question of its own here, and a
+/// helper that Windows asks about — once per run of this app, because the prompt is a question about a program and
+/// that program then keeps running (see <see cref="Elevated.ElevatedHelper"/>).
 /// </summary>
 public sealed class ShellService : IAsyncDisposable
 {
@@ -31,8 +32,29 @@ public sealed class ShellService : IAsyncDisposable
     /// <summary>Devices whose consoles the person here has already agreed to, until this app restarts.</summary>
     private readonly ConcurrentDictionary<string, byte> _allowed = new(StringComparer.Ordinal);
 
+    /// <summary>The same for administrator consoles, which are agreed to separately and no more often.</summary>
+    private readonly ConcurrentDictionary<string, byte> _allowedElevated = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Only one helper is ever started, and only one attempt at starting one runs at a time. Without the gate,
+    /// two devices asking at the same moment put two UAC prompts on the screen of whoever is at this device — for
+    /// the same permission, which is the thing being got rid of.
+    /// </summary>
+    private readonly SemaphoreSlim _helperGate = new(1, 1);
+
+    private Elevated.IElevatedHost? _helper;
+
     /// <summary>Consoles this device has opened elsewhere, by id.</summary>
     private readonly ConcurrentDictionary<uint, RemoteConsole> _mine = new();
+
+    /// <summary>
+    /// Consoles asked for here that are still being asked about, by the device that asked. Cancelled when that
+    /// device gives up on one — which is how a question that nobody is waiting for any more stops turning into a
+    /// PowerShell nobody will ever type in. A tool killed while a confirmation dialog was up used to leave exactly
+    /// that behind: the dialog was answered an hour later, a shell started for it, and it sat there until the
+    /// session closed.
+    /// </summary>
+    private readonly ConcurrentDictionary<(string PeerId, uint Id), CancellationTokenSource> _opening = new();
 
     /// <summary>
     /// What has arrived so far of a command too long for one message, by the console it is for. A whole script
@@ -46,6 +68,7 @@ public sealed class ShellService : IAsyncDisposable
     {
         _node = node;
         _logger = logger;
+        StartElevatedHost = async ct => await Elevated.ElevatedHelper.TryStartAsync(_logger, ct).ConfigureAwait(false);
     }
 
     /// <summary>Asks the user here a yes-or-no question (set by the app; without it nothing is allowed).</summary>
@@ -54,8 +77,22 @@ public sealed class ShellService : IAsyncDisposable
     /// <summary>Shows a notice here (title, text), so a console opened on this device is never a silent one.</summary>
     public Action<string, string>? Notify { get; set; }
 
+    /// <summary>
+    /// Where the elevated helper comes from. Replaced in tests, which cannot answer a UAC prompt and still have to
+    /// hold what matters here: that it is started once and serves every administrator console afterwards.
+    /// </summary>
+    internal Func<CancellationToken, Task<Elevated.IElevatedHost?>> StartElevatedHost { get; set; }
+
     /// <summary>True while any device has a console open here.</summary>
     public bool HasConsolesHere => !_hosted.IsEmpty;
+
+    /// <summary>How many consoles are open here. For tests that have to see that nothing extra was opened.</summary>
+    internal int ConsolesHere => _hosted.Count;
+
+    /// <summary>How many consoles were given up on here before they opened. For tests, which must not guess.</summary>
+    internal int GivenUpOnHere => Volatile.Read(ref _givenUpOn);
+
+    private int _givenUpOn;
 
     /// <summary>
     /// Whether this service is listening on that device's session yet. A ready session is not the same thing: the
@@ -126,6 +163,16 @@ public sealed class ShellService : IAsyncDisposable
             _arriving.TryRemove(key, out _);
         }
 
+        // Questions still on the screen for a device that is no longer there. Cancelled, not removed: whoever is
+        // waiting on the answer owns the entry and tidies it up.
+        foreach (var key in _opening.Keys.Where(k => k.PeerId == session.PeerId).ToList())
+        {
+            if (_opening.TryGetValue(key, out var waiting))
+            {
+                waiting.Cancel();
+            }
+        }
+
         foreach (var console in _mine.Values.Where(c => ReferenceEquals(c.Session, session)).ToList())
         {
             console.OnClosed("соединение закрыто");
@@ -140,31 +187,39 @@ public sealed class ShellService : IAsyncDisposable
             return ValueTask.CompletedTask;
         }
 
-        // Answers to a console of ours.
-        if (type is ShellMessageType.Opened or ShellMessageType.Refused or ShellMessageType.Output or ShellMessageType.Done or ShellMessageType.Close)
+        // Whether a device gave us a console is worth keeping, because asking was already written down and the
+        // answer was not: a refusal — commands turned off over there, or whoever is sitting at it saying no —
+        // reached the screen of whoever asked and nowhere else. Afterwards, with the window closed, there was no
+        // way to tell a device that said no from one that never answered.
+        if (type is ShellMessageType.Opened)
         {
-            // Whether a device gave us a console is worth keeping, because asking was already written down and
-            // the answer was not: a refusal — commands turned off over there, or whoever is sitting at it saying
-            // no — reached the screen of whoever asked and nowhere else. Afterwards, with the window closed,
-            // there was no way to tell a device that said no from one that never answered.
-            if (type is ShellMessageType.Opened)
-            {
-                _logger.LogInformation("{Peer} gave us console {Console}", session.PeerName, id);
-            }
-            else if (type is ShellMessageType.Refused)
-            {
-                _logger.LogInformation(
-                    "{Peer} gave us no console {Console}: {Reason}",
-                    session.PeerName,
-                    id,
-                    ShellCodec.TryDecodeText(span, out var reason) ? reason : "причина не названа");
-            }
+            _logger.LogInformation("{Peer} gave us console {Console}", session.PeerName, id);
+        }
+        else if (type is ShellMessageType.Refused)
+        {
+            _logger.LogInformation(
+                "{Peer} gave us no console {Console}: {Reason}",
+                session.PeerName,
+                id,
+                ShellCodec.TryDecodeText(span, out var reason) ? reason : "причина не названа");
+        }
 
-            if (_mine.TryGetValue(id, out var console) && ReferenceEquals(console.Session, session))
-            {
-                console.OnMessage(type, span);
-            }
+        // Which side of a console this is about cannot be told from the kind of message alone: Close is sent both
+        // ways, by whoever is finished with one. What tells them apart is whose console it is. Deciding by kind
+        // instead meant a Close arriving at the device being managed was taken for an answer to a console of its
+        // own, found none, and was dropped — so the device-side half of closing a console had never once run, and
+        // every console closed from the other end left its PowerShell running here until the session itself went.
+        if (_mine.TryGetValue(id, out var ours) && ReferenceEquals(ours.Session, session))
+        {
+            ours.OnMessage(type, span);
+            return ValueTask.CompletedTask;
+        }
 
+        // An answer to a console of ours that is already gone. Nothing to do with it; it is certainly not a
+        // request for one of these.
+        if (type is ShellMessageType.Opened or ShellMessageType.Refused or ShellMessageType.Output
+            or ShellMessageType.Done or ShellMessageType.Asking)
+        {
             return ValueTask.CompletedTask;
         }
 
@@ -215,6 +270,14 @@ public sealed class ShellService : IAsyncDisposable
                 closing.Dispose();
                 Told(session, "Консоль закрыта", $"{session.PeerName} больше не выполняет здесь команды.");
                 break;
+
+            // Given up on before it was ever opened: the question here may still be on the screen, and whatever it
+            // is answered, there is no longer anybody to open a console for.
+            case ShellMessageType.Cancel or ShellMessageType.Close when _opening.TryGetValue(key, out var waiting):
+                _logger.LogInformation("{Peer} gave up on console {Console} before it opened", session.PeerName, id);
+                Interlocked.Increment(ref _givenUpOn);
+                waiting.Cancel();
+                break;
         }
 
         return ValueTask.CompletedTask;
@@ -236,12 +299,36 @@ public sealed class ShellService : IAsyncDisposable
     /// device: a yes lasts until this app restarts, so managing a device does not mean answering a dialog per
     /// command, and a no is remembered for nothing.
     ///
-    /// An administrator console is asked about every single time and never remembered, and needs a setting of its
-    /// own as well. It is a different thing to agree to: an ordinary console can do what the person at this device
-    /// can do, and that one can do anything to it. Windows asks its own question too — the helper that runs it
-    /// cannot start without the prompt — so agreeing here is agreeing twice, which is the right number of times.
+    /// An administrator console needs a setting of its own and a yes of its own. It is a different thing to agree
+    /// to: an ordinary console can do what the person at this device can do, and that one can do anything to it.
+    /// But it is asked the same once, and so is Windows — the helper that runs these is started once per run of
+    /// this app and kept. A question asked again for an answer that has not changed is not extra safety; it is a
+    /// dialog on a device that is usually on a shelf in another room, and the way out of it that people actually
+    /// find is to turn the whole thing on permanently or to stop locking the device at all.
+    ///
+    /// While somebody is being asked, the device that asked is told so (<see cref="ShellMessageType.Asking"/>).
+    /// Waiting for a person and waiting for nothing look identical from the other end, and a script that cannot
+    /// tell them apart spends the night calling a device broken.
+    ///
+    /// And the asking can outlive the asker, so it is watched: a device that gives up on a console before it opens
+    /// gets no console, whatever the answer turns out to be.
     /// </summary>
     private async Task OpenHereAsync(PeerSession session, uint id, bool elevated)
+    {
+        var waiting = (session.PeerId, id);
+        using var gaveUp = new CancellationTokenSource();
+        _opening[waiting] = gaveUp;
+        try
+        {
+            await OpenHereAsync(session, id, elevated, gaveUp.Token).ConfigureAwait(false);
+        }
+        finally
+        {
+            _opening.TryRemove(waiting, out _);
+        }
+    }
+
+    private async Task OpenHereAsync(PeerSession session, uint id, bool elevated, CancellationToken gaveUp)
     {
         if (!_node.Settings.Shell.AllowCommands)
         {
@@ -255,7 +342,8 @@ public sealed class ShellService : IAsyncDisposable
             return;
         }
 
-        if (elevated || !_allowed.ContainsKey(session.PeerId))
+        var agreedBefore = elevated ? _allowedElevated : _allowed;
+        if (!agreedBefore.ContainsKey(session.PeerId))
         {
             if (Confirm is not { } ask)
             {
@@ -263,13 +351,22 @@ public sealed class ShellService : IAsyncDisposable
                 return;
             }
 
+            Asking(
+                session,
+                id,
+                elevated
+                    ? $"{session.PeerName}: на устройстве спрашивают разрешение на команды с правами администратора — ждём ответа человека за ним"
+                    : $"{session.PeerName}: на устройстве спрашивают разрешение на выполнение команд — ждём ответа человека за ним");
+
             var agreed = elevated
                 ? await ask(
                     "Команды с правами администратора",
                     $"{session.PeerName} хочет выполнять здесь команды с правами администратора.\n\n"
                     + "Это больше, чем обычная консоль: с такими правами можно изменить в этой системе всё что угодно, "
-                    + "включая службы, драйверы и защиту. Windows спросит отдельно, при запуске помощника.\n\n"
-                    + "Разрешение действует только на эту консоль и не запоминается.\n\nРазрешить?").ConfigureAwait(false)
+                    + "включая службы, драйверы и защиту.\n\n"
+                    + "Windows спросит отдельно, один раз — помощник с правами администратора после этого работает до "
+                    + "перезапуска приложения, и это устройство сможет открывать такие консоли без новых вопросов.\n\n"
+                    + "Разрешить?").ConfigureAwait(false)
                 : await ask(
                     "Выполнение команд",
                     $"{session.PeerName} хочет выполнять команды на этом устройстве.\n\n"
@@ -282,15 +379,26 @@ public sealed class ShellService : IAsyncDisposable
                 return;
             }
 
-            if (!elevated)
-            {
-                _allowed[session.PeerId] = 1;
-            }
+            agreedBefore[session.PeerId] = 1;
         }
 
-        IHostedShell? shell = elevated
-            ? await Elevated.ElevatedShell.TryStartAsync(_logger, CancellationToken.None).ConfigureAwait(false)
+        // The answer arrived; whoever wanted it may not have. Nothing is started for a device that has stopped
+        // waiting — a shell started for nobody is a PowerShell sitting on this device until the session closes,
+        // and for an administrator console it would be a UAC prompt for a command that no longer exists.
+        if (GaveUp(session, id, gaveUp))
+        {
+            return;
+        }
+
+        var shell = elevated
+            ? await ElevatedShellAsync(session, id).ConfigureAwait(false)
             : RemoteShell.TryStart(_logger);
+        if (shell is not null && GaveUp(session, id, gaveUp))
+        {
+            shell.Dispose();
+            return;
+        }
+
         if (shell is null)
         {
             await RefuseAsync(
@@ -313,6 +421,16 @@ public sealed class ShellService : IAsyncDisposable
 
         _hosted[(session.PeerId, id)] = shell;
 
+        // Asked once more, now that this is the thing holding the console. Before this line a give-up stopped the
+        // shell being started; after it, a give-up arrives as an ordinary close and closes it. In between — the
+        // moment between starting a shell and putting it where closing can find it — nothing owned it, and a
+        // give-up landing exactly there would have left it running with nobody waiting on it.
+        if (GaveUp(session, id, gaveUp) && _hosted.TryRemove((session.PeerId, id), out var unwanted))
+        {
+            unwanted.Dispose();
+            return;
+        }
+
         // Once the shell has settled its own first command, so that the far side is told the directory it is
         // really in rather than an empty one.
         try
@@ -327,6 +445,92 @@ public sealed class ShellService : IAsyncDisposable
         Send(session, ShellCodec.Encode(ShellMessageType.Opened, id, shell.Directory));
         _logger.LogInformation("{Peer} opened console {Console} here", session.PeerName, id);
         Told(session, "Консоль открыта", $"{session.PeerName} выполняет команды на этом устройстве.");
+    }
+
+    /// <summary>
+    /// An administrator console, out of the one helper this run of the app has. The first one starts it, which is
+    /// where the Windows prompt happens — and where the device that asked is told to expect a wait. After that
+    /// there is nothing left to prompt about: the program Windows agreed to is still running, and a console is a
+    /// shell inside it.
+    ///
+    /// A helper that has gone — ended, killed, fell over — is replaced, prompt and all. That is not a hole in
+    /// one-prompt-per-run: nothing of an agreement about a program outlives the program.
+    /// </summary>
+    private async Task<IHostedShell?> ElevatedShellAsync(PeerSession session, uint id)
+    {
+        if (_disposed != 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            await _helperGate.WaitAsync().ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            return null;
+        }
+
+        try
+        {
+            if (_helper is { IsAlive: false } gone)
+            {
+                _logger.LogInformation("The elevated helper is no longer running; the next administrator console needs the prompt again");
+                gone.Dispose();
+                _helper = null;
+            }
+
+            if (_helper is null)
+            {
+                Asking(
+                    session,
+                    id,
+                    $"{session.PeerName}: Windows спрашивает на устройстве про права администратора — ждём ответа человека за ним");
+                _helper = await StartElevatedHost(CancellationToken.None).ConfigureAwait(false);
+                if (_helper is not null)
+                {
+                    Told(
+                        session,
+                        "Права администратора",
+                        "Помощник с правами администратора запущен — он работает до перезапуска приложения.");
+                }
+            }
+
+            return _helper?.Open();
+        }
+        finally
+        {
+            try
+            {
+                _helperGate.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+    }
+
+    /// <summary>True when the device that asked for this console has stopped waiting for it.</summary>
+    private bool GaveUp(PeerSession session, uint id, CancellationToken gaveUp)
+    {
+        if (!gaveUp.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        _logger.LogInformation("Nothing opened for {Peer}: console {Console} was given up on while being asked about", session.PeerName, id);
+        return true;
+    }
+
+    /// <summary>
+    /// Tells the device that asked that somebody here is being asked, and what. A notice and not an answer: the
+    /// console is still coming, and what follows is an opening or a refusal whenever that person gets to it.
+    /// </summary>
+    private void Asking(PeerSession session, uint id, string what)
+    {
+        _logger.LogInformation("Keeping {Peer} waiting on console {Console}: {What}", session.PeerName, id, what);
+        Send(session, ShellCodec.Encode(ShellMessageType.Asking, id, what));
     }
 
     private async Task RefuseAsync(PeerSession session, uint id, string reason)
@@ -380,6 +584,11 @@ public sealed class ShellService : IAsyncDisposable
         }
 
         _mine.Clear();
+
+        // And the administrator rights go with the app, which is what "until the app restarts" means.
+        _helper?.Dispose();
+        _helper = null;
+        _helperGate.Dispose();
         await ValueTask.CompletedTask;
     }
 }

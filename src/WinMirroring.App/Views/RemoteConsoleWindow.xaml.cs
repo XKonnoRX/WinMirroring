@@ -37,6 +37,7 @@ public partial class RemoteConsoleWindow : Window
         // Everything the console raises arrives on the session's receive loop; the window belongs to its own thread.
         _console.Opened += directory => Dispatcher.BeginInvoke(() => OnOpened(directory));
         _console.Refused += reason => Dispatcher.BeginInvoke(() => OnRefused(reason));
+        _console.Asking += question => Dispatcher.BeginInvoke(() => OnAsking(question));
         _console.Output += (stream, text) => Dispatcher.BeginInvoke(() => OnOutput(stream, text));
         _console.Done += (code, directory) => Dispatcher.BeginInvoke(() => OnDone(code, directory));
         _console.Finished += () => Dispatcher.BeginInvoke(OnFinished);
@@ -51,6 +52,17 @@ public partial class RemoteConsoleWindow : Window
         Say($"Готово. Команды выполняются от имени пользователя на {_console.PeerName}.");
         Say("Это не терминал: интерактивные программы и те, что рисуют свой экран, здесь работать не будут.");
         CommandText.Focus();
+    }
+
+    /// <summary>
+    /// Somebody at the device is being asked. Shown rather than left as an unexplained wait: "Запрашиваю
+    /// разрешение…" says who is being waited for, a window that sits there saying it for ten minutes looks
+    /// broken, and the person watching may be the one who has to go and tap the dialog.
+    /// </summary>
+    private void OnAsking(string question)
+    {
+        StateText.Text = "Ждём человека за устройством";
+        Say($"{question}.");
     }
 
     private void OnRefused(string reason)

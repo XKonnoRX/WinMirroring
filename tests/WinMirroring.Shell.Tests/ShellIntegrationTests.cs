@@ -1,3 +1,4 @@
+using System.IO.Pipes;
 using System.Net;
 using System.Net.Sockets;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -5,6 +6,7 @@ using WinMirroring.Core;
 using WinMirroring.Core.Identity;
 using WinMirroring.Core.Network;
 using WinMirroring.Core.Pairing;
+using WinMirroring.Core.Transport;
 using WinMirroring.Shell.Protocol;
 
 namespace WinMirroring.Shell.Tests;
@@ -331,12 +333,11 @@ public sealed class ShellIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// And it is asked about every time, with nothing remembered — unlike an ordinary console, where a yes lasts
-    /// until the app restarts. Administrator rights are not something to agree to once and then not be told
-    /// about again.
+    /// A no is remembered for nothing: the next administrator console asks again. Only a yes is remembered, and
+    /// only for as long as the app runs.
     /// </summary>
     [Fact]
-    public async Task AnElevatedConsoleIsAskedAboutEveryTime()
+    public async Task AnElevatedConsoleRefusedByTheUserIsAskedAboutAgain()
     {
         var ct = TestContext.Current.CancellationToken;
         var (a, b, shellA, shellB) = await ConnectAsync(allowThere: true, agreeThere: false, ct, allowElevatedThere: true);
@@ -351,6 +352,283 @@ public sealed class ShellIntegrationTests : IAsyncLifetime
         }
 
         Assert.False(shellB.HasConsolesHere);
+    }
+
+    /// <summary>
+    /// And a yes is asked for once per run of the app — the dialog here and, with it, Windows's own prompt, since
+    /// the helper that prompt is about is started once and kept. Both questions are shown on the device being
+    /// managed, which is usually not the device of the person managing it: one script that opened three
+    /// administrator consoles used to mean six things to tap on a tablet in another room.
+    ///
+    /// The helper is faked here because a test cannot answer a UAC prompt. What it holds is the counting: one
+    /// dialog, one helper started, and a console out of that same helper every time afterwards.
+    /// </summary>
+    [Fact]
+    public async Task AnElevatedConsoleIsAgreedToOncePerRunOfTheApp()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, shellB) = await ConnectAsync(allowThere: true, agreeThere: true, ct, allowElevatedThere: true);
+
+        var helpers = 0;
+        var helper = new OneHelper();
+        shellB.StartElevatedHost = _ =>
+        {
+            Interlocked.Increment(ref helpers);
+            return Task.FromResult<WinMirroring.Shell.Elevated.IElevatedHost?>(helper);
+        };
+
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            var console = shellA.Open(b.Identity.Id, elevated: true)!;
+            var run = Watch(console);
+            await run.Opened.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+            console.Close();
+            await WaitUntilAsync(() => !shellB.HasConsolesHere, ct, $"console {attempt} is closed over there");
+        }
+
+        Assert.Equal(1, Volatile.Read(ref _asked));
+        Assert.Equal(1, Volatile.Read(ref helpers));
+        Assert.Equal(3, helper.Consoles);
+    }
+
+    /// <summary>
+    /// While somebody at the device is being asked, whoever asked is told so — and goes on waiting, because that
+    /// is the right thing to do and the one thing it could not know. A night of this is what prompted it: a tool
+    /// waiting on a dialog on a tablet in another room looks exactly like a tool waiting on a broken device, and
+    /// what gets blamed is the connection.
+    /// </summary>
+    [Fact]
+    public async Task AToolIsToldThatSomebodyIsBeingAskedAndGoesOnWaiting()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (a, b, shellA, _) = await ConnectAsync(allowThere: true, agreeThere: true, ct, dialogThere: answer.Task);
+
+        var pipe = $"WinMirroring-tests-{Guid.NewGuid():N}";
+        await using var server = new Local.LocalShellServer(a, shellA, NullLogger<Local.LocalShellServer>.Instance, pipe);
+        server.Start();
+
+        var told = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lines = new List<string>();
+        var reasons = new List<string>();
+        await using var tool = await ConnectToolAsync(pipe, ct);
+        var running = tool.RunAsync(
+            b.Identity.Id,
+            "Write-Output 'после ответа'",
+            (_, text) => Collect(lines, text),
+            reasons.Add,
+            ct,
+            false,
+            question => told.TrySetResult(question));
+
+        var asked = await told.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+        Assert.Contains("спрашивают", asked, StringComparison.Ordinal);
+        Assert.False(running.IsCompleted);
+        Assert.Empty(reasons);
+
+        answer.TrySetResult(true);
+        Assert.Equal(0, await running.WaitAsync(TimeSpan.FromSeconds(30), ct));
+        Assert.Contains(lines, line => line.Contains("после ответа", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A console given up on while the question is still on somebody's screen is not opened when the answer
+    /// finally comes. It used to be: the tool was killed, the dialog was answered an hour later, and a PowerShell
+    /// started on the device for a command that no longer existed and sat there until the session closed.
+    /// </summary>
+    [Fact]
+    public async Task AConsoleGivenUpOnWhileBeingAskedAboutIsNeverOpened()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (a, b, shellA, shellB) = await ConnectAsync(allowThere: true, agreeThere: true, ct, dialogThere: answer.Task);
+
+        var abandoned = shellA.Open(b.Identity.Id)!;
+        await WaitUntilAsync(() => Volatile.Read(ref _asked) == 1, ct, "the device is asking about the console");
+        abandoned.Close();
+
+        // The question is still on the screen over there, and the device now knows nobody is waiting for the
+        // answer. Waited for rather than assumed: the whole point is what the device does with an answer that
+        // arrives after that.
+        await WaitUntilAsync(() => shellB.GivenUpOnHere == 1, ct, "the device knows the asker is gone");
+        answer.TrySetResult(true);
+
+        // A second console, agreed to without asking again, is the only one that opens.
+        var console = shellA.Open(b.Identity.Id)!;
+        var run = Watch(console);
+        await run.Opened.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+
+        Assert.Equal(1, Volatile.Read(ref _asked));
+        Assert.Equal(1, shellB.ConsolesHere);
+    }
+
+    /// <summary>
+    /// A console closed from the side that opened it is closed on the device as well. It was not, and for a long
+    /// time: the message that says so is sent in both directions, and the device took it for an answer to a
+    /// console of its own, found none and dropped it — so every console ever closed from the other end left its
+    /// PowerShell running on the managed device until the session itself ended. Days, on a tablet that stays on.
+    /// </summary>
+    [Fact]
+    public async Task AConsoleClosedByTheAskerIsClosedOnTheDeviceToo()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, shellB) = await ConnectAsync(allowThere: true, agreeThere: true, ct);
+
+        var console = shellA.Open(b.Identity.Id)!;
+        var run = Watch(console);
+        await run.Opened.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+        Assert.Equal(1, shellB.ConsolesHere);
+
+        console.Close();
+
+        await WaitUntilAsync(() => shellB.ConsolesHere == 0, ct, "the console is closed on the device too");
+    }
+
+    /// <summary>
+    /// Tools killed while a device is still asking somebody give their instance of the pipe back. There are only
+    /// so many instances of one named pipe, and when they are all taken no new one can be created at all — so a
+    /// handful of tools killed mid-wait used to leave the whole local console dead for everything until those
+    /// dialogs were answered. More tools here than the pipe has instances, every one of them killed mid-wait, and
+    /// then one that has to work.
+    /// </summary>
+    [Fact]
+    public async Task ToolsKilledWhileWaitingGiveTheirPipeInstanceBack()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (a, b, shellA, _) = await ConnectAsync(allowThere: true, agreeThere: true, ct, dialogThere: answer.Task);
+
+        var pipe = $"WinMirroring-tests-{Guid.NewGuid():N}";
+        await using var server = new Local.LocalShellServer(a, shellA, NullLogger<Local.LocalShellServer>.Instance, pipe);
+        server.Start();
+
+        var killed = new List<Task<int>>();
+        for (var attempt = 1; attempt <= 12; attempt++)
+        {
+            var tool = await ConnectToolAsync(pipe, ct);
+            killed.Add(tool.RunAsync(b.Identity.Id, "Write-Output 'не дождётся'", (_, _) => { }, _ => { }, ct));
+            await WaitUntilAsync(() => Volatile.Read(ref _asked) >= attempt, ct, $"the device is asked for tool {attempt}");
+            await tool.DisposeAsync();
+        }
+
+        foreach (var abandoned in killed)
+        {
+            try
+            {
+                await abandoned.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            }
+            catch (Exception)
+            {
+                // Killed on purpose; what became of each is not the point.
+            }
+        }
+
+        answer.TrySetResult(true);
+
+        var lines = new List<string>();
+        var reasons = new List<string>();
+        await using var last = await ConnectToolAsync(pipe, ct);
+        var code = await last.RunAsync(b.Identity.Id, "Write-Output 'канал жив'", (_, text) => Collect(lines, text), reasons.Add, ct);
+
+        Assert.Equal(0, code);
+        Assert.Contains(lines, line => line.Contains("канал жив", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A tool that connects and never says what it wants is let go of. Anything after that may take as long as it
+    /// takes — a command can run for an hour, a person can be asked for a day — but a connection that has not
+    /// even asked for anything is waiting for nothing, and it was holding one of the pipe's few instances while
+    /// it did.
+    /// </summary>
+    [Fact]
+    public async Task AToolThatNeverSaysWhatToRunIsLetGoOf()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, _, shellA, _) = await ConnectAsync(allowThere: true, agreeThere: true, ct);
+
+        var pipe = $"WinMirroring-tests-{Guid.NewGuid():N}";
+        await using var server = new Local.LocalShellServer(
+            a,
+            shellA,
+            NullLogger<Local.LocalShellServer>.Instance,
+            pipe,
+            TimeSpan.FromMilliseconds(300));
+        server.Start();
+
+        await using var silent = new NamedPipeClientStream(".", pipe, PipeDirection.InOut, PipeOptions.Asynchronous);
+        for (var attempt = 0; attempt < 40 && !silent.IsConnected; attempt++)
+        {
+            try
+            {
+                await silent.ConnectAsync(100, ct);
+            }
+            catch (TimeoutException)
+            {
+            }
+        }
+
+        Assert.True(silent.IsConnected, "the local command pipe never answered");
+
+        // A reason and then a code, as every ending on this pipe is.
+        var reader = new FrameCodec.Reader();
+        var refusal = await reader.ReadAsync(silent, ct).AsTask().WaitAsync(TimeSpan.FromSeconds(10), ct);
+        Assert.NotNull(refusal);
+        Assert.True(ShellCodec.TryReadHeader(refusal.Value.Payload, out var type, out _));
+        Assert.Equal(ShellMessageType.Refused, type);
+        Assert.True(ShellCodec.TryDecodeText(refusal.Value.Payload, out var reason));
+        Assert.Contains("не сказал", reason, StringComparison.Ordinal);
+
+        var ending = await reader.ReadAsync(silent, ct).AsTask().WaitAsync(TimeSpan.FromSeconds(10), ct);
+        Assert.NotNull(ending);
+        Assert.True(ShellCodec.TryDecodeDone(ending.Value.Payload, out var code, out _));
+        Assert.Equal(ShellExit.CouldNotReach, code);
+    }
+
+    /// <summary>
+    /// An elevated helper with no prompt in front of it. What it is here for is the counting: how many times one
+    /// was started, and how many consoles came out of the one that was.
+    /// </summary>
+    private sealed class OneHelper : WinMirroring.Shell.Elevated.IElevatedHost
+    {
+        private int _consoles;
+        private int _disposed;
+
+        public int Consoles => Volatile.Read(ref _consoles);
+
+        public bool IsAlive => Volatile.Read(ref _disposed) == 0;
+
+        public IHostedShell? Open()
+        {
+            Interlocked.Increment(ref _consoles);
+            return new PretendShell();
+        }
+
+        public void Dispose() => Volatile.Write(ref _disposed, 1);
+    }
+
+    /// <summary>A console that answers, so that what is being counted is the asking and not PowerShell.</summary>
+    private sealed class PretendShell : IHostedShell
+    {
+        public event Action<ShellStreamKind, string>? Output;
+
+        public event Action<int, string>? Done;
+
+        public event Action? Ended;
+
+        public Task Ready => Task.CompletedTask;
+
+        public string Directory => @"C:\Windows\System32";
+
+        public bool Run(string command)
+        {
+            Output?.Invoke(ShellStreamKind.Output, command);
+            Done?.Invoke(0, Directory);
+            return true;
+        }
+
+        public void Cancel() => Ended?.Invoke();
+
+        public void Dispose() => Ended?.Invoke();
     }
 
     /// <summary>Everything one console says, collected; the waits are off the receive loop on purpose.</summary>
@@ -385,11 +663,16 @@ public sealed class ShellIntegrationTests : IAsyncLifetime
     /// <summary>How many times the device has asked whoever is sitting at it. Only B is ever asked here.</summary>
     private int _asked;
 
+    /// <summary>
+    /// <paramref name="dialogThere"/> stands in for the dialog on B: a task that does not finish is a question
+    /// still on somebody's screen, which is the state most of the awkward things here happen in.
+    /// </summary>
     private async Task<(MirroringNode A, MirroringNode B, ShellService ShellA, ShellService ShellB)> ConnectAsync(
         bool allowThere,
         bool agreeThere,
         CancellationToken ct,
-        bool allowElevatedThere = false)
+        bool allowElevatedThere = false,
+        Task<bool>? dialogThere = null)
     {
         var discoveryA = FreeUdpPort();
         var discoveryB = FreeUdpPort();
@@ -401,7 +684,7 @@ public sealed class ShellIntegrationTests : IAsyncLifetime
         await b.StartAsync();
 
         var shellA = CreateShell(a, agree: false);
-        var shellB = CreateShell(b, agree: agreeThere);
+        var shellB = CreateShell(b, agree: agreeThere, dialog: dialogThere);
 
         await WaitUntilAsync(() => b.Peers.TryGet(a.Identity.Id, out var peer) && peer.TransportEndPoint is not null, ct, "B sees A's address");
         Assert.True(await b.PairAsync(a.Identity.Id, ct));
@@ -415,13 +698,13 @@ public sealed class ShellIntegrationTests : IAsyncLifetime
         return (a, b, shellA, shellB);
     }
 
-    private ShellService CreateShell(MirroringNode node, bool agree)
+    private ShellService CreateShell(MirroringNode node, bool agree, Task<bool>? dialog = null)
     {
         var service = new ShellService(node, NullLogger<ShellService>.Instance);
         service.Confirm = (_, _) =>
         {
             Interlocked.Increment(ref _asked);
-            return Task.FromResult(agree);
+            return dialog ?? Task.FromResult(agree);
         };
         service.Start();
         _services.Add(service);

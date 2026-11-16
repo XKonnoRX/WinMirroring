@@ -24,28 +24,50 @@ namespace WinMirroring.Shell.Local;
 /// </summary>
 public sealed class LocalShellServer : IAsyncDisposable
 {
-    /// <summary>Enough for a few tools at once and no more; each is one command being run somewhere.</summary>
-    private const int AtOnce = 4;
+    /// <summary>
+    /// Enough for a few tools at once and no more; each is one command being run somewhere. The number matters
+    /// more than it looks: these are instances of one named pipe, and when they are all taken no new one can be
+    /// created at all, so every tool still holding one is holding the whole local console shut.
+    /// </summary>
+    private const int AtOnce = 8;
+
+    /// <summary>
+    /// How long a tool that has connected has to say what it wants run. A connection that never says is not
+    /// waiting for anything — it is a tool that died between connecting and asking, or something that opened the
+    /// pipe and went away — and until this it sat here holding its instance of the pipe for ever.
+    /// </summary>
+    private static readonly TimeSpan SaysWhatToRun = TimeSpan.FromSeconds(30);
+
+    /// <summary>How long before trying to listen again, when the pipe could not be opened.</summary>
+    private static readonly TimeSpan ListenAgainAfter = TimeSpan.FromSeconds(5);
 
     private readonly MirroringNode _node;
     private readonly ShellService _shell;
     private readonly ILogger<LocalShellServer> _logger;
     private readonly CancellationTokenSource _stopping = new();
     private readonly string _pipeName;
+    private readonly TimeSpan _saysWhatToRun;
     private Task? _accepting;
     private int _disposed;
 
     /// <summary>
     /// <paramref name="pipeName"/> is for tests, which must not put a second server on the name the app uses: a
     /// client would then reach whichever of the two was free, and on this machine one of them is the real app
-    /// with the real devices behind it.
+    /// with the real devices behind it. <paramref name="saysWhatToRun"/> is for tests too: no test should sit out
+    /// half a minute to watch a silent connection be let go of.
     /// </summary>
-    public LocalShellServer(MirroringNode node, ShellService shell, ILogger<LocalShellServer> logger, string? pipeName = null)
+    public LocalShellServer(
+        MirroringNode node,
+        ShellService shell,
+        ILogger<LocalShellServer> logger,
+        string? pipeName = null,
+        TimeSpan? saysWhatToRun = null)
     {
         _node = node;
         _shell = shell;
         _logger = logger;
         _pipeName = pipeName ?? LocalShellPipe.Name;
+        _saysWhatToRun = saysWhatToRun ?? SaysWhatToRun;
     }
 
     public void Start()
@@ -56,6 +78,8 @@ public sealed class LocalShellServer : IAsyncDisposable
 
     private async Task AcceptLoopAsync(CancellationToken ct)
     {
+        var failed = 0;
+        string? alreadySaid = null;
         while (!ct.IsCancellationRequested)
         {
             NamedPipeServerStream? pipe = null;
@@ -80,12 +104,38 @@ public sealed class LocalShellServer : IAsyncDisposable
                     await pipe.DisposeAsync().ConfigureAwait(false);
                 }
 
-                _logger.LogWarning(ex, "The local command pipe could not be opened");
-                await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
+                // Once, with the trace, and then counted in silence. This loop tries again every few seconds for
+                // as long as the reason lasts, and the reason can last all night: with every instance of the pipe
+                // taken, creating another throws, and a full stack trace every five seconds turned one app's log
+                // from 315 KB into 3.5 MB by morning — 3772 copies of one thing already said. The next line worth
+                // writing is the one that says it is listening again.
+                if (!string.Equals(alreadySaid, ex.Message, StringComparison.Ordinal))
+                {
+                    alreadySaid = ex.Message;
+                    failed = 1;
+                    _logger.LogWarning(ex, "The local command pipe could not be opened; trying again every {Seconds:F0}s and not saying so again", ListenAgainAfter.TotalSeconds);
+                }
+                else
+                {
+                    failed++;
+                }
+
+                await Task.Delay(ListenAgainAfter, ct).ConfigureAwait(false);
                 continue;
             }
 
+            if (failed > 0)
+            {
+                _logger.LogInformation("The local command pipe is listening again, after {Attempts} attempts that could not open it", failed);
+                failed = 0;
+                alreadySaid = null;
+            }
+
             var connected = pipe;
+
+            // Not started with the token: a task that is cancelled before it begins never runs its own finally,
+            // and that finally is what gives this instance of the pipe back. The work inside stops on the token
+            // anyway.
             _ = Task.Run(
                 async () =>
                 {
@@ -102,7 +152,7 @@ public sealed class LocalShellServer : IAsyncDisposable
                         await connected.DisposeAsync().ConfigureAwait(false);
                     }
                 },
-                ct);
+                CancellationToken.None);
         }
     }
 
@@ -122,23 +172,51 @@ public sealed class LocalShellServer : IAsyncDisposable
         var writing = Task.Run(() => WriteLoopAsync(pipe, outbound.Reader, connection.Token), CancellationToken.None);
         void Send(byte[] message) => outbound.Writer.TryWrite(message);
 
+        Task? watching = null;
         try
         {
-            // Every ending is a reason and then a code, including these two: the reason is what a person reads and
-            // the code is what a script reads, and leaving either out makes one of the two guess.
-            if (await TargetAsync(reader, pipe, connection.Token).ConfigureAwait(false) is not ({ } target, var elevated))
+            string target;
+            bool elevated;
+            string command;
+
+            // Saying what to run has a deadline of its own. Everything after it may take as long as it takes —
+            // a command can run for an hour and somebody's confirmation dialog can wait for a day — but a tool
+            // that has not even said what it wants is waiting for nothing at all.
+            using (var opening = CancellationTokenSource.CreateLinkedTokenSource(connection.Token))
             {
-                Send(ShellCodec.Encode(ShellMessageType.Refused, 0, "первым сообщением должно быть имя устройства."));
-                Send(ShellCodec.EncodeDone(0, ShellExit.CouldNotReach, string.Empty));
-                return;
+                opening.CancelAfter(_saysWhatToRun);
+                try
+                {
+                    // Every ending is a reason and then a code, including these: the reason is what a person reads
+                    // and the code is what a script reads, and leaving either out makes one of the two guess.
+                    if (await TargetAsync(reader, pipe, opening.Token).ConfigureAwait(false) is not ({ } device, var asAdministrator))
+                    {
+                        Send(ShellCodec.Encode(ShellMessageType.Refused, 0, "первым сообщением должно быть имя устройства."));
+                        Send(ShellCodec.EncodeDone(0, ShellExit.CouldNotReach, string.Empty));
+                        return;
+                    }
+
+                    if (await CommandAsync(reader, pipe, opening.Token).ConfigureAwait(false) is not { } line)
+                    {
+                        Send(ShellCodec.Encode(ShellMessageType.Refused, 0, "команда не пришла целиком."));
+                        Send(ShellCodec.EncodeDone(0, ShellExit.CouldNotReach, string.Empty));
+                        return;
+                    }
+
+                    (target, elevated, command) = (device, asAdministrator, line);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    _logger.LogInformation("A tool on this machine connected and never said what to run");
+                    Send(ShellCodec.Encode(ShellMessageType.Refused, 0, "инструмент подключился и не сказал, что запускать."));
+                    Send(ShellCodec.EncodeDone(0, ShellExit.CouldNotReach, string.Empty));
+                    return;
+                }
             }
 
-            if (await CommandAsync(reader, pipe, connection.Token).ConfigureAwait(false) is not { } command)
-            {
-                Send(ShellCodec.Encode(ShellMessageType.Refused, 0, "команда не пришла целиком."));
-                Send(ShellCodec.EncodeDone(0, ShellExit.CouldNotReach, string.Empty));
-                return;
-            }
+            // From here nothing else is read from this pipe, so nothing would notice the tool going away — see
+            // what this watches for and why it has to.
+            watching = Task.Run(() => NoticeTheToolLeavingAsync(reader, pipe, connection), CancellationToken.None);
 
             _logger.LogInformation(
                 "A tool on this machine runs something on {Device}{Elevated}",
@@ -152,6 +230,9 @@ public sealed class LocalShellServer : IAsyncDisposable
                 command,
                 (stream, text) => Send(ShellCodec.EncodeOutput(0, stream, text)),
                 reason => Send(ShellCodec.Encode(ShellMessageType.Refused, 0, reason)),
+                // Passed on rather than swallowed: the tool is the one with somebody watching it, and whether a
+                // wait is a person being asked or a device gone quiet is the whole of what it needs to know.
+                question => Send(ShellCodec.Encode(ShellMessageType.Asking, 0, question)),
                 RemoteCommand.DefaultWait,
                 elevated,
                 connection.Token).ConfigureAwait(false);
@@ -171,6 +252,58 @@ public sealed class LocalShellServer : IAsyncDisposable
             }
 
             await connection.CancelAsync().ConfigureAwait(false);
+
+            // Awaited rather than abandoned: it holds a read on this pipe, and the pipe is disposed the moment
+            // this returns. Not awaited for ever, though — this whole method exists to make sure the instance of
+            // the pipe goes back, and waiting indefinitely here to tidy up would be the same bug again. A read
+            // left pending is ended by the pipe being disposed.
+            if (watching is not null)
+            {
+                try
+                {
+                    await watching.WaitAsync(TimeSpan.FromSeconds(2), CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Notices the tool going away while its command is still being waited for, and ends the connection when it
+    /// does.
+    ///
+    /// Nothing is read from this pipe between the command arriving and the answer going back, and a pipe nobody
+    /// is reading says nothing at all about the other end: a tool killed while waiting left this holding its
+    /// instance of the pipe, and the waiting outlived it. There are only so many instances of one named pipe, and
+    /// when they are all taken no new one can be created — so a handful of tools killed while waiting on
+    /// confirmation dialogs was the whole local console dead, for everything, until those dialogs were answered.
+    /// A night of exactly that is how this was found.
+    /// </summary>
+    private static async Task NoticeTheToolLeavingAsync(FrameCodec.Reader reader, Stream pipe, CancellationTokenSource connection)
+    {
+        try
+        {
+            // Nothing is expected to arrive now; what is being watched for is the read ending, which is what a
+            // tool that is no longer there looks like from this end.
+            while (await reader.ReadAsync(pipe, connection.Token).ConfigureAwait(false) is not null)
+            {
+            }
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidDataException or OperationCanceledException)
+        {
+        }
+
+        try
+        {
+            if (!connection.IsCancellationRequested)
+            {
+                await connection.CancelAsync().ConfigureAwait(false);
+            }
+        }
+        catch (ObjectDisposedException)
+        {
         }
     }
 

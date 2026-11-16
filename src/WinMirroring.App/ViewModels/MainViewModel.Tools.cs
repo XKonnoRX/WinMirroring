@@ -43,8 +43,9 @@ public sealed partial class MainViewModel
     /// <summary>
     /// Whether a paired device may ask for a console with administrator rights here. Its own switch, and off until
     /// it is turned on, because this one really is new power: an ordinary console can do what the person sitting
-    /// here can do, and this one can do anything to the machine. Every such console is confirmed here, each time,
-    /// and Windows asks as well when the helper that runs it starts.
+    /// here can do, and this one can do anything to the machine. It is confirmed here, and Windows asks as well
+    /// when the helper that runs it starts — each of those once per run of the app, since the helper then keeps
+    /// running and the prompt was a question about that program.
     /// </summary>
     [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
     public partial bool AllowElevatedRemoteCommands { get; set; }
@@ -59,7 +60,7 @@ public sealed partial class MainViewModel
         _node.Settings.Shell.AllowElevatedCommands = value;
         _node.SaveSettings();
         Say(value
-            ? "Другие устройства могут просить здесь консоль администратора — каждую вы подтвердите отдельно, и Windows спросит тоже."
+            ? "Другие устройства могут просить здесь консоль администратора — вы подтвердите это один раз, и Windows спросит один раз, до перезапуска приложения."
             : "Команды с правами администратора с других устройств выключены.");
     }
 
@@ -148,7 +149,7 @@ public sealed partial class MainViewModel
         var window = new Views.RemoteConsoleWindow(console);
         window.Show();
         return Say(elevated
-            ? $"Прошу на {name} консоль администратора — там подтвердят её и ответят на запрос Windows…"
+            ? $"Прошу на {name} консоль администратора — если это здесь впервые за запуск приложения, там подтвердят её и ответят на запрос Windows…"
             : $"Открываю консоль на {name}…");
     }
 

@@ -1,3 +1,4 @@
+﻿using System.Collections.Concurrent;
 using System.IO.Pipes;
 using System.Runtime.Versioning;
 using System.Threading.Channels;
@@ -10,14 +11,22 @@ using WinMirroring.Shell.Protocol;
 namespace WinMirroring.Shell.Elevated;
 
 /// <summary>
-/// The whole body of an administrator console, inside the elevated helper. It connects back to the app over the
-/// pipe it was started with, proves it is the helper and checks that the app is the app, starts a shell, and
-/// carries words in both directions until either side is finished.
+/// The whole body of the administrator consoles, inside the elevated helper. It connects back to the app over the
+/// pipe it was started with, proves it is the helper and checks that the app is the app, and then starts a shell
+/// whenever the app asks for one and carries words in both directions until either side is finished.
 ///
-/// The shell it starts is the ordinary <see cref="RemoteShell"/> — the same marker, the same base64, the same four
-/// places encoding has to be set — because it is running here that makes it elevated and nothing else about it
-/// differs. The messages on the pipe are the console channel's own, for the same reason: the app's job is to pass
-/// them on to whoever asked, and a second shape of message in the middle would be a second thing to keep in step.
+/// It serves consoles rather than a console, and that is what makes one prompt enough for a run of the app: the
+/// program Windows asked about keeps running, and a second console is a second shell inside it rather than a second
+/// program to ask about. Each shell is one <see cref="ShellMessageType.OpenElevated"/> and one id, and every
+/// message afterwards carries that id, so two devices managing this one at the same time never find themselves in
+/// each other's console. Id 0 is not a console but this process: a <see cref="ShellMessageType.Close"/> for it is
+/// the app saying it is finished with administrator rights altogether.
+///
+/// The shells it starts are the ordinary <see cref="RemoteShell"/> вЂ” the same marker, the same base64, the same
+/// four places encoding has to be set вЂ” because it is running here that makes them elevated and nothing else about
+/// them differs. The messages on the pipe are the console channel's own, for the same reason: the app's job is to
+/// pass them on to whoever asked, and a second shape of message in the middle would be a second thing to keep in
+/// step.
 ///
 /// It does nothing else. No network, no files of its own, no UI: it reads commands from one program it has checked,
 /// runs them in a shell, and writes back what they print.
@@ -69,50 +78,38 @@ public static class ElevatedShellHost
         await FrameCodec.WriteAsync(pipe, ChannelId.Shell, token, CancellationToken.None).ConfigureAwait(false);
         await pipe.FlushAsync().ConfigureAwait(false);
 
-        if (RemoteShell.TryStart(NullLogger.Instance) is not { } shell)
-        {
-            await FrameCodec.WriteAsync(pipe, ChannelId.Shell, ShellCodec.Encode(ShellMessageType.Close, 0), CancellationToken.None).ConfigureAwait(false);
-            return 6;
-        }
-
-        // Writes go through a loop of their own: what fills it are the shell's own events, raised on the thread
-        // that reads the shell's output, and anything that waits there stops the shell being read at all.
+        // Writes go through a loop of their own: what fills it are the shells' own events, raised on the threads
+        // that read their output, and anything that waits there stops a shell being read at all.
         var outbound = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
         void Send(byte[] message) => outbound.Writer.TryWrite(message);
-
-        shell.Output += (kind, text) => Send(ShellCodec.EncodeOutput(
-            0,
-            kind == ShellStreamKind.Error ? ShellStream.Error : ShellStream.Output,
-            text));
-        shell.Done += (code, directory) => Send(ShellCodec.EncodeDone(0, code, directory));
-        shell.Ended += () =>
-        {
-            Send(ShellCodec.Encode(ShellMessageType.Close, 0));
-            outbound.Writer.TryComplete();
-        };
-
         var writing = Task.Run(() => WriteLoopAsync(pipe, outbound.Reader));
 
-        try
-        {
-            await shell.Ready.WaitAsync(TimeSpan.FromSeconds(20)).ConfigureAwait(false);
-        }
-        catch (TimeoutException)
-        {
-            // It has started but has not said where it is; opening it anyway beats not opening it at all.
-        }
-
-        Send(ShellCodec.Encode(ShellMessageType.Opened, 0, shell.Directory));
-
-        var arriving = new CommandAssembly();
+        var consoles = new ConcurrentDictionary<uint, Hosted>();
         try
         {
             while (true)
             {
                 if (await reader.ReadAsync(pipe, CancellationToken.None).ConfigureAwait(false) is not { } frame
-                    || !ShellCodec.TryReadHeader(frame.Payload, out var type, out _))
+                    || !ShellCodec.TryReadHeader(frame.Payload, out var type, out var id))
                 {
                     break;
+                }
+
+                // The app is finished with administrator rights for this run; everything goes with it.
+                if (type == ShellMessageType.Close && id == ElevatedShellPipe.HelperItself)
+                {
+                    break;
+                }
+
+                if (type is ShellMessageType.Open or ShellMessageType.OpenElevated)
+                {
+                    Start(id, consoles, Send);
+                    continue;
+                }
+
+                if (!consoles.TryGetValue(id, out var console))
+                {
+                    continue;
                 }
 
                 if (type is ShellMessageType.Run or ShellMessageType.RunPart)
@@ -122,15 +119,15 @@ public static class ElevatedShellHost
                         break;
                     }
 
-                    switch (arriving.Add(type, piece, out var command))
+                    switch (console.Arriving.Add(type, piece, out var command))
                     {
                         case CommandPiece.Whole:
-                            shell.Run(command);
+                            console.Shell.Run(command);
                             break;
 
                         case CommandPiece.TooLong:
-                            Send(ShellCodec.EncodeOutput(0, ShellStream.Error, "Команда слишком длинная."));
-                            Send(ShellCodec.EncodeDone(0, 1, shell.Directory));
+                            Send(ShellCodec.EncodeOutput(id, ShellStream.Error, "РљРѕРјР°РЅРґР° СЃР»РёС€РєРѕРј РґР»РёРЅРЅР°СЏ."));
+                            Send(ShellCodec.EncodeDone(id, 1, console.Shell.Directory));
                             break;
                     }
 
@@ -139,13 +136,14 @@ public static class ElevatedShellHost
 
                 if (type == ShellMessageType.Cancel)
                 {
-                    shell.Cancel();
+                    console.Shell.Cancel();
                     continue;
                 }
 
-                if (type == ShellMessageType.Close)
+                if (type == ShellMessageType.Close && consoles.TryRemove(id, out var closing))
                 {
-                    break;
+                    closing.Shell.Dispose();
+                    Send(ShellCodec.Encode(ShellMessageType.Close, id));
                 }
             }
         }
@@ -153,7 +151,12 @@ public static class ElevatedShellHost
         {
         }
 
-        shell.Dispose();
+        foreach (var console in consoles.Values)
+        {
+            console.Shell.Dispose();
+        }
+
+        consoles.Clear();
         outbound.Writer.TryComplete();
         try
         {
@@ -164,6 +167,61 @@ public static class ElevatedShellHost
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// One more console. Its shell is told to the app only once it has said where it is, and that waiting happens
+    /// off the loop that reads the pipe: a shell being slow to start is no reason for the consoles already open to
+    /// stop being fed.
+    /// </summary>
+    private static void Start(uint id, ConcurrentDictionary<uint, Hosted> consoles, Action<byte[]> send)
+    {
+        if (consoles.ContainsKey(id))
+        {
+            return;
+        }
+
+        if (RemoteShell.TryStart(NullLogger.Instance) is not { } shell)
+        {
+            send(ShellCodec.Encode(ShellMessageType.Close, id));
+            return;
+        }
+
+        shell.Output += (kind, text) => send(ShellCodec.EncodeOutput(
+            id,
+            kind == ShellStreamKind.Error ? ShellStream.Error : ShellStream.Output,
+            text));
+        shell.Done += (code, directory) => send(ShellCodec.EncodeDone(id, code, directory));
+        shell.Ended += () =>
+        {
+            if (consoles.TryRemove(id, out _))
+            {
+                send(ShellCodec.Encode(ShellMessageType.Close, id));
+            }
+        };
+
+        consoles[id] = new Hosted(shell);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await shell.Ready.WaitAsync(TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // It has started but has not said where it is; opening it anyway beats not opening it at all.
+            }
+
+            send(ShellCodec.Encode(ShellMessageType.Opened, id, shell.Directory));
+        });
+    }
+
+    /// <summary>One console here: its shell, and whatever has arrived so far of a command too long for one message.</summary>
+    private sealed class Hosted(RemoteShell shell)
+    {
+        public RemoteShell Shell { get; } = shell;
+
+        public CommandAssembly Arriving { get; } = new();
     }
 
     private static async Task WriteLoopAsync(Stream pipe, ChannelReader<byte[]> outbound)

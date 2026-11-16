@@ -2,8 +2,8 @@ namespace WinMirroring.Shell;
 
 /// <summary>
 /// A console being hosted on this device, as the service that owns it sees one. Two things are: a PowerShell this
-/// app started itself (<see cref="RemoteShell"/>), and one started for it with administrator rights by the helper
-/// (<see cref="Elevated.ElevatedShell"/>).
+/// app started itself (<see cref="RemoteShell"/>), and one started for it with administrator rights inside the
+/// helper (<see cref="Elevated.ElevatedHelper"/>).
 ///
 /// They look the same from here on purpose. The elevated one is the same <see cref="RemoteShell"/>, running inside
 /// the helper, with its words carried back over a pipe — so everything that was learned the hard way about feeding

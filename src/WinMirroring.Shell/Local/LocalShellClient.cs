@@ -47,6 +47,10 @@ public sealed class LocalShellClient : IAsyncDisposable
     /// <summary>
     /// Runs <paramref name="command"/> on <paramref name="target"/> through the app and returns the command's own
     /// exit code — or one of <see cref="ShellExit"/>'s, with <paramref name="failed"/> told why in words.
+    ///
+    /// <paramref name="waiting"/> is told when the device is asking a person something before it answers. Without
+    /// it a wait on somebody's dialog is indistinguishable from a wait on nothing, and the caller has no way to
+    /// know that waiting is exactly the right thing to be doing.
     /// </summary>
     public async Task<int> RunAsync(
         string target,
@@ -54,7 +58,8 @@ public sealed class LocalShellClient : IAsyncDisposable
         Action<ShellStream, string> output,
         Action<string> failed,
         CancellationToken ct = default,
-        bool elevated = false)
+        bool elevated = false,
+        Action<string>? waiting = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(target);
         ArgumentNullException.ThrowIfNull(output);
@@ -76,8 +81,10 @@ public sealed class LocalShellClient : IAsyncDisposable
             {
                 frame = await _reader.ReadAsync(_pipe, ct).ConfigureAwait(false);
             }
-            catch (IOException)
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException)
             {
+                // Including this tool closing the client while the read was pending, which is an ordinary way for
+                // a tool to stop waiting and not a thing to throw out of here.
                 frame = null;
             }
 
@@ -101,6 +108,11 @@ public sealed class LocalShellClient : IAsyncDisposable
                 // exit codes and a script may well be reading them.
                 case ShellMessageType.Refused when ShellCodec.TryDecodeText(message.Payload, out var reason):
                     failed(reason);
+                    break;
+
+                // Not an ending and not an answer: somebody over there is being asked. The waiting goes on.
+                case ShellMessageType.Asking when ShellCodec.TryDecodeText(message.Payload, out var question):
+                    waiting?.Invoke(question);
                     break;
             }
         }

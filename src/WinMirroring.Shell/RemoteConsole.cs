@@ -42,6 +42,13 @@ public sealed class RemoteConsole
     /// <summary>The device said no, and why — already in words to show.</summary>
     public event Action<string>? Refused;
 
+    /// <summary>
+    /// The device is asking a person something before it answers, and this is what — already in words to show.
+    /// Not an ending: the console is still coming, and what follows is <see cref="Opened"/> or
+    /// <see cref="Refused"/> whenever that person gets to it.
+    /// </summary>
+    public event Action<string>? Asking;
+
     public event Action<ShellStream, string>? Output;
 
     /// <summary>A command finished: its exit code and where the console is now.</summary>
@@ -96,6 +103,10 @@ public sealed class RemoteConsole
 
             case ShellMessageType.Refused when ShellCodec.TryDecodeText(message, out var reason):
                 OnClosed(reason);
+                break;
+
+            case ShellMessageType.Asking when ShellCodec.TryDecodeText(message, out var question):
+                Asking?.Invoke(question);
                 break;
 
             case ShellMessageType.Output when ShellCodec.TryDecodeOutput(message, out var stream, out var text):

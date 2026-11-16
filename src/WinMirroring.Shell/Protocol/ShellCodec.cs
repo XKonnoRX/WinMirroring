@@ -41,6 +41,16 @@ public enum ShellMessageType : byte
     /// cannot quietly give an ordinary console to someone who asked for an administrator one.
     /// </summary>
     OpenElevated = 11,
+
+    /// <summary>
+    /// Device → controller: nothing has gone wrong and nothing is stuck — somebody is being asked, and this is
+    /// what they are being asked. Carries words to show as they are.
+    ///
+    /// Waiting and waiting on a question nobody mentioned are the same thing to look at, and the asking happens on
+    /// the far device where whoever is driving cannot see it. A tool that knows it is waiting for a person says so
+    /// and waits; one that does not spends the night deciding the device is broken.
+    /// </summary>
+    Asking = 12,
 }
 
 /// <summary>Which of a command's two streams a piece of output came from.</summary>

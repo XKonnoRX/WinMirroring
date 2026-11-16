@@ -43,7 +43,8 @@ internal static class Exec
                 (stream, text) => Write(stream, text, stdout),
                 Complain,
                 ct,
-                options.Elevated).ConfigureAwait(false);
+                options.Elevated,
+                Waiting).ConfigureAwait(false);
 
             stdout.Flush();
             return code;
@@ -77,6 +78,7 @@ internal static class Exec
                 command,
                 (stream, text) => Write(stream, text, stdout),
                 Complain,
+                Waiting,
                 options.TimeoutSeconds is { } seconds ? TimeSpan.FromSeconds(seconds) : RemoteCommand.DefaultWait,
                 options.Elevated,
                 ct).ConfigureAwait(false);
@@ -124,4 +126,12 @@ internal static class Exec
     }
 
     private static void Complain(string reason) => Console.Error.WriteLine($"wm-cli: {reason}");
+
+    /// <summary>
+    /// The device is asking a person something before it will say yes. Said out loud, on standard error, because
+    /// the alternative is what actually happened: a wait that looks exactly like a broken device, and whoever is
+    /// driving this spending an hour on the connection while a dialog sits on a tablet in another room waiting to
+    /// be tapped. A command is not lost while this is printed — it runs as soon as that person answers.
+    /// </summary>
+    private static void Waiting(string what) => Console.Error.WriteLine($"wm-cli: {what}. Ждём, команда пойдёт сразу после ответа.");
 }

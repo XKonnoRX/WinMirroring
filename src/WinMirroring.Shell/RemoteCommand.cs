@@ -31,6 +31,11 @@ public static class RemoteCommand
     /// <summary>
     /// <paramref name="output"/> is called with each piece as it arrives, and <paramref name="failed"/> once with
     /// a reason, in Russian, when there is no exit code to give — the device could not be reached, or said no.
+    ///
+    /// <paramref name="waiting"/> is called when the device says it is asking a person something before it answers.
+    /// Nothing has gone wrong when it is: the right thing to do is keep waiting, which is also the one thing a
+    /// caller cannot decide while it does not know. Silence and silence-because-somebody-is-being-asked look the
+    /// same, and the second one is the only one worth waiting hours for.
     /// </summary>
     public static async Task<int> RunAsync(
         MirroringNode node,
@@ -39,6 +44,7 @@ public static class RemoteCommand
         string command,
         Action<ShellStream, string> output,
         Action<string> failed,
+        Action<string>? waiting = null,
         TimeSpan? wait = null,
         bool elevated = false,
         CancellationToken ct = default)
@@ -75,6 +81,7 @@ public static class RemoteCommand
         var finished = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         console.Opened += _ => console.Run(command);
+        console.Asking += question => waiting?.Invoke(question);
         console.Refused += reason =>
         {
             failed($"{session.PeerName} отказал: {reason}.");
