@@ -453,6 +453,10 @@ public sealed class ShellIntegrationTests : IAsyncLifetime
         await WaitUntilAsync(() => shellB.GivenUpOnHere == 1, ct, "the device knows the asker is gone");
         answer.TrySetResult(true);
 
+        // And the answer has been dealt with: until it has, a second console would find nothing remembered yet
+        // and put its own question up, which is a race in this test and not the thing being tested.
+        await WaitUntilAsync(() => shellB.OpeningHere == 0, ct, "the device finished with the first console");
+
         // A second console, agreed to without asking again, is the only one that opens.
         var console = shellA.Open(b.Identity.Id)!;
         var run = Watch(console);

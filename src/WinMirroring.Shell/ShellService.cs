@@ -92,6 +92,9 @@ public sealed class ShellService : IAsyncDisposable
     /// <summary>How many consoles were given up on here before they opened. For tests, which must not guess.</summary>
     internal int GivenUpOnHere => Volatile.Read(ref _givenUpOn);
 
+    /// <summary>How many consoles are still being asked about here. For tests, so they can wait rather than race.</summary>
+    internal int OpeningHere => _opening.Count;
+
     private int _givenUpOn;
 
     /// <summary>

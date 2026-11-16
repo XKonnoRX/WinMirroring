@@ -33,7 +33,14 @@ public sealed class DiscoveryService : IAsyncDisposable
     private readonly List<(NetworkInterfaceInfo Nic, Socket Socket)> _senders = [];
     private readonly ConcurrentDictionary<IPAddress, byte> _probedAddresses = new();
     private readonly Dictionary<string, (IPAddress[] Addresses, DateTimeOffset ResolvedAt)> _dnsCache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<IPEndPoint, SendFailure> _sendFailures = [];
+    /// <summary>
+    /// Failing beacons, by the interface they go out of as well as where they go to. Both halves matter: the
+    /// multicast address is the same for every interface, so a card that cannot reach it and a card that can were
+    /// one record between them — each success wiped the other's count, each failure then looked like the first of
+    /// its kind, and "repeats are counted, not logged" logged a pair of lines every two seconds instead. One log
+    /// grew to six megabytes of them in an evening, which is also the evening they were needed to read.
+    /// </summary>
+    private readonly Dictionary<(string From, IPEndPoint Target), SendFailure> _sendFailures = [];
 
     private readonly Power.PowerMode _power;
 
@@ -62,9 +69,6 @@ public sealed class DiscoveryService : IAsyncDisposable
     }
 
     public event Action<DiscoveredPeer>? PeerSeen;
-
-    /// <summary>A beacon could not be sent because an interface's address is no longer valid.</summary>
-    public event Action? AddressLost;
 
     /// <summary>True when we actively probed this address, so its answers are welcome even outside selected subnets.</summary>
     public bool IsProbedAddress(IPAddress address) => _probedAddresses.ContainsKey(address);
@@ -259,8 +263,8 @@ public sealed class DiscoveryService : IAsyncDisposable
         var broadcast = Beacon.Encode(BuildBeacon(isProbe: false));
         foreach (var (nic, socket) in _senders)
         {
-            await TrySendAsync(socket, broadcast, new IPEndPoint(nic.Subnet.Broadcast, _discoveryPort), ct).ConfigureAwait(false);
-            await TrySendAsync(socket, broadcast, new IPEndPoint(ProtocolConstants.MulticastGroup, _discoveryPort), ct).ConfigureAwait(false);
+            await TrySendAsync(socket, broadcast, new IPEndPoint(nic.Subnet.Broadcast, _discoveryPort), ct, nic.Name).ConfigureAwait(false);
+            await TrySendAsync(socket, broadcast, new IPEndPoint(ProtocolConstants.MulticastGroup, _discoveryPort), ct, nic.Name).ConfigureAwait(false);
         }
 
         var probe = Beacon.Encode(BuildBeacon(isProbe: true));
@@ -343,16 +347,16 @@ public sealed class DiscoveryService : IAsyncDisposable
     private ValueTask SendUnicastAsync(byte[] datagram, IPEndPoint target, CancellationToken ct) =>
         TrySendAsync(_receiver!, datagram, target, ct);
 
-    private async ValueTask TrySendAsync(Socket socket, byte[] datagram, IPEndPoint target, CancellationToken ct)
+    private async ValueTask TrySendAsync(Socket socket, byte[] datagram, IPEndPoint target, CancellationToken ct, string from = "")
     {
         try
         {
             await socket.SendToAsync(datagram, SocketFlags.None, target, ct).ConfigureAwait(false);
-            NoteSendWorked(target);
+            NoteSendWorked((from, target));
         }
         catch (SocketException ex)
         {
-            NoteSendFailed(target, ex);
+            NoteSendFailed((from, target), ex);
         }
         catch (ObjectDisposedException)
         {
@@ -363,7 +367,7 @@ public sealed class DiscoveryService : IAsyncDisposable
     /// A beacon goes out every couple of seconds, so a failure that persists (an address that went away with sleep
     /// or a network change) is logged once, then summed up every few minutes, and its recovery is logged too.
     /// </summary>
-    private void NoteSendFailed(IPEndPoint target, SocketException ex)
+    private void NoteSendFailed((string From, IPEndPoint Target) beacon, SocketException ex)
     {
         var now = Environment.TickCount64;
         bool report;
@@ -371,7 +375,7 @@ public sealed class DiscoveryService : IAsyncDisposable
         long since;
         lock (_sendFailures)
         {
-            if (!_sendFailures.TryGetValue(target, out var failure) || failure.Error != ex.SocketErrorCode)
+            if (!_sendFailures.TryGetValue(beacon, out var failure) || failure.Error != ex.SocketErrorCode)
             {
                 failure = new SendFailure(ex.SocketErrorCode, 0, now, now - FailureReportInterval);
             }
@@ -383,7 +387,7 @@ public sealed class DiscoveryService : IAsyncDisposable
                 failure = failure with { ReportedTicks = now };
             }
 
-            _sendFailures[target] = failure;
+            _sendFailures[beacon] = failure;
             count = failure.Count;
             since = failure.FirstTicks;
         }
@@ -395,21 +399,18 @@ public sealed class DiscoveryService : IAsyncDisposable
 
         if (count == 1)
         {
-            _logger.LogInformation("Beacon to {Target} failed: {Error} ({Code}); repeats are counted, not logged", target, ex.Message, (int)ex.SocketErrorCode);
+            _logger.LogInformation("Beacon {From} → {Target} failed: {Error} ({Code}); repeats are counted, not logged", Where(beacon.From), beacon.Target, ex.Message, (int)ex.SocketErrorCode);
         }
         else
         {
-            _logger.LogInformation("Beacon to {Target} still failing: {Count} times in {Minutes:F0} min ({Code})", target, count, (now - since) / 60_000.0, (int)ex.SocketErrorCode);
-        }
-
-        if (ex.SocketErrorCode == SocketError.AddressNotAvailable)
-        {
-            // The interface's address is gone (sleep, another network): the node re-reads its interfaces.
-            AddressLost?.Invoke();
+            _logger.LogInformation("Beacon {From} → {Target} still failing: {Count} times in {Minutes:F0} min ({Code})", Where(beacon.From), beacon.Target, count, (now - since) / 60_000.0, (int)ex.SocketErrorCode);
         }
     }
 
-    private void NoteSendWorked(IPEndPoint target)
+    /// <summary>Which interface a beacon went out of, for the log; unicast probes go out of the one receiver.</summary>
+    private static string Where(string from) => from.Length == 0 ? "probe" : from;
+
+    private void NoteSendWorked((string From, IPEndPoint Target) beacon)
     {
         if (_sendFailures.Count == 0)
         {
@@ -419,13 +420,13 @@ public sealed class DiscoveryService : IAsyncDisposable
         SendFailure failure;
         lock (_sendFailures)
         {
-            if (!_sendFailures.Remove(target, out failure))
+            if (!_sendFailures.Remove(beacon, out failure))
             {
                 return;
             }
         }
 
-        _logger.LogInformation("Beacon to {Target} works again after {Count} failure(s)", target, failure.Count);
+        _logger.LogInformation("Beacon {From} → {Target} works again after {Count} failure(s)", Where(beacon.From), beacon.Target, failure.Count);
     }
 
     private readonly record struct SendFailure(SocketError Error, int Count, long FirstTicks, long ReportedTicks);

@@ -351,6 +351,47 @@ public sealed class NodeIntegrationTests : IAsyncLifetime
     private static bool IsReady(MirroringNode from, MirroringNode to) =>
         from.Sessions.TryGetSession(to.Identity.Id, out var session) && session.State == SessionState.Ready;
 
+    /// <summary>
+    /// A machine that moves to another network while the app is running. This is not a rare case — a laptop does
+    /// it every time it leaves Wi-Fi for a cable, or a hotspot for the house — and until this it was noticed only
+    /// if something told the node about it. What told it was Windows's address-changed event and a beacon failing
+    /// to send, and each of those asked for a look three seconds later, pushing the previous request's deadline
+    /// back. A beacon fails every two seconds for as long as the address is wrong, so the look never happened:
+    /// one laptop spent five hours announcing itself on a network it had left, ignoring every beacon from the
+    /// machine next to it as "outside selected subnets", and the two could not find each other at all.
+    ///
+    /// The network a node is on cannot be changed from a test, so what is changed here is the answer the node
+    /// gets when it asks. What is being held is that it asks at all, by itself, and acts on the answer.
+    /// </summary>
+    [Fact]
+    public async Task ANodeNoticesByItselfThatTheMachineMovedToAnotherNetwork()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var node = CreateNode("Moved", FreeUdpPort(), FreeTcpPort(), []);
+        await node.StartAsync();
+        Assert.NotEmpty(node.ListeningEndPoints);
+        Assert.Equal(0, node.NetworkRestarts);
+
+        // The machine is now somewhere else: nothing it was bound to exists any more.
+        node.ResolveNetwork = () => NetworkSelection.Resolve(["an-interface-that-is-not-here"], includeLoopback: false);
+
+        await WaitUntilAsync(
+            () => node.NetworkRestarts >= 1,
+            TimeSpan.FromSeconds(20),
+            "the node never noticed that its addresses had changed",
+            ct);
+
+        // And back again, without anyone telling it either way.
+        var loopback = NetworkInterfaceCatalog.Enumerate(includeLoopback: true).First(i => i.IsLoopback);
+        node.ResolveNetwork = () => NetworkSelection.Resolve([loopback.Id], includeLoopback: true);
+
+        await WaitUntilAsync(
+            () => node.NetworkRestarts >= 2 && node.ListeningEndPoints.Count > 0,
+            TimeSpan.FromSeconds(20),
+            "the node never came back onto the network it returned to",
+            ct);
+    }
+
     private MirroringNode CreateNode(string name, int discoveryPort, int transportPort, string[] manualAddresses, bool accept = true)
     {
         var directory = Path.Combine(Path.GetTempPath(), "WinMirroring.Tests", Guid.NewGuid().ToString("N"));

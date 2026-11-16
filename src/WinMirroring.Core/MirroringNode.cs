@@ -44,10 +44,25 @@ public sealed class MirroringNode : IAsyncDisposable
     private PeerListener? _listener;
     private MediaSocket? _media;
 
+    /// <summary>
+    /// How often the machine's own network is looked at. Looked at rather than waited to be told about, which is
+    /// the whole of this: the telling used to come from Windows's address-changed event and from a beacon failing
+    /// to send, each of which asked for a look in three seconds' time — and asking again reset those three
+    /// seconds. A beacon fails every two seconds for as long as the address is wrong, so the look was pushed back
+    /// for ever and never happened once. This laptop went on announcing itself on a network it had left five
+    /// hours earlier, ignoring every beacon from the machine standing next to it as "outside selected subnets",
+    /// while the tablet kept working because it is reached by a manual address and those bypass the check. A
+    /// device simply dropping off its own network with nothing in the log is not a thing to leave to an event.
+    /// </summary>
+    private static readonly TimeSpan LookAtTheNetwork = TimeSpan.FromSeconds(3);
+
+    /// <summary>The same on a battery: a change of network is still noticed within seconds, for almost nothing.</summary>
+    private static readonly TimeSpan LookAtTheNetworkOnBattery = TimeSpan.FromSeconds(10);
+
     /// <summary>Interfaces and addresses the network was started with; a change of these restarts it.</summary>
     private string _networkSignature = string.Empty;
     private Timer? _networkCheck;
-    private bool _watchingAddresses;
+    private int _networkRestarts;
 
     public MirroringNode(NodeOptions options, IPairingUserInterface pairingUi, ILoggerFactory loggerFactory)
     {
@@ -119,7 +134,8 @@ public sealed class MirroringNode : IAsyncDisposable
             loggerFactory.CreateLogger<PeerIntroductions>());
         Introductions.Start();
 
-        Network = NetworkSelection.Resolve(Settings.SelectedInterfaceIds, options.IncludeLoopback);
+        ResolveNetwork = () => NetworkSelection.Resolve(Settings.SelectedInterfaceIds, _options.IncludeLoopback);
+        Network = ResolveNetwork();
     }
 
     public SettingsStore SettingsStore { get; }
@@ -209,12 +225,8 @@ public sealed class MirroringNode : IAsyncDisposable
             }
 
             StartNetwork();
-            if (!_watchingAddresses)
-            {
-                _watchingAddresses = true;
-                _networkCheck = new Timer(_ => _ = CheckNetworkAsync(), null, Timeout.Infinite, Timeout.Infinite);
-                System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += OnAddressChanged;
-            }
+            var every = Power.Every(LookAtTheNetwork, LookAtTheNetworkOnBattery);
+            _networkCheck ??= new Timer(_ => _ = CheckNetworkAsync(), null, every, every);
         }
         finally
         {
@@ -222,49 +234,68 @@ public sealed class MirroringNode : IAsyncDisposable
         }
     }
 
-    private void OnAddressChanged(object? sender, EventArgs e) => ScheduleNetworkCheck();
-
-    /// <summary>Address changes come in bursts (sleep, Wi-Fi, a VPN reconnecting): look once things settle.</summary>
-    private void ScheduleNetworkCheck()
-    {
-        try
-        {
-            _networkCheck?.Change(TimeSpan.FromSeconds(3), Timeout.InfiniteTimeSpan);
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-    }
-
     /// <summary>
     /// The listener and discovery are bound to the interfaces' addresses as they were at start. When an address
     /// changes (after sleep, on another network) they would keep failing, so the network is started again, but only
     /// when the selected interfaces or their addresses really changed. Existing sessions survive.
+    ///
+    /// Run on a timer of its own rather than from whatever notices an address change. Everything that could notice
+    /// one is a thing that repeats — Windows's event comes in bursts, a beacon fails every couple of seconds — and
+    /// a look scheduled for "three seconds from the last of those" is a look that never happens. This asks the
+    /// machine what its addresses are, regularly, and the answer is cheap.
     /// </summary>
     private async Task CheckNetworkAsync()
     {
-        if (Volatile.Read(ref _disposed) != 0 || !IsRunning)
+        if (Volatile.Read(ref _disposed) != 0)
         {
             return;
         }
 
         try
         {
-            var fresh = NetworkSelection.Resolve(Settings.SelectedInterfaceIds, _options.IncludeLoopback);
-            var signature = Signature(fresh);
+            if (!IsRunning)
+            {
+                return;
+            }
+
+            var signature = Signature(ResolveNetwork());
             if (signature == _networkSignature)
             {
                 return;
             }
 
             _logger.LogInformation("Network addresses changed ({Old} → {New}); restarting discovery and the listener", _networkSignature, signature);
+            Interlocked.Increment(ref _networkRestarts);
             await RestartNetworkAsync().ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             _logger.LogWarning(ex, "Restarting the network after an address change failed");
         }
+        finally
+        {
+            // Armed again each time, at the interval the power state calls for now — so a device that has just
+            // been unplugged starts looking less often without being restarted.
+            var every = Power.Every(LookAtTheNetwork, LookAtTheNetworkOnBattery);
+            try
+            {
+                _networkCheck?.Change(every, every);
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
     }
+
+    /// <summary>
+    /// What the machine's network looks like now. One place, so that the regular look and the restart it leads to
+    /// can never disagree — and so that a test can move a node onto another network, which is the one thing this
+    /// is all about and the one thing a test cannot do for real.
+    /// </summary>
+    internal Func<NetworkSelection> ResolveNetwork { get; set; }
+
+    /// <summary>How many times the network has been started again because the machine's addresses changed.</summary>
+    internal int NetworkRestarts => Volatile.Read(ref _networkRestarts);
 
     private static string Signature(NetworkSelection network) =>
         string.Join("; ", network.SelectedInterfaces.Select(i => $"{i.Name} {i.Address}").Order(StringComparer.Ordinal));
@@ -310,7 +341,7 @@ public sealed class MirroringNode : IAsyncDisposable
 
     private void StartNetwork()
     {
-        Network = NetworkSelection.Resolve(Settings.SelectedInterfaceIds, _options.IncludeLoopback);
+        Network = ResolveNetwork();
         _networkSignature = Signature(Network);
         if (Network.SelectedInterfaces.Count == 0)
         {
@@ -336,7 +367,6 @@ public sealed class MirroringNode : IAsyncDisposable
             Power,
             _loggerFactory.CreateLogger<DiscoveryService>());
         discovery.PeerSeen += Sessions.OnPeerSeen;
-        discovery.AddressLost += ScheduleNetworkCheck;
         discovery.Start();
         _discovery = discovery;
 
@@ -365,7 +395,6 @@ public sealed class MirroringNode : IAsyncDisposable
         if (_discovery is { } discovery)
         {
             discovery.PeerSeen -= Sessions.OnPeerSeen;
-            discovery.AddressLost -= ScheduleNetworkCheck;
             await discovery.DisposeAsync().ConfigureAwait(false);
             _discovery = null;
         }
@@ -385,7 +414,6 @@ public sealed class MirroringNode : IAsyncDisposable
             return;
         }
 
-        System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged -= OnAddressChanged;
         if (_networkCheck is { } check)
         {
             await check.DisposeAsync().ConfigureAwait(false);
