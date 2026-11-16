@@ -177,6 +177,7 @@ internal sealed class GpuNv12Converter : IDisposable
         _inputSize = inputSize;
         _outputSize = outputSize;
         ApplyColourMode(_videoContext, _processor, _mode);
+        VideoProcessorRules.NothingOfItsOwn(_videoContext, _processor);
         _videoContext.VideoProcessorSetStreamFrameFormat(_processor, 0, VideoFrameFormat.Progressive);
     }
 
@@ -368,6 +369,7 @@ internal sealed class GpuNv12Converter : IDisposable
         try
         {
             ApplyColourMode(videoContext, processor, mode);
+            VideoProcessorRules.NothingOfItsOwn(videoContext, processor);
             videoContext.VideoProcessorSetStreamFrameFormat(processor, 0, VideoFrameFormat.Progressive);
             if (!Blit(videoDevice, videoContext, enumerator, processor, source, new Rectangle(0, 0, size, size), new Size(size, size), target))
             {

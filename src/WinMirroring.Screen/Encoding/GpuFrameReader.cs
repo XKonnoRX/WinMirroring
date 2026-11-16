@@ -158,6 +158,7 @@ internal sealed class GpuFrameReader : IDisposable
         Release();
         (_enumerator, _processor) = CreateProcessor(_videoDevice, inputSize, outputSize);
         Apply(_videoContext, _processor, _mode);
+        VideoProcessorRules.NothingOfItsOwn(_videoContext, _processor);
         _videoContext.VideoProcessorSetStreamFrameFormat(_processor, 0, VideoFrameFormat.Progressive);
 
         _target = _graphics.Device.CreateTexture2D(new Texture2DDescription(
@@ -282,15 +283,24 @@ internal sealed class GpuFrameReader : IDisposable
     /// Converts one known picture every way the card offers and compares each with what the processor makes of the
     /// same picture. Whichever matches is used from then on; if none does, the whole path is refused and the
     /// processor keeps converting — a slower picture is better than a discoloured one.
+    ///
+    /// The picture is shaped like a real one: taller than what is shown, because H.264 codes a 1080-line screen as
+    /// 1088 lines and the decoder hands back all of them, so every stream asks the card for part of a taller
+    /// texture rather than the whole of one. That is not a detail — it is a different operation as far as a driver
+    /// is concerned, and a driver that adds contrast or colour of its own when it thinks it is scaling video would
+    /// pass a measurement made on a picture the exact size of its texture and then discolour every frame after it.
+    /// The rows below the picture are a colour that belongs to nothing, so this also catches a card that lets them
+    /// bleed into what is shown.
     /// </summary>
     private static Reading? Probe(GraphicsDevice graphics, ID3D11VideoDevice videoDevice, ID3D11VideoContext videoContext, ILogger logger)
     {
         const int size = 128;
         const int band = 16;
+        const int coded = size + 16;
 
-        var nv12 = TestPicture(size, band);
+        var nv12 = TestPicture(size, coded, band);
         var expected = new byte[size * size * 4];
-        Nv12Converter.Nv12ToBgra(nv12, size, size, expected);
+        Nv12Converter.Nv12ToBgra(nv12, size, size, expected, size * coded);
 
         ID3D11Texture2D? source = null;
         ID3D11Texture2D? staging = null;
@@ -298,7 +308,7 @@ internal sealed class GpuFrameReader : IDisposable
         {
             lock (graphics.ContextGate)
             {
-                source = CreateSource(graphics, videoDevice, size, logger);
+                source = CreateSource(graphics, videoDevice, size, coded, logger);
                 if (source is null)
                 {
                     logger.LogInformation("The graphics card will not hold a decoded picture the way it would have to be read; the processor keeps converting");
@@ -306,9 +316,9 @@ internal sealed class GpuFrameReader : IDisposable
                 }
 
                 staging = graphics.Device.CreateTexture2D(new Texture2DDescription(
-                    Format.NV12, (uint)size, (uint)size, 1, 1,
+                    Format.NV12, (uint)size, (uint)coded, 1, 1,
                     BindFlags.None, ResourceUsage.Staging, CpuAccessFlags.Write));
-                UploadNv12(graphics, staging, source, nv12, size);
+                UploadNv12(graphics, staging, source, nv12, size, coded);
 
                 var hasNamed = videoContext.QueryInterfaceOrNull<ID3D11VideoContext1>() is { } named && Discard(named);
                 foreach (var mode in new[] { Reading.NamedStudio, Reading.NamedFull, Reading.LegacyStudio, Reading.LegacyFull })
@@ -318,7 +328,7 @@ internal sealed class GpuFrameReader : IDisposable
                         continue;
                     }
 
-                    if (Produces(graphics, videoDevice, videoContext, mode, source, expected, size, band, out var worst))
+                    if (Produces(graphics, videoDevice, videoContext, mode, source, expected, size, coded, band, out var worst))
                     {
                         logger.LogInformation("The graphics card turns decoded pictures into the colours the sending side meant ({Mode})", mode);
                         return mode;
@@ -349,7 +359,7 @@ internal sealed class GpuFrameReader : IDisposable
     /// accepts differs between drivers — the decoder's own textures are made for its decoder, which is not a thing
     /// that can be asked for here — so each way is tried until one both holds a picture and can be read as video.
     /// </summary>
-    private static ID3D11Texture2D? CreateSource(GraphicsDevice graphics, ID3D11VideoDevice videoDevice, int size, ILogger logger)
+    private static ID3D11Texture2D? CreateSource(GraphicsDevice graphics, ID3D11VideoDevice videoDevice, int size, int coded, ILogger logger)
     {
         foreach (var bind in new[] { BindFlags.Decoder, BindFlags.ShaderResource, BindFlags.ShaderResource | BindFlags.RenderTarget, BindFlags.RenderTarget })
         {
@@ -357,7 +367,7 @@ internal sealed class GpuFrameReader : IDisposable
             try
             {
                 texture = graphics.Device.CreateTexture2D(new Texture2DDescription(
-                    Format.NV12, (uint)size, (uint)size, 1, 1,
+                    Format.NV12, (uint)size, (uint)coded, 1, 1,
                     bind, ResourceUsage.Default, CpuAccessFlags.None));
 
                 // Made, but is it readable as video? That is a separate answer, and the one that matters.
@@ -365,7 +375,7 @@ internal sealed class GpuFrameReader : IDisposable
                 {
                     InputFrameFormat = VideoFrameFormat.Progressive,
                     InputWidth = (uint)size,
-                    InputHeight = (uint)size,
+                    InputHeight = (uint)coded,
                     InputFrameRate = new Rational(60, 1),
                     OutputWidth = (uint)size,
                     OutputHeight = (uint)size,
@@ -396,15 +406,16 @@ internal sealed class GpuFrameReader : IDisposable
         return true;
     }
 
-    private static bool Produces(GraphicsDevice graphics, ID3D11VideoDevice videoDevice, ID3D11VideoContext videoContext, Reading mode, ID3D11Texture2D source, byte[] expected, int size, int band, out int worst)
+    private static bool Produces(GraphicsDevice graphics, ID3D11VideoDevice videoDevice, ID3D11VideoContext videoContext, Reading mode, ID3D11Texture2D source, byte[] expected, int size, int coded, int band, out int worst)
     {
         worst = int.MaxValue;
-        var (enumerator, processor) = CreateProcessor(videoDevice, new Size(size, size), new Size(size, size));
+        var (enumerator, processor) = CreateProcessor(videoDevice, new Size(size, coded), new Size(size, size));
         ID3D11Texture2D? target = null;
         ID3D11Texture2D? staging = null;
         try
         {
             Apply(videoContext, processor, mode);
+            VideoProcessorRules.NothingOfItsOwn(videoContext, processor);
             videoContext.VideoProcessorSetStreamFrameFormat(processor, 0, VideoFrameFormat.Progressive);
             target = graphics.Device.CreateTexture2D(new Texture2DDescription(
                 Format.B8G8R8A8_UNorm, (uint)size, (uint)size, 1, 1,
@@ -475,26 +486,28 @@ internal sealed class GpuFrameReader : IDisposable
     /// Bands of saturated colour, white, grey and near-black, as the sending side would have encoded them: wrong
     /// levels show up at the light and dark ends, a wrong matrix in the colours.
     /// </summary>
-    private static byte[] TestPicture(int size, int band)
+    private static byte[] TestPicture(int size, int coded, int band)
     {
         ReadOnlySpan<(byte B, byte G, byte R)> colours =
             [(0, 0, 0), (128, 128, 128), (250, 250, 250), (40, 200, 40), (40, 40, 230), (230, 60, 40), (30, 210, 220), (10, 10, 10)];
-        var frame = new byte[size * size * 4];
-        for (var y = 0; y < size; y++)
+        var frame = new byte[size * coded * 4];
+        for (var y = 0; y < coded; y++)
         {
-            var colour = colours[(y / band) % colours.Length];
+            // Below the picture, the rows a coded size rounds it up to: a colour that is in none of the bands, so
+            // that a card bleeding them into what is shown is a failure rather than a coincidence.
+            var colour = y < size ? colours[(y / band) % colours.Length] : ((byte)255, (byte)0, (byte)255);
             for (var x = 0; x < size; x++)
             {
                 var i = ((y * size) + x) * 4;
-                frame[i] = colour.B;
-                frame[i + 1] = colour.G;
-                frame[i + 2] = colour.R;
+                frame[i] = colour.Item1;
+                frame[i + 1] = colour.Item2;
+                frame[i + 2] = colour.Item3;
                 frame[i + 3] = 255;
             }
         }
 
-        var nv12 = new byte[Nv12Converter.Nv12Size(size, size)];
-        Nv12Converter.BgraCropToNv12(frame, size, new System.Drawing.Rectangle(0, 0, size, size), nv12);
+        var nv12 = new byte[Nv12Converter.Nv12Size(size, coded)];
+        Nv12Converter.BgraCropToNv12(frame, size, new System.Drawing.Rectangle(0, 0, size, coded), nv12);
         return nv12;
     }
 
@@ -502,20 +515,20 @@ internal sealed class GpuFrameReader : IDisposable
     /// Puts an NV12 picture on the card: written through a staging texture a row at a time, because the card pads
     /// its rows, and the chroma plane follows the whole luma plane at that same padded pitch.
     /// </summary>
-    private static void UploadNv12(GraphicsDevice graphics, ID3D11Texture2D staging, ID3D11Texture2D target, byte[] nv12, int size)
+    private static void UploadNv12(GraphicsDevice graphics, ID3D11Texture2D staging, ID3D11Texture2D target, byte[] nv12, int width, int height)
     {
         var map = graphics.Context.Map(staging, 0, MapMode.Write);
         try
         {
-            for (var y = 0; y < size; y++)
+            for (var y = 0; y < height; y++)
             {
-                Marshal.Copy(nv12, y * size, map.DataPointer + (nint)((long)y * map.RowPitch), size);
+                Marshal.Copy(nv12, y * width, map.DataPointer + (nint)((long)y * map.RowPitch), width);
             }
 
-            var chroma = map.DataPointer + (nint)((long)map.RowPitch * size);
-            for (var y = 0; y < size / 2; y++)
+            var chroma = map.DataPointer + (nint)((long)map.RowPitch * height);
+            for (var y = 0; y < height / 2; y++)
             {
-                Marshal.Copy(nv12, (size * size) + (y * size), chroma + (nint)((long)y * map.RowPitch), size);
+                Marshal.Copy(nv12, (width * height) + (y * width), chroma + (nint)((long)y * map.RowPitch), width);
             }
         }
         finally

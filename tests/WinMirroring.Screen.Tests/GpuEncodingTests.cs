@@ -142,6 +142,161 @@ public class GpuEncodingTests
     }
 
     /// <summary>
+    /// What the whole path does to each colour, with the numbers written down: a frame of known colours goes
+    /// through the card's conversion, the encoder and the decoder, and what comes back is compared with what went
+    /// in, channel by channel and signed. Explicit, because it is a measurement rather than a pass or a fail —
+    /// and the measurement to run when a picture is said to arrive too bright or too saturated, since it answers
+    /// the only question that matters first: whether the picture this program sends is the picture it was given.
+    /// Writes to %TEMP%.
+    /// </summary>
+    [Fact(Explicit = true)]
+    public void WhatTheWholePathDoesToEachColour()
+    {
+        Assert.SkipUnless(VideoCodecSupport.CanEncodeH264 && VideoCodecSupport.CanDecodeH264, "No hardware H.264 encoder on this machine.");
+        Assert.SkipWhen(GraphicsDevice.Shared is null, "No Direct3D device on this machine.");
+        using var converter = GpuNv12Converter.TryCreate(NullLogger.Instance);
+        Assert.SkipWhen(converter is null, "This graphics card does not convert colours itself.");
+
+        const int width = 1920;
+        const int height = 1080;
+        const int band = 135;
+        var graphics = GraphicsDevice.Shared!;
+        var source = ColourBands(width, height, band);
+        var report = Path.Combine(Path.GetTempPath(), "stream-colour.txt");
+        var lines = new List<string> { $"{width}×{height}, no scaling, as a monitor stream to a viewer showing it full size" };
+
+        using var texture = CreateBgra(graphics, source, width, height);
+        foreach (var onCard in new[] { true, false })
+        {
+            using var encoder = H264VideoEncoder.TryCreate(width, height, 30, 12000, NullLogger.Instance)!;
+            using var decoder = H264VideoDecoder.TryCreate(width, height, NullLogger.Instance, useGraphicsCard: onCard)!;
+            var output = Array.Empty<byte>();
+            var produced = false;
+            for (var frame = 0; frame < 60 && !produced; frame++)
+            {
+                var target = converter!.NextTarget(width, height);
+                Assert.SkipWhen(target is null, "This graphics card holds no NV12 target.");
+                Assert.True(converter.TryConvert(texture, new Rectangle(0, 0, width, height), target!));
+                foreach (var unit in encoder.EncodeTexture(target!, forceKeyframe: frame == 0))
+                {
+                    produced |= decoder.DecodeInto(unit.Data, ref output, out _, out _);
+                }
+
+                Thread.Sleep(5);
+            }
+
+            lines.Add(produced
+                ? $"-- decoded {(onCard ? "on the card" : "in memory")} --"
+                : $"-- decoded {(onCard ? "on the card" : "in memory")}: nothing came back --");
+            if (!produced)
+            {
+                continue;
+            }
+
+            for (var y = band / 2; y < height; y += band)
+            {
+                var (sb, sg, sr) = Average(source, width, y);
+                var (db, dg, dr) = Average(output, width, y);
+                lines.Add($"row {y,4}: sent B{sb,4} G{sg,4} R{sr,4} → got B{db,4} G{dg,4} R{dr,4} (off by {db - sb,4} {dg - sg,4} {dr - sr,4})");
+            }
+        }
+
+        File.WriteAllLines(report, lines);
+        Assert.True(File.Exists(report));
+    }
+
+    /// <summary>The average colour of the middle of one row, away from the edges where a band meets the next.</summary>
+    private static (int B, int G, int R) Average(byte[] bgra, int width, int row)
+    {
+        long b = 0, g = 0, r = 0;
+        var from = width / 4;
+        var to = width * 3 / 4;
+        for (var x = from; x < to; x++)
+        {
+            var i = ((row * width) + x) * 4;
+            b += bgra[i];
+            g += bgra[i + 1];
+            r += bgra[i + 2];
+        }
+
+        var count = to - from;
+        return ((int)(b / count), (int)(g / count), (int)(r / count));
+    }
+
+    /// <summary>
+    /// The same, but scaled on the way — which is what an ordinary screen view does and a second monitor does not:
+    /// a 1920×1080 screen shown in a window 1138 pixels wide is sent at 1138×640, and the card scales it as it
+    /// converts. That difference is the whole reason this test exists. A picture that came out right at its own
+    /// size came out too bright and too saturated as soon as it was scaled, and the one-to-one test above could
+    /// not see it: scaling is the point at which a driver decides it is playing a video and starts improving it.
+    ///
+    /// Flat bands scale exactly, so the middle of each band must come out the colour it went in as, whatever the
+    /// size — any difference of tens here is the card adding contrast or colour of its own.
+    /// </summary>
+    [Fact]
+    public void TheGraphicsCardAddsNoColourOfItsOwnWhileScaling()
+    {
+        Assert.SkipWhen(GraphicsDevice.Shared is null, "No Direct3D device on this machine.");
+        using var converter = GpuNv12Converter.TryCreate(NullLogger.Instance);
+        Assert.SkipWhen(converter is null, "This graphics card does not convert colours itself.");
+
+        var graphics = GraphicsDevice.Shared!;
+        const int frameWidth = 1920;
+        const int frameHeight = 1080;
+        const int band = 135;          // eight bands exactly, which stay eight exact bands at the size below
+        const int outputWidth = 1138;  // the size a real view asked for, from this machine's own log
+        const int outputHeight = 640;
+        const int outputBand = band * outputHeight / frameHeight;
+
+        var source = ColourBands(frameWidth, frameHeight, band);
+        using var texture = CreateBgra(graphics, source, frameWidth, frameHeight);
+        var target = converter!.NextTarget(outputWidth, outputHeight);
+        Assert.SkipWhen(target is null, "This graphics card holds no NV12 target.");
+        Assert.True(converter.TryConvert(texture, new Rectangle(0, 0, frameWidth, frameHeight), target!), "the conversion failed");
+
+        var produced = ReadNv12(graphics, target!, outputWidth, outputHeight);
+        var worstLuma = 0;
+        var worstChroma = 0;
+        for (var y = outputBand / 2; y < outputHeight; y += outputBand)
+        {
+            var (expectedY, expectedU, expectedV) = BandAt(source, frameWidth, y * frameHeight / outputHeight);
+            for (var x = 32; x < outputWidth - 32; x += 64)
+            {
+                worstLuma = Math.Max(worstLuma, Math.Abs(produced[(y * outputWidth) + x] - expectedY));
+                var chroma = (outputWidth * outputHeight) + (y / 2 * outputWidth) + (x & ~1);
+                worstChroma = Math.Max(worstChroma, Math.Abs(produced[chroma] - expectedU));
+                worstChroma = Math.Max(worstChroma, Math.Abs(produced[chroma + 1] - expectedV));
+            }
+        }
+
+        TestContext.Current.SendDiagnosticMessage($"scaled {frameWidth}×{frameHeight} → {outputWidth}×{outputHeight}: luma off by {worstLuma}, chroma by {worstChroma}");
+        Assert.InRange(worstLuma, 0, 6);
+        Assert.InRange(worstChroma, 0, 8);
+    }
+
+    /// <summary>
+    /// What one row of the source frame should come out as, through the conversion both ends of a stream agree on.
+    /// Taken from <see cref="Nv12Converter"/> itself rather than worked out again here, so this measures the card
+    /// against the convention and not against a second copy of the arithmetic.
+    /// </summary>
+    private static (byte Y, byte U, byte V) BandAt(byte[] frame, int frameWidth, int row)
+    {
+        var pixel = new byte[2 * 2 * 4];
+        var at = (long)row * frameWidth * 4;
+        for (var i = 0; i < pixel.Length; i += 4)
+        {
+            pixel[i] = frame[at];
+            pixel[i + 1] = frame[at + 1];
+            pixel[i + 2] = frame[at + 2];
+            pixel[i + 3] = 255;
+        }
+
+        var nv12 = new byte[Nv12Converter.Nv12Size(2, 2)];
+        Nv12Converter.BgraCropToNv12(pixel, 2, new Rectangle(0, 0, 2, 2), nv12);
+        return (nv12[0], nv12[4], nv12[5]);
+    }
+
+    /// <summary>
     /// The whole path end to end: the frame is cropped and converted on the card, handed to the encoder as a
     /// texture, and comes back out of the decoder as the picture that went in.
     /// </summary>
