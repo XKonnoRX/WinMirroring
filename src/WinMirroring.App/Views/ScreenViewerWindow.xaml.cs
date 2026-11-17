@@ -87,6 +87,7 @@ public partial class ScreenViewerWindow : Window
     public ScreenViewerWindow(ScreenViewer viewer, IServiceProvider services)
     {
         InitializeComponent();
+        InitializeZoom();
         _viewer = viewer;
         _dragDrop = services.GetService<DragDropCoordinator>();
         _clipboard = services.GetService<ClipboardSyncService>();
@@ -444,15 +445,16 @@ public partial class ScreenViewerWindow : Window
         // Shapes are in the other device's screen pixels, and a stream is encoded at the size this window shows it
         // at, so one of those pixels is one of this screen's — which in a window's own units is one divided by its
         // scaling.
+        // Through the zoom: the point is placed where the zoomed picture shows it, and the shape grows with it.
         var dpi = VisualTreeHelper.GetDpi(this);
-        var origin = ScreenImage.TranslatePoint(new Point(0, 0), Overlay);
         var (x, y) = _pointerHere ?? (cursor.X, cursor.Y);
+        var at = ScreenImage.TranslatePoint(new Point(x * width, y * height), Overlay);
 
         PointerImage.Source = picture;
-        PointerImage.Width = shape.Width / dpi.DpiScaleX;
-        PointerImage.Height = shape.Height / dpi.DpiScaleY;
-        Canvas.SetLeft(PointerImage, origin.X + (x * width) - (shape.HotspotX / dpi.DpiScaleX));
-        Canvas.SetTop(PointerImage, origin.Y + (y * height) - (shape.HotspotY / dpi.DpiScaleY));
+        PointerImage.Width = shape.Width / dpi.DpiScaleX * _zoom;
+        PointerImage.Height = shape.Height / dpi.DpiScaleY * _zoom;
+        Canvas.SetLeft(PointerImage, at.X - (shape.HotspotX / dpi.DpiScaleX * _zoom));
+        Canvas.SetTop(PointerImage, at.Y - (shape.HotspotY / dpi.DpiScaleY * _zoom));
         PointerImage.Visibility = Visibility.Visible;
 
         // One pointer, not two: this window's own is hidden over the picture while it is the one driving.
@@ -493,10 +495,12 @@ public partial class ScreenViewerWindow : Window
             return;
         }
 
+        // Zoomed in, the picture is drawn larger, so more of the other device's pixels are worth having (the source
+        // never sends more than it has).
         var dpi = VisualTreeHelper.GetDpi(this);
         _viewer.SetShownSize(
-            (int)Math.Round(ScreenImage.ActualWidth * dpi.DpiScaleX),
-            (int)Math.Round(ScreenImage.ActualHeight * dpi.DpiScaleY));
+            (int)Math.Round(ScreenImage.ActualWidth * dpi.DpiScaleX * _zoom),
+            (int)Math.Round(ScreenImage.ActualHeight * dpi.DpiScaleY * _zoom));
     }
 
     /// <summary>First frame of a window stream (and after a crop): size the viewer to the content, as large as fits.</summary>
@@ -568,6 +572,15 @@ public partial class ScreenViewerWindow : Window
         }
 
         outside = Math.Max(Math.Max(-position.X, position.X - width), Math.Max(-position.Y, position.Y - height));
+        if (_zoom > 1)
+        {
+            // Zoomed in, the picture runs on past the window: leaving the window is leaving the picture.
+            var shown = ScreenImage.TranslatePoint(position, Surface);
+            outside = Math.Max(outside, Math.Max(
+                Math.Max(-shown.X, shown.X - Surface.ActualWidth),
+                Math.Max(-shown.Y, shown.Y - Surface.ActualHeight)));
+        }
+
         x = (float)Math.Clamp(position.X / width, 0, 1);
         y = (float)Math.Clamp(position.Y / height, 0, 1);
         return true;
@@ -628,6 +641,11 @@ public partial class ScreenViewerWindow : Window
             return;
         }
 
+        if (!IsFromTouch(e))
+        {
+            NoteInterest(e.GetPosition(ScreenImage));
+        }
+
         if (ControlEnabled && !_dragOutActive && !IsFromTouch(e) && TryNormalize(e, out var x, out var y))
         {
             ScreenImage.CaptureMouse();
@@ -669,6 +687,11 @@ public partial class ScreenViewerWindow : Window
 
     private void OnImageMouseWheel(object sender, MouseWheelEventArgs e)
     {
+        if (TryZoomWithWheel(e))
+        {
+            return;
+        }
+
         if (ControlEnabled && TryNormalize(e, out var x, out var y))
         {
             var horizontal = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
@@ -691,6 +714,12 @@ public partial class ScreenViewerWindow : Window
 
     private void OnImageTouchDown(object? sender, TouchEventArgs e)
     {
+        NoteInterest(e.GetTouchPoint(ScreenImage).Position);
+        if (GestureTouchDown(e))
+        {
+            return; // moves or zooms the picture here
+        }
+
         if (!ControlEnabled)
         {
             return; // unhandled: WPF turns it into mouse input (selecting a part, for example)
@@ -704,6 +733,7 @@ public partial class ScreenViewerWindow : Window
 
         var contact = Enumerable.Range(0, MaxContacts).Select(i => (byte)i).First(i => _touches.Values.All(t => t.Contact != i));
         _touches[e.TouchDevice.Id] = (contact, x, y);
+        _fingers[e.TouchDevice.Id] = e.TouchDevice;
         ScreenImage.Focus();
         e.TouchDevice.Capture(ScreenImage);
         _viewer.SendTouch(ContactDown, contact, x, y);
@@ -711,6 +741,11 @@ public partial class ScreenViewerWindow : Window
 
     private void OnImageTouchMove(object? sender, TouchEventArgs e)
     {
+        if (GestureTouchMove(e))
+        {
+            return;
+        }
+
         if (!_touches.TryGetValue(e.TouchDevice.Id, out var touch))
         {
             return;
@@ -726,6 +761,11 @@ public partial class ScreenViewerWindow : Window
 
     private void OnImageTouchUp(object? sender, TouchEventArgs e)
     {
+        if (GestureTouchUp(e))
+        {
+            return;
+        }
+
         if (!_touches.Remove(e.TouchDevice.Id, out var touch))
         {
             return;
@@ -743,6 +783,21 @@ public partial class ScreenViewerWindow : Window
 
     private void OnImageLostTouchCapture(object? sender, TouchEventArgs e)
     {
+        _fingers.Remove(e.TouchDevice.Id);
+        if (_gesture.Remove(e.TouchDevice.Id))
+        {
+            if (_gesture.Count > 0)
+            {
+                StartGesture();
+            }
+            else
+            {
+                _gestureStart = null;
+            }
+
+            return;
+        }
+
         if (_touches.Remove(e.TouchDevice.Id, out var touch))
         {
             _viewer.SendTouch(ContactCancel, touch.Contact, touch.X, touch.Y);
@@ -927,6 +982,12 @@ public partial class ScreenViewerWindow : Window
                 ToggleFullScreen();
             }
 
+            e.Handled = true;
+            return;
+        }
+
+        if (TryZoomWithKey(key, e.IsDown))
+        {
             e.Handled = true;
             return;
         }
@@ -1154,7 +1215,6 @@ public partial class ScreenViewerWindow : Window
         CropRectangle.Visibility = Visibility.Collapsed;
         CropToggle.IsChecked = false;
 
-        var origin = ScreenImage.TranslatePoint(new Point(0, 0), Overlay);
         var width = ScreenImage.ActualWidth;
         var height = ScreenImage.ActualHeight;
         if (width <= 0 || height <= 0)
@@ -1162,10 +1222,13 @@ public partial class ScreenViewerWindow : Window
             return;
         }
 
-        var left = Math.Clamp((Math.Min(start.X, end.X) - origin.X) / width, 0, 1);
-        var top = Math.Clamp((Math.Min(start.Y, end.Y) - origin.Y) / height, 0, 1);
-        var right = Math.Clamp((Math.Max(start.X, end.X) - origin.X) / width, 0, 1);
-        var bottom = Math.Clamp((Math.Max(start.Y, end.Y) - origin.Y) / height, 0, 1);
+        // Measured on the picture itself, through whatever zoom it is shown at.
+        var a = Overlay.TranslatePoint(start, ScreenImage);
+        var b = Overlay.TranslatePoint(end, ScreenImage);
+        var left = Math.Clamp(Math.Min(a.X, b.X) / width, 0, 1);
+        var top = Math.Clamp(Math.Min(a.Y, b.Y) / height, 0, 1);
+        var right = Math.Clamp(Math.Max(a.X, b.X) / width, 0, 1);
+        var bottom = Math.Clamp(Math.Max(a.Y, b.Y) / height, 0, 1);
         if (right - left < 0.03 || bottom - top < 0.03)
         {
             return;
@@ -1180,6 +1243,7 @@ public partial class ScreenViewerWindow : Window
         _sizedToContent = false;
         _viewer.SetCrop(_crop);
         ResetCropButton.IsEnabled = true;
+        ResetZoom(); // the part chosen is what fills the window now
     }
 
     private void OnResetCrop(object sender, RoutedEventArgs e)
@@ -1188,6 +1252,7 @@ public partial class ScreenViewerWindow : Window
         _sizedToContent = false;
         _viewer.SetCrop(_crop);
         ResetCropButton.IsEnabled = false;
+        ResetZoom();
     }
 
     // ---- window ------------------------------------------------------------------------------------------
@@ -1203,6 +1268,7 @@ public partial class ScreenViewerWindow : Window
         {
             _crop = new System.Drawing.RectangleF(0, 0, 1, 1);
             ResetCropButton.IsEnabled = false;
+            ResetZoom();
             _viewer.SwitchMonitor((info.MonitorIndex + step + info.MonitorCount) % info.MonitorCount);
         }
     }
