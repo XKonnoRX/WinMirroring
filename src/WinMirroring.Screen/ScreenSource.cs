@@ -568,6 +568,11 @@ internal sealed class ScreenSource : IAsyncDisposable
 
     public void OnKey(ushort virtualKey, ushort scanCode, bool up, bool extended)
     {
+        if (!up)
+        {
+            RemoteInputTracker.NoteKey();
+        }
+
         if (_settings.AllowControl)
         {
             _injector.Key(virtualKey, scanCode, up, extended);

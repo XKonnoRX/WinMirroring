@@ -36,8 +36,10 @@ public sealed class HubUi
         DeviceInfoService devices,
         MainViewModel vm,
         IViewerControl viewers,
-        UiBridge bridge)
+        UiBridge bridge,
+        RemoteGuard guard)
     {
+        _guard = guard;
         _node = node;
         _input = input;
         _screen = screen;
@@ -237,12 +239,53 @@ public sealed class HubUi
     public Task<object?> RunCommandAsync(string name, string? deviceId, string? monitor, string? text) =>
         RunAsync(new CommandArgs(name, deviceId, monitor, text));
 
+    private readonly RemoteGuard _guard;
+
+    /// <summary>
+    /// An action that, done from another device, can cut that device off from this one — asked about first then
+    /// (see <see cref="RemoteGuard"/>).
+    /// </summary>
+    private static (string What, string Why, string Yes)? DangerOf(string command, string name) => command switch
+    {
+        "controlInput" => (
+            $"Отдать мышь и клавиатуру этого устройства на {name}?",
+            "Здесь они перестанут работать, пока ввод не вернут оттуда.",
+            "Да, отдать"),
+        "secondMonitor" => (
+            $"Переключить второй монитор на {name}?",
+            "Мониторы этого устройства на секунду мигнут, а окна могут переехать. Может понадобиться подтверждение администратора.",
+            "Да, переключить"),
+        "becomeSecondMonitor" => (
+            $"Сделать это устройство вторым монитором {name}?",
+            "Его экран займёт изображение с другого устройства.",
+            "Да, сделать"),
+        "updateDevice" => (
+            $"Обновить {name}?",
+            "Приложение там закроется и запустится снова; пока оно перезапускается, связи с ним не будет.",
+            "Да, обновить"),
+        "reconnect" => (
+            $"Переподключиться к {name}?",
+            "Соединение закроется. Если через него сейчас управляют этим устройством, управление прервётся, пока оно не восстановится.",
+            "Да, переподключить"),
+        "removeAddress" => (
+            "Убрать этот адрес?",
+            "Если устройство находится только по нему (через VPN, например), связь с ним пропадёт.",
+            "Да, убрать"),
+        _ => null,
+    };
+
     private async Task<object?> RunAsync(CommandArgs call)
     {
         var id = call.DeviceId ?? string.Empty;
         var name = _node.Peers.TryGet(id, out var info) && !string.IsNullOrEmpty(info.Name) ? info.Name
             : _node.Introductions.TryGet(id, out var known) ? known.Name
             : id;
+        if (DangerOf(call.Name, call.Name == "removeAddress" ? call.Text ?? name : name) is { } danger
+            && !await _guard.ConfirmAsync(danger.What, danger.Why, danger.Yes))
+        {
+            return "Отменено.";
+        }
+
         switch (call.Name)
         {
             case "pair":

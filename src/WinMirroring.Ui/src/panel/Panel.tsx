@@ -112,7 +112,7 @@ export function Panel() {
                     </button>
                     <button
                       className="item"
-                      disabled={view.zoom >= 8}
+                      disabled={view.zoom >= 4}
                       onClick={() => void run('zoom', { streamId: view.streamId, text: 'in' })}
                       title="Приблизить"
                     >

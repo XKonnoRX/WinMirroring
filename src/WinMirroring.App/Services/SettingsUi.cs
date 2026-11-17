@@ -24,8 +24,17 @@ public sealed class SettingsUi
     private readonly UiBridge _bridge;
     private readonly WinMirroring.Input.Injection.ElevatedInjector _adminInput;
 
-    public SettingsUi(MirroringNode node, MainViewModel vm, FeatureHealth health, UiBridge bridge, WinMirroring.Input.Injection.ElevatedInjector adminInput)
+    private readonly RemoteGuard _guard;
+
+    public SettingsUi(
+        MirroringNode node,
+        MainViewModel vm,
+        FeatureHealth health,
+        UiBridge bridge,
+        WinMirroring.Input.Injection.ElevatedInjector adminInput,
+        RemoteGuard guard)
     {
+        _guard = guard;
         _node = node;
         _vm = vm;
         _health = health;
@@ -36,16 +45,37 @@ public sealed class SettingsUi
     public void Register()
     {
         _bridge.On("settings.get", _ => Snapshot());
-        _bridge.On("settings.set", args =>
+        _bridge.OnAsync("settings.set", async args =>
         {
             var change = args.Deserialize<SetArgs>(UiBridge.Json);
-            return change is null ? "Непонятная настройка." : Set(change);
+            if (change is null)
+            {
+                return "Непонятная настройка.";
+            }
+
+            if (DangerOf(change) is { } danger && !await _guard.ConfirmAsync(danger.What, danger.Why, danger.Yes))
+            {
+                Changed(); // the page reloads and the switch goes back
+                return "Отменено.";
+            }
+
+            return Set(change);
         });
 
         _bridge.OnAsync("settings.command", async args =>
         {
             var call = args.Deserialize<CommandArgs>(UiBridge.Json);
-            return call is null ? "Непонятная команда." : await RunAsync(call);
+            if (call is null)
+            {
+                return "Непонятная команда.";
+            }
+
+            if (DangerOf(call.Name) is { } danger && !await _guard.ConfirmAsync(danger.What, danger.Why, danger.Yes))
+            {
+                return "Отменено.";
+            }
+
+            return await RunAsync(call);
         });
 
         _health.Changed += Changed;
@@ -155,6 +185,61 @@ public sealed class SettingsUi
         },
         startup = new { withWindows = _vm.StartWithWindows, autoUpdate = _vm.AutoUpdate },
         health = _health.Snapshot.Select(f => new { name = f.Name, ok = f.Ok, detail = f.Detail }).ToList(),
+    };
+
+    /// <summary>
+    /// A setting that, changed from another device, can leave that device unable to reach this one — asked about
+    /// first then (see <see cref="RemoteGuard"/>). Ports and interfaces only take effect with "Применить", so it is
+    /// that command which asks, not every field.
+    /// </summary>
+    private static (string What, string Why, string Yes)? DangerOf(SetArgs change)
+    {
+        var on = change.Value.ValueKind == JsonValueKind.True;
+        return change.Key switch
+        {
+            "screen.allowControl" when !on => (
+                "Запретить управлять этим устройством?",
+                "Мышь, касания и клавиатура из окон просмотра перестанут здесь работать, и вернуть эту настройку оттуда уже не получится.",
+                "Да, запретить"),
+            "screen.allowViewing" when !on => (
+                "Запретить показывать экран этого устройства?",
+                "Все трансляции этого экрана сразу закроются, в том числе та, через которую сейчас нажали.",
+                "Да, запретить"),
+            "input.enabled" when !on => (
+                "Выключить общий ввод на этом устройстве?",
+                "Курсор с других устройств перестанет сюда переходить.",
+                "Да, выключить"),
+            "input.adminControl" when on => (
+                "Включить управление окнами администратора?",
+                "Windows покажет здесь запрос прав администратора на защищённом рабочем столе. Его можно подтвердить только на самом устройстве, а пока он открыт, управление с других устройств не работает.",
+                "Да, включить"),
+            _ => null,
+        };
+    }
+
+    private static (string What, string Why, string Yes)? DangerOf(string command) => command switch
+    {
+        "applyNetwork" => (
+            "Применить сетевые настройки?",
+            "Обнаружение и соединения перезапустятся на новых портах и интерфейсах. Если с ними что-то не так, связь с этим устройством пропадёт.",
+            "Да, применить"),
+        "addFirewall" or "adminNoPrompt" or "adminPrompt" => (
+            "Запросить права администратора?",
+            "Windows покажет запрос на защищённом рабочем столе. Подтвердить его можно только на самом устройстве, а пока он открыт, управление с других устройств не работает.",
+            "Да, запросить"),
+        "restartElevated" => (
+            "Перезапустить WinMirroring от имени администратора?",
+            "Приложение закроется и попросит права администратора на защищённом рабочем столе. Если подтвердить там некому, связь с этим устройством пропадёт до прихода к нему.",
+            "Да, перезапустить"),
+        "installVirtualDisplay" => (
+            "Установить драйвер виртуального монитора?",
+            "Windows попросит права администратора на защищённом рабочем столе, а мониторы могут мигнуть.",
+            "Да, установить"),
+        "stopSource" => (
+            "Остановить эту трансляцию?",
+            "Если через неё сейчас управляют этим устройством, управление прекратится.",
+            "Да, остановить"),
+        _ => null,
     };
 
     private object? Set(SetArgs change)

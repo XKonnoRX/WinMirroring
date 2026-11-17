@@ -504,6 +504,7 @@ public partial class App : Application
         services.AddSingleton<UiBridge>();
         services.AddSingleton<HubUi>();
         services.AddSingleton<SettingsUi>();
+        services.AddSingleton<RemoteGuard>();
         services.AddSingleton<IViewerControl>(_ => this);
         services.AddSingleton<PanelUi>();
         services.AddSingleton<MainViewModel>();
@@ -576,7 +577,22 @@ public partial class App : Application
         }
 
         menu.Items.Add(new Separator());
-        menu.Items.Add(new MenuItem { Header = "Выход", Command = new RelayCommand(() => _ = ExitAsync()) });
+        menu.Items.Add(new MenuItem { Header = "Выход", Command = new RelayCommand(() => _ = ExitFromMenuAsync()) });
+    }
+
+    /// <summary>"Выход" from the tray menu: pressed from another device, it is asked about first.</summary>
+    private async Task ExitFromMenuAsync()
+    {
+        if (_services?.GetService<RemoteGuard>() is { } guard
+            && !await guard.ConfirmAsync(
+                "Закрыть WinMirroring на этом устройстве?",
+                "Связь с ним пропадёт целиком: трансляция, общий ввод, звук. Вернуть её можно будет только запустив приложение здесь, на месте.",
+                "Да, закрыть"))
+        {
+            return;
+        }
+
+        await ExitAsync();
     }
 
     private static MenuItem CheckItem(string header, bool isChecked, Action action) =>

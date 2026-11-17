@@ -33,7 +33,7 @@ namespace WinMirroring.App.Views;
 /// </summary>
 public partial class ScreenViewerWindow
 {
-    private const double MaxZoom = 8;
+    private const double MaxZoom = 4;
     private const double ZoomStep = 1.25;
 
     /// <summary>How close to an edge of the window the pointer has to be to scroll a zoomed picture, and how fast at the very edge.</summary>
