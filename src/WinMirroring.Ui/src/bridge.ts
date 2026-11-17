@@ -227,8 +227,8 @@ const samplePanel = {
   ownSound: 'Сейчас играет здесь',
   inputFocus: 'Ввод: здесь',
   views: [
-    { streamId: 1, title: 'DESKTOP-P50HIEF: Монитор 1', peerId: 'tablet', kind: 'monitor', active: true, inputAllowed: true, inputOn: true },
-    { streamId: 2, title: 'KONNY: Блокнот', peerId: 'self', kind: 'window', active: false, inputAllowed: true, inputOn: true },
+    { streamId: 1, title: 'DESKTOP-P50HIEF: Монитор 1', peerId: 'tablet', kind: 'monitor', active: true, inputAllowed: true, inputOn: true, zoom: 1 },
+    { streamId: 2, title: 'KONNY: Блокнот', peerId: 'self', kind: 'window', active: false, inputAllowed: true, inputOn: true, zoom: 1 },
   ],
   bar: { visible: true, active: 'Основные', presets: ['Основные', 'Браузер', 'Текст'] },
   input: { enabled: true, syncKeyboardLayout: true, adminControl: false },

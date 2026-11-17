@@ -92,6 +92,33 @@ export function Panel() {
                   ) : (
                     <p className="note">Только просмотр: управление запрещено на том устройстве.</p>
                   )}
+                  {/* The view's own toolbar is hidden in full screen: this is where its zoom is. Two fingers pinching
+                      on the picture do the same. */}
+                  <div className="segment zoom">
+                    <button
+                      className="item"
+                      disabled={view.zoom <= 1}
+                      onClick={() => void run('zoom', { streamId: view.streamId, text: 'out' })}
+                      title="Отдалить"
+                    >
+                      −
+                    </button>
+                    <button
+                      className={`item${view.zoom > 1 ? ' is-on' : ''}`}
+                      onClick={() => void run('zoom', { streamId: view.streamId, text: 'reset' })}
+                      title="Показать целиком"
+                    >
+                      {Math.round(view.zoom * 100)}%
+                    </button>
+                    <button
+                      className="item"
+                      disabled={view.zoom >= 8}
+                      onClick={() => void run('zoom', { streamId: view.streamId, text: 'in' })}
+                      title="Приблизить"
+                    >
+                      +
+                    </button>
+                  </div>
                   {(view.kind === 'monitor' || view.kind === 'display') && (
                     <>
                       <button

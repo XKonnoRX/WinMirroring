@@ -89,6 +89,7 @@ public sealed class PanelUi
                 active = v.IsActive,
                 inputAllowed = v.InputAllowed,
                 inputOn = v.InputOn,
+                zoom = v.Zoom,
             }).ToList(),
             bar = new
             {
@@ -135,6 +136,10 @@ public sealed class PanelUi
 
             case "keyboard":
                 _viewers.ToggleKeyboard(call.StreamId);
+                break;
+
+            case "zoom":
+                _viewers.ZoomView(call.StreamId, call.Text switch { "in" => 1, "out" => -1, _ => 0 });
                 break;
 
             case "viewInput":

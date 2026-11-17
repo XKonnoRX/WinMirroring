@@ -8,6 +8,8 @@ export type PanelView = {
   active: boolean
   inputAllowed: boolean
   inputOn: boolean
+  /** How far the picture is zoomed in (1: whole). */
+  zoom: number
 }
 
 export type PanelDevice = {

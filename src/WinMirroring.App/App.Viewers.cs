@@ -184,7 +184,8 @@ public partial class App : IViewerControl
             v.Viewer.Info.MonitorCount,
             v.Viewer.StreamId == _activeView,
             v.InputAllowed,
-            v.InputOn)).ToList();
+            v.InputOn,
+            v.ZoomLevel)).ToList();
 
     public bool IsLocalDesktopActive => _activeView == 0 || FindView(_activeView) is null;
 
@@ -219,4 +220,6 @@ public partial class App : IViewerControl
     public void ToggleKeyboard(uint streamId) => FindView(streamId)?.ToggleOnScreenKeyboard();
 
     public void SetViewInput(uint streamId, bool on) => FindView(streamId)?.SetInput(on);
+
+    public void ZoomView(uint streamId, int direction) => FindView(streamId)?.ZoomFromPanel(direction);
 }

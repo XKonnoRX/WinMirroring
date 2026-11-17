@@ -150,6 +150,7 @@ public partial class ScreenViewerWindow
         _pan = default;
         _gesture.Clear();
         _gestureStart = null;
+        _undecided = false;
         _edgeTimer?.Stop();
         ApplyView();
         UpdateZoomText();
@@ -170,6 +171,26 @@ public partial class ScreenViewerWindow
     private void OnZoomOut(object sender, RoutedEventArgs e) => ZoomTo(_zoom / ZoomStep, SurfaceCentre);
 
     private void OnZoomReset(object sender, RoutedEventArgs e) => ResetZoom();
+
+    /// <summary>How far the picture is zoomed in (1: whole), for the control panel.</summary>
+    public double ZoomLevel => _zoom;
+
+    /// <summary>From the control panel, which is where these buttons are while the view is full screen.</summary>
+    public void ZoomFromPanel(int direction)
+    {
+        if (direction > 0)
+        {
+            ZoomTo(_zoom * ZoomStep, SurfaceCentre);
+        }
+        else if (direction < 0)
+        {
+            ZoomTo(_zoom / ZoomStep, SurfaceCentre);
+        }
+        else
+        {
+            ResetZoom();
+        }
+    }
 
     /// <summary>Ctrl+Alt+wheel zooms at the pointer; Ctrl+wheel too while this window only watches. True when it did.</summary>
     private bool TryZoomWithWheel(MouseWheelEventArgs e)
@@ -280,12 +301,31 @@ public partial class ScreenViewerWindow
     /// <summary>Remembers where something was pressed, as a point of the picture.</summary>
     private void NoteInterest(Point onImage) => _interest = onImage;
 
+    /// <summary>
+    /// Two fingers on a whole picture have not said yet what they are: a pinch, which zooms here, or two fingers
+    /// moving together (scrolling, mostly), which belong to the other device. The first movement decides.
+    /// </summary>
+    private bool _undecided;
+
+    /// <summary>A pinch must change the distance between the fingers by this much to be a pinch...</summary>
+    private const double PinchDecides = 0.12;
+
+    /// <summary>...before the fingers together have moved this far, which makes it a gesture for the other device.</summary>
+    private const double SlideDecides = 28;
+
     /// <summary>A finger came down on the picture. True when it belongs to a gesture here rather than a touch there.</summary>
     private bool GestureTouchDown(TouchEventArgs e)
     {
         var id = e.TouchDevice.Id;
         if (_gesture.Count > 0)
         {
+            if (_undecided)
+            {
+                // A third finger before the two decided: a gesture of more fingers, for the other device.
+                HandOverToRemote();
+                return false;
+            }
+
             if (_gesture.Count < 2)
             {
                 _gesture[id] = e.TouchDevice;
@@ -297,13 +337,8 @@ public partial class ScreenViewerWindow
             return true;
         }
 
-        if (_zoom <= 1)
-        {
-            return false;
-        }
-
-        // A second finger on a zoomed picture: the first one was a touch there a moment ago; it is taken back and
-        // both move the picture here instead.
+        // A second finger while the first is a touch there: it is taken back, and the two are a gesture here — on a
+        // zoomed picture for certain, on a whole one only if they turn out to pinch.
         if (ControlEnabled && _touches.Count == 1 && _fingers.Count == 1)
         {
             var (firstId, first) = _fingers.First();
@@ -314,13 +349,14 @@ public partial class ScreenViewerWindow
 
             _fingers.Clear();
             _gesture[firstId] = first;
+            _undecided = _zoom <= 1;
         }
-        else if (ControlEnabled)
+        else if (ControlEnabled || _zoom <= 1)
         {
             return false;
         }
 
-        // Watching only: on a zoomed picture, one finger already moves it.
+        // (Watching only, on a zoomed picture: one finger already moves it.)
         _gesture[id] = e.TouchDevice;
         e.TouchDevice.Capture(ScreenImage);
         StartGesture();
@@ -337,6 +373,22 @@ public partial class ScreenViewerWindow
 
         e.Handled = true;
         var (distance, middle) = Measure();
+        if (_undecided)
+        {
+            var pinched = start.Distance > 0 && Math.Abs((distance / start.Distance) - 1) >= PinchDecides;
+            if (!pinched)
+            {
+                if ((middle - start.Middle).Length >= SlideDecides)
+                {
+                    HandOverToRemote();
+                }
+
+                return true;
+            }
+
+            _undecided = false; // a pinch: zooming here, from where the fingers started
+        }
+
         var origin = LayoutOrigin;
         if (_gesture.Count >= 2 && start.Distance > 0)
         {
@@ -359,6 +411,13 @@ public partial class ScreenViewerWindow
 
     private bool GestureTouchUp(TouchEventArgs e)
     {
+        if (_undecided && _gesture.ContainsKey(e.TouchDevice.Id))
+        {
+            // Lifted before deciding — a two-finger tap: it is the other device's, and the lift goes there too.
+            HandOverToRemote();
+            return false;
+        }
+
         if (!_gesture.Remove(e.TouchDevice.Id))
         {
             _fingers.Remove(e.TouchDevice.Id);
@@ -385,6 +444,31 @@ public partial class ScreenViewerWindow
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// The fingers held back as a possible pinch were not one: they become touches on the other device, from
+    /// where they are now, and go on as any other touches do.
+    /// </summary>
+    private void HandOverToRemote()
+    {
+        _undecided = false;
+        foreach (var (id, device) in _gesture.ToList())
+        {
+            if (_touches.Count >= MaxContacts
+                || !TryNormalize(device.GetTouchPoint(ScreenImage).Position, out var x, out var y, out _))
+            {
+                continue;
+            }
+
+            var contact = Enumerable.Range(0, MaxContacts).Select(i => (byte)i).First(i => _touches.Values.All(t => t.Contact != i));
+            _touches[id] = (contact, x, y);
+            _fingers[id] = device;
+            _viewer.SendTouch(ContactDown, contact, x, y);
+        }
+
+        _gesture.Clear();
+        _gestureStart = null;
     }
 
     private void StartGesture()

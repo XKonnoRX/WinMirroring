@@ -5,7 +5,8 @@ namespace WinMirroring.App.Services;
 /// <summary>One open screen view, for listing it and switching to it in the control panel.</summary>
 /// <param name="InputAllowed">The other device accepts control from this view.</param>
 /// <param name="InputOn">Mouse, touch and keys go to the other device (off: only watching).</param>
-public sealed record OpenViewInfo(uint StreamId, string Title, string PeerId, string Kind, int MonitorIndex, int MonitorCount, bool IsActive, bool InputAllowed, bool InputOn);
+/// <param name="Zoom">How far the picture is zoomed in here (1: whole).</param>
+public sealed record OpenViewInfo(uint StreamId, string Title, string PeerId, string Kind, int MonitorIndex, int MonitorCount, bool IsActive, bool InputAllowed, bool InputOn, double Zoom = 1);
 
 /// <summary>
 /// Lets the control panel be the single place to pick what is on screen: it lists the open views, switches between
@@ -43,4 +44,7 @@ public interface IViewerControl
 
     /// <summary>Control the other device from this view, or only watch it.</summary>
     void SetViewInput(uint streamId, bool on);
+
+    /// <summary>Zooms the view in (positive), out (negative), or back to the whole picture (zero).</summary>
+    void ZoomView(uint streamId, int direction);
 }

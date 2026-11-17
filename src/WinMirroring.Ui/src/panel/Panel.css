@@ -95,6 +95,24 @@
   font-size: 13px;
 }
 
+/* Zoom: the minus and plus are square and large, the level between them reads and resets. */
+.segment.zoom .item:first-child,
+.segment.zoom .item:last-child {
+  flex: 0 0 56px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.segment.zoom .item:nth-child(2) {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.item:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
 .current {
   margin: 10px 2px 4px;
   color: var(--accent-bright);

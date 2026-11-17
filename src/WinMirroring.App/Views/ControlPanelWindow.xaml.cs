@@ -122,7 +122,7 @@ public partial class ControlPanelWindow : Window
 
         foreach (var view in viewers.OpenViews)
         {
-            text.Append("|v").Append(view.StreamId).Append(view.Title).Append(view.Kind).Append(view.MonitorIndex).Append(view.IsActive)
+            text.Append("|v").Append(view.StreamId).Append(view.Title).Append(view.Kind).Append(view.MonitorIndex).Append(view.IsActive).Append(view.Zoom)
                 .Append(view.InputAllowed).Append(view.InputOn);
         }
 
@@ -187,6 +187,13 @@ public partial class ControlPanelWindow : Window
                 {
                     Sections.Children.Add(MakeNote("Только просмотр: управление запрещено на том устройстве"));
                 }
+
+                // The view's own toolbar is hidden in full screen: its zoom is here (and a pinch on the picture).
+                Sections.Children.Add(MakeChoices(
+                    closesPanel: false,
+                    ("−", false, () => viewers.ZoomView(view.StreamId, -1)),
+                    ($"{Math.Round(view.Zoom * 100)}%", view.Zoom > 1, () => viewers.ZoomView(view.StreamId, 0)),
+                    ("+", false, () => viewers.ZoomView(view.StreamId, 1))));
 
                 if (view.Kind is "monitor" or "display")
                 {

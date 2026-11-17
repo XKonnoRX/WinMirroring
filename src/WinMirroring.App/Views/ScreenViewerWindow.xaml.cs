@@ -786,7 +786,11 @@ public partial class ScreenViewerWindow : Window
         _fingers.Remove(e.TouchDevice.Id);
         if (_gesture.Remove(e.TouchDevice.Id))
         {
-            if (_gesture.Count > 0)
+            if (_undecided)
+            {
+                HandOverToRemote(); // the finger left is a touch there after all
+            }
+            else if (_gesture.Count > 0)
             {
                 StartGesture();
             }
