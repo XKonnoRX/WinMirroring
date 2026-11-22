@@ -11,7 +11,7 @@ namespace WinMirroring.Screen.Display;
 /// settings file and restarting the device so it picks the resolution up. Run in an elevated copy of the app
 /// (<see cref="Argument"/>), started through a UAC prompt by <see cref="AddModeElevatedAsync"/>.
 /// </summary>
-public static class VirtualDisplaySetup
+public static partial class VirtualDisplaySetup
 {
     public const string Argument = "--vdd-add-mode";
 

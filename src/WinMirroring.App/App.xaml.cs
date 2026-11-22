@@ -54,6 +54,13 @@ public partial class App : Application
             return;
         }
 
+        // Elevated helper run: install the virtual monitor driver from the package winget unpacked, then exit.
+        if (e.Args.Length >= 2 && string.Equals(e.Args[0], WinMirroring.Screen.Display.VirtualDisplaySetup.InstallArgument, StringComparison.OrdinalIgnoreCase))
+        {
+            Shutdown(WinMirroring.Screen.Display.VirtualDisplaySetup.Install(e.Args[1], e.Args.Length >= 3 ? e.Args[2] : null));
+            return;
+        }
+
         // "--exit": ask the running instance to close (used by the update script), nothing else.
         if (e.Args.Contains("--exit", StringComparer.OrdinalIgnoreCase))
         {

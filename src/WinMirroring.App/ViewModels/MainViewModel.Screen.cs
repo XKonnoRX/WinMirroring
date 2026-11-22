@@ -204,6 +204,10 @@ public sealed partial class MainViewModel
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+
+                // winget writes UTF-8; read as the system's code page its Russian came out as mojibake in the log.
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding = System.Text.Encoding.UTF8,
             };
 
             System.Diagnostics.Process? process;
@@ -231,8 +235,35 @@ public sealed partial class MainViewModel
                 var text = (await output.ConfigureAwait(true)) + (await errors.ConfigureAwait(true));
                 _logger.LogInformation("winget {Verb} {Package} exited with {Code}: {Output}", verb, VirtualDisplayPackage, process.ExitCode, text.Trim());
 
-                // The driver comes up a moment after its installer finishes.
-                for (var i = 0; i < 20 && !ScreenStreamingService.IsVirtualDisplayAvailable; i++)
+                // 0x8A15002B: no newer version; 0x8A150061: already installed. Either way the package is there.
+                var nothingToDo = unchecked((uint)process.ExitCode) is 0x8A15002B or 0x8A150061;
+                if (process.ExitCode != 0 && !nothingToDo)
+                {
+                    return Say($"winget не скачал драйвер (код 0x{process.ExitCode:X8}). Подробности в журнале приложения.");
+                }
+
+                if (update && nothingToDo)
+                {
+                    return Say("Драйвер виртуального монитора уже последней версии.");
+                }
+
+                // What winget installs is the driver's control app with the driver inside, not the driver: the
+                // driver itself goes in now, from that package, behind one administrator prompt.
+                if (WinMirroring.Screen.Display.VirtualDisplaySetup.FindPackage() is not { } package)
+                {
+                    return Say("winget отработал, но пакета с драйвером не видно. Подробности в журнале приложения.");
+                }
+
+                Say("Устанавливаю сам драйвер — Windows спросит права администратора…");
+                var (code, report) = await WinMirroring.Screen.Display.VirtualDisplaySetup.InstallElevatedAsync(package).ConfigureAwait(true);
+                _logger.LogInformation("Virtual display driver from {Package}: exit {Code}. {Report}", package, code, report.Trim());
+                if (code == -1)
+                {
+                    return Say("Установка драйвера отменена: Windows не получила права администратора.");
+                }
+
+                // The device comes up a moment after it is created.
+                for (var i = 0; i < 30 && !ScreenStreamingService.IsVirtualDisplayAvailable; i++)
                 {
                     await Task.Delay(500).ConfigureAwait(true);
                 }
@@ -241,18 +272,16 @@ public sealed partial class MainViewModel
                 OnPropertyChanged(nameof(VirtualDisplayStatus));
                 OnPropertyChanged(nameof(VirtualDisplayInstalled));
 
-                // 0x8A15002B: no newer version (upgrade); 0x8A150061: already installed.
-                var nothingToDo = unchecked((uint)process.ExitCode) is 0x8A15002B or 0x8A150061;
                 if (ScreenStreamingService.IsVirtualDisplayAvailable)
                 {
-                    return Say(update && nothingToDo
-                        ? "Драйвер виртуального монитора уже последней версии."
+                    return Say(update
+                        ? "Драйвер виртуального монитора обновлён."
                         : "Драйвер виртуального монитора установлен — этот экран можно расширять на другие устройства.");
                 }
 
-                return Say(process.ExitCode == 0
-                    ? "winget завершился, но драйвер пока не виден. Если Windows просила перезагрузку — перезагрузите устройство."
-                    : $"Драйвер не установился (winget вернул 0x{process.ExitCode:X8}). Подробности в журнале приложения.");
+                return Say(code == 0
+                    ? "Драйвер установлен, но Windows его ещё не показывает. Если она просила перезагрузку — перезагрузите устройство."
+                    : $"Драйвер не установился (код {code}). Подробности в журнале приложения.");
             }
         }
         finally
