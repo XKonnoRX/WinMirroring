@@ -27,7 +27,7 @@ public partial class ScreenViewerWindow
 
     private void OnKeyboardHint(bool show)
     {
-        if (_node?.Settings.Screen.AutoKeyboard == false || !ControlEnabled || !IsVisible)
+        if (_node?.Settings.Screen.AutoKeyboardOnTap != true || !ControlEnabled || !IsVisible)
         {
             return;
         }

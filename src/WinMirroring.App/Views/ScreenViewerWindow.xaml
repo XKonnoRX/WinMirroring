@@ -142,6 +142,20 @@
             Background="#CC1F2937" Foreground="White" BorderBrush="#4B5563" Focusable="False"
             Click="OnToggleQuickPanel" ToolTip="Быстрые параметры и выход из полноэкранного режима" />
 
+    <!-- The touch keyboard, one press away: a round button over the picture, dragged wherever it is in the way least.
+         It is part of this window rather than a window of its own, so pressing it does not take the keyboard focus
+         away from the picture, which is where the typing has to go. -->
+    <Border x:Name="KeyboardHandle" Grid.Row="1" Width="54" Height="54" CornerRadius="27"
+            HorizontalAlignment="Left" VerticalAlignment="Top" Visibility="Collapsed" Focusable="False"
+            Background="#E61F2937" BorderBrush="#4B5563" BorderThickness="1" Opacity="0.6" Cursor="Hand"
+            ToolTip="Экранная клавиатура: нажмите, чтобы открыть или закрыть; тяните, чтобы переместить">
+      <Border.Effect>
+        <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.5" />
+      </Border.Effect>
+      <TextBlock Text="⌨" Foreground="White" FontSize="24" FontFamily="Segoe UI Symbol"
+                 HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-2,0,0" IsHitTestVisible="False" />
+    </Border>
+
     <!-- Borderless window view: an invisible strip over the top of the window to drag it (a plain click passes
          through to the window below), and a small menu button since there is no toolbar. -->
     <Border x:Name="DragStrip" Grid.Row="1" VerticalAlignment="Top" Height="34" Background="Transparent" Visibility="Collapsed"

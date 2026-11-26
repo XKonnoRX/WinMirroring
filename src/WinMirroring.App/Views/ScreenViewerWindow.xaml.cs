@@ -90,6 +90,7 @@ public partial class ScreenViewerWindow : Window
         InitializeZoom();
         _viewer = viewer;
         InitializeKeyboardHints(services);
+        InitializeKeyboardButton();
         _dragDrop = services.GetService<DragDropCoordinator>();
         _clipboard = services.GetService<ClipboardSyncService>();
         _quick = services.GetService<ViewModels.MainViewModel>();
@@ -152,6 +153,9 @@ public partial class ScreenViewerWindow : Window
             // Once a second is the throttle on this: the source rebuilds its encoder when the size changes, and
             // a window being dragged by its edge must not have it do that over and over.
             ReportShownSize();
+
+            // Control switched on or off, the setting changed, the first picture arrived: cheap enough to just ask.
+            UpdateKeyboardHandle();
         }, Dispatcher);
         _statsTimer.Start();
 

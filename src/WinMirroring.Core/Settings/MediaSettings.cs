@@ -77,9 +77,19 @@ public sealed class ScreenSettings
 
     /// <summary>
     /// Viewing another device: a tap on a text box there brings this device's touch keyboard up, and a tap elsewhere
-    /// takes it down again (only a keyboard brought up that way). Off for a device that has a keyboard of its own.
+    /// takes it down again (only a keyboard brought up that way). Off by default — a keyboard jumping up at every tap
+    /// turned out to be more in the way than the button it saves (see <see cref="KeyboardButton"/>). A new name
+    /// rather than the old AutoKeyboard, so the "on" that 1.0.62 saved does not carry over.
     /// </summary>
-    public bool AutoKeyboard { get; set; } = true;
+    public bool AutoKeyboardOnTap { get; set; }
+
+    /// <summary>A round button over the picture of another device that opens and closes the touch keyboard.</summary>
+    public bool KeyboardButton { get; set; } = true;
+
+    /// <summary>Where that button stands over the picture, as shares of the free room (0..1 across and down).</summary>
+    public double KeyboardButtonX { get; set; } = 0.97;
+
+    public double KeyboardButtonY { get; set; } = 0.62;
 }
 
 /// <summary>
