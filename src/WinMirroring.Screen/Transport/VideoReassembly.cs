@@ -222,6 +222,30 @@ internal sealed class VideoReassembly
     }
 
     /// <summary>
+    /// Picture <paramref name="frameNo"/> arrived another way — on the connection, which is where a stream goes
+    /// back to when this path lets it down, and where it stays until the path is confirmed again. Its turn, and the
+    /// turn of everything before it, is over: without this, the first datagram after the stream came back would
+    /// find this side still waiting for a picture from before it left, and give up on every number in between one
+    /// at a time, asking for a whole picture each time.
+    /// </summary>
+    public void Passed(uint frameNo)
+    {
+        if (!_started || frameNo < _next)
+        {
+            return;
+        }
+
+        foreach (var stale in _pictures.Keys.Where(number => number <= frameNo).ToList())
+        {
+            _pictures.Remove(stale);
+        }
+
+        _next = frameNo + 1;
+        _overdueSince = _newest > _next ? _now() : null;
+        Flush();
+    }
+
+    /// <summary>
     /// Moves things along without a datagram to move them. Everything else here happens because one arrived, which
     /// is enough while pictures keep coming — but a picture lost just as the screen stops changing would otherwise
     /// hold the one after it, the one that shows what the screen settled on, until the screen moved again.

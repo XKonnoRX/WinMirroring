@@ -63,6 +63,18 @@ internal sealed class GpuNv12Converter : IDisposable
 
         /// <summary>The older pair of descriptions on ID3D11VideoContext.</summary>
         Legacy,
+
+        /// <summary>
+        /// The named colour spaces again, this time asking for the narrower broadcast levels by name. The two above
+        /// both say "full", and get the broadcast levels the receiving side wants only from a driver that reads
+        /// "full" loosely. A driver that does exactly what it is told — NVIDIA's — then produces full levels,
+        /// nineteen off on white, and was refused: its streams were converted by the processor and never scaled.
+        /// Asked for what is actually wanted, it produces it.
+        /// </summary>
+        NamedStudio,
+
+        /// <summary>...and the older descriptions, asking for the broadcast levels.</summary>
+        LegacyStudio,
     }
 
     /// <summary>
@@ -267,21 +279,25 @@ internal sealed class GpuNv12Converter : IDisposable
     /// </summary>
     private static void ApplyColourMode(ID3D11VideoContext videoContext, ID3D11VideoProcessor processor, ColourMode mode)
     {
-        if (mode == ColourMode.Named)
+        if (mode is ColourMode.Named or ColourMode.NamedStudio)
         {
             using var named = videoContext.QueryInterfaceOrNull<ID3D11VideoContext1>()
                 ?? throw new InvalidOperationException("ID3D11VideoContext1 disappeared after it was measured.");
             named.VideoProcessorSetStreamColorSpace1(processor, 0, ColorSpaceType.RgbFullG22NoneP709);
-            named.VideoProcessorSetOutputColorSpace1(processor, ColorSpaceType.YcbcrFullG22LeftP601);
+            named.VideoProcessorSetOutputColorSpace1(
+                processor,
+                mode == ColourMode.Named ? ColorSpaceType.YcbcrFullG22LeftP601 : ColorSpaceType.YcbcrStudioG22LeftP601);
             return;
         }
 
-        // RGB_Range 0 is full-range input, YCbCr_Matrix 0 is BT.601, Nominal_Range 2 is the card's name for the
-        // levels that come out matching Nv12Converter. The names are not what they look like, which is exactly
-        // why they are measured rather than trusted.
-        var space = new VideoProcessorColorSpace { RGB_Range = 0, YCbCr_Matrix = 0, Nominal_Range = 2 };
-        videoContext.VideoProcessorSetStreamColorSpace(processor, 0, space);
-        videoContext.VideoProcessorSetOutputColorSpace(processor, space);
+        // RGB_Range 0 is full-range input, YCbCr_Matrix 0 is BT.601. Nominal_Range 2 is "0 to 255" and is, on
+        // some cards, the name for the levels that come out matching Nv12Converter; 1 is "16 to 235", which is
+        // what those levels are and what a card that takes the names literally has to be asked for. The names are
+        // not what they look like, which is exactly why they are measured rather than trusted.
+        var input = new VideoProcessorColorSpace { RGB_Range = 0, YCbCr_Matrix = 0, Nominal_Range = 2 };
+        var output = new VideoProcessorColorSpace { RGB_Range = 0, YCbCr_Matrix = 0, Nominal_Range = mode == ColourMode.Legacy ? 2u : 1u };
+        videoContext.VideoProcessorSetStreamColorSpace(processor, 0, mode == ColourMode.Legacy ? output : input);
+        videoContext.VideoProcessorSetOutputColorSpace(processor, output);
     }
 
     private static ColourMode? ResolveColourMode(GraphicsDevice graphics, ID3D11VideoDevice videoDevice, ID3D11VideoContext videoContext, ILogger logger)
@@ -330,9 +346,11 @@ internal sealed class GpuNv12Converter : IDisposable
                     hasNamed = probe is not null;
                 }
 
-                foreach (var mode in new[] { ColourMode.Named, ColourMode.Legacy })
+                // The two that have always been tried come first, so a machine this already worked on keeps the
+                // way of asking it has been using.
+                foreach (var mode in new[] { ColourMode.Named, ColourMode.Legacy, ColourMode.NamedStudio, ColourMode.LegacyStudio })
                 {
-                    if (mode == ColourMode.Named && !hasNamed)
+                    if (mode is ColourMode.Named or ColourMode.NamedStudio && !hasNamed)
                     {
                         continue;
                     }

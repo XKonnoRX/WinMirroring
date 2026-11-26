@@ -278,8 +278,13 @@ internal sealed class H264VideoDecoder : IDisposable
     /// <summary>
     /// Decodes one access unit. When a picture is produced, <paramref name="bgra"/> is (re)sized and filled, and
     /// the method returns true with the picture's size in <paramref name="width"/>/<paramref name="height"/>.
+    ///
+    /// With <paramref name="read"/> false the picture is decoded and left where it is: <paramref name="bgra"/> is
+    /// not touched. The decoder has to see every picture, because the next is read against it — but turning one
+    /// into pixels and bringing it into memory is the larger half of the work, and it is wasted on a picture that
+    /// a newer one, already waiting, is about to replace.
     /// </summary>
-    public bool DecodeInto(byte[] accessUnit, ref byte[] bgra, out int width, out int height)
+    public bool DecodeInto(byte[] accessUnit, ref byte[] bgra, out int width, out int height, bool read = true)
     {
         width = _width;
         height = _height;
@@ -291,7 +296,7 @@ internal sealed class H264VideoDecoder : IDisposable
         FeedInput(accessUnit);
 
         var produced = false;
-        while (DrainOne(ref bgra))
+        while (DrainOne(ref bgra, read))
         {
             produced = true;
             width = _width;
@@ -324,7 +329,7 @@ internal sealed class H264VideoDecoder : IDisposable
     /// output type is set again and the picture taken right away, not with the next access unit (on a still screen
     /// there may be no next one, and the view would stay empty).
     /// </summary>
-    private bool DrainOne(ref byte[] bgra)
+    private bool DrainOne(ref byte[] bgra, bool read)
     {
         for (var attempt = 0; attempt < 3; attempt++)
         {
@@ -360,7 +365,7 @@ internal sealed class H264VideoDecoder : IDisposable
                 // a second wrapper around the same sample and disposing it would destroy a sample we keep. On the
                 // card the sample belongs to the decoder and the wrapper that came back is the only handle on it.
                 var sample = ours ?? buffer.Sample;
-                return sample is not null && ReadFrame(sample, ref bgra);
+                return sample is not null && (!read || ReadFrame(sample, ref bgra));
             }
             finally
             {

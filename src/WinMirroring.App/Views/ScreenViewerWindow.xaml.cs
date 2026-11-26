@@ -355,6 +355,45 @@ public partial class ScreenViewerWindow : Window
         _noticeTimer.Start();
     }
 
+    // ---- how the picture is fitted to the window ----------------------------------------------------------
+    //
+    // The picture is rarely exactly the size it is shown at, so it is scaled on the way to the screen, and there
+    // are two ways to do that. The careful one is worked out by the processor, anew for every picture that
+    // differs from the last — which is nothing for a picture that stands still and a whole pass over two million
+    // pixels, sixty times a second, for one that moves, on the device least able to spare it and at the very
+    // moment the delay is felt. The quick one is done by the graphics card as part of drawing and costs nothing
+    // that can be measured. So: quick while pictures are arriving, careful once they have stopped, when the
+    // picture on the screen is one somebody is about to read.
+
+    /// <summary>How long after the last picture the careful scaling is put back.</summary>
+    private static readonly TimeSpan SharpenAfter = TimeSpan.FromMilliseconds(350);
+
+    private DispatcherTimer? _sharpenTimer;
+    private bool _scaledForMotion = true;
+
+    private void ScaleForMotion()
+    {
+        if (!_scaledForMotion)
+        {
+            _scaledForMotion = true;
+            RenderOptions.SetBitmapScalingMode(ScreenImage, BitmapScalingMode.Linear);
+        }
+
+        _sharpenTimer ??= new DispatcherTimer(SharpenAfter, DispatcherPriority.Background, (_, _) => ScaleForReading(), Dispatcher);
+        _sharpenTimer.Stop();
+        _sharpenTimer.Start();
+    }
+
+    private void ScaleForReading()
+    {
+        _sharpenTimer?.Stop();
+        if (_scaledForMotion)
+        {
+            _scaledForMotion = false;
+            RenderOptions.SetBitmapScalingMode(ScreenImage, BitmapScalingMode.HighQuality);
+        }
+    }
+
     private void Present(FrameUpdate update)
     {
         try
@@ -386,6 +425,7 @@ public partial class ScreenViewerWindow : Window
             // Kept over the picture: a frame may have resized or moved it under the pointer.
             PlacePointer();
             _framesSinceTick++;
+            ScaleForMotion();
         }
         finally
         {
@@ -1565,6 +1605,7 @@ public partial class ScreenViewerWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _statsTimer.Stop();
+        _sharpenTimer?.Stop();
         _noticeTimer.Stop();
         _layoutTimer.Stop();
         InputLanguageManager.Current.InputLanguageChanged -= OnInputLanguageChanged;

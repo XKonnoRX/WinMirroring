@@ -107,7 +107,7 @@
     <Grid x:Name="Surface" Grid.Row="1" Background="Black" ClipToBounds="True" AllowDrop="True"
           DragEnter="OnSurfaceDragOver" DragOver="OnSurfaceDragOver" Drop="OnSurfaceDrop">
       <Image x:Name="ScreenImage" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"
-             RenderOptions.BitmapScalingMode="HighQuality" Focusable="True" FocusVisualStyle="{x:Null}"
+             RenderOptions.BitmapScalingMode="Linear" Focusable="True" FocusVisualStyle="{x:Null}"
              Stylus.IsPressAndHoldEnabled="False" Stylus.IsFlicksEnabled="False"
              Stylus.IsTapFeedbackEnabled="False" Stylus.IsTouchFeedbackEnabled="False" />
       <Canvas x:Name="Overlay" IsHitTestVisible="False">

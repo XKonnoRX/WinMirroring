@@ -234,6 +234,9 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
         }
     }
 
+    /// <summary>How long telling the viewer that a stream has stopped may take before it is stopped regardless.</summary>
+    private static readonly TimeSpan StopNoticeWithin = TimeSpan.FromSeconds(2);
+
     public async Task StopSourceAsync(uint streamId, string reason = "stopped")
     {
         if (!_sources.TryRemove(streamId, out var source))
@@ -243,9 +246,13 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
 
         try
         {
-            await source.Session.SendControlAsync(new ScreenStopMessage(streamId, reason)).ConfigureAwait(false);
+            // Not waited for without limit. A stream usually ends because its connection did, and a message handed
+            // to a connection that is being torn down can wait for a turn that never comes — which left the stream
+            // itself running behind it: capturing a screen for an hour and a half for a viewer that had gone.
+            await source.Session.SendControlAsync(new ScreenStopMessage(streamId, reason)).AsTask()
+                .WaitAsync(StopNoticeWithin).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or TimeoutException)
         {
         }
 
@@ -563,7 +570,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
         {
             if (_viewers.TryGetValue(streamId, out var viewer) && ReferenceEquals(viewer.Session, session))
             {
-                viewer.Enqueue(payload.ToArray());
+                viewer.OnFrameFromConnection(payload.ToArray());
             }
 
             return ValueTask.CompletedTask;
@@ -588,8 +595,8 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
 
         switch (type)
         {
-            case ScreenMessageType.Ack when ScreenCodec.TryDecodeAck(span, out _, out var viewerMs, out var paintMs):
-                source.OnAck(viewerMs, paintMs);
+            case ScreenMessageType.Ack when ScreenCodec.TryDecodeAck(span, out var ackedNo, out var viewerMs, out var paintMs):
+                source.OnAck(ackedNo, viewerMs, paintMs);
                 break;
 
             case ScreenMessageType.Pointer when ScreenCodec.TryDecodePointer(span, out var action, out var button, out var x, out var y, out var wheel):

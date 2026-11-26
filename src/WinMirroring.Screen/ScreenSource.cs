@@ -114,6 +114,15 @@ internal sealed class ScreenSource : IAsyncDisposable
 
     private static readonly TimeSpan ReportEvery = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// How long the last picture of a burst may go unanswered, on UDP, before a whole one is sent after it. A
+    /// picture lost in the middle of a stream is noticed by the viewer, because the next one arrives and says so.
+    /// The last one before the screen stops changing has no next one: if it is lost, nothing tells anyone, and the
+    /// viewer is left looking at the screen as it was one change ago — a typed letter that does not appear, a menu
+    /// that does not open — until something else moves. Comfortably past a real round trip, and no longer.
+    /// </summary>
+    private const double TailLossAfterMs = 100;
+
     private readonly ScreenSettings _settings;
     private readonly ILogger _logger;
     private readonly InputInjector _injector = new();
@@ -183,6 +192,9 @@ internal sealed class ScreenSource : IAsyncDisposable
     private H264VideoEncoder? _videoEncoder;
     private bool _videoFailed;
     private GpuNv12Converter? _gpuConverter;
+
+    /// <summary>The frame at the size it is sent at, when the processor is the one making it smaller.</summary>
+    private byte[] _scaled = [];
     private bool _gpuFailed;
     private bool _gpuReported;
 
@@ -365,17 +377,23 @@ internal sealed class ScreenSource : IAsyncDisposable
         Volatile.Write(ref _forceAll, 1);
     }
 
-    /// <summary>A frame came back; <paramref name="viewerMs"/> is how long the viewer held it, or -1 if it did not say.</summary>
-    public void OnAck(int viewerMs = -1, int paintMs = -1)
+    /// <summary>
+    /// Frame <paramref name="frameNo"/> came back; <paramref name="viewerMs"/> is how long the viewer held it, or
+    /// -1 if it did not say.
+    /// </summary>
+    public void OnAck(uint frameNo, int viewerMs = -1, int paintMs = -1)
     {
-        _window.OnAck(viewerMs, paintMs);
+        _window.OnAck(frameNo, viewerMs, paintMs);
         _link?.Acknowledged();
     }
 
     /// <summary>The viewer is receiving this stream's UDP probes: its pictures move off the connection.</summary>
     public void OnUdpReady()
     {
-        _link?.Confirm();
+        if (_link?.Confirm() != true)
+        {
+            return; // an answer to probes nobody is waiting on any more; nothing changed
+        }
 
         // The first picture on the new path is a whole one. Not for the decoder's sake alone: a picture already on
         // the connection and one on UDP can pass each other, and a whole picture is read against nothing.
@@ -817,6 +835,15 @@ internal sealed class ScreenSource : IAsyncDisposable
                     Volatile.Write(ref _forceAll, 1);
                 }
 
+                // Nothing new on the screen and a picture still unanswered: on UDP that is what a lost last picture
+                // looks like from here (see TailLossAfterMs). A whole one goes after it — and again, no more often
+                // than whole pictures are ever sent, until one is answered.
+                if (!fresh && seen != 0 && _link is { Carries: true }
+                    && _window.OldestAgeMs > Math.Max(TailLossAfterMs, _window.DelayMs * 3))
+                {
+                    OnRefreshRequested();
+                }
+
                 // Here rather than further down, so that the measurements and the stream's own line in the log keep
                 // coming on a screen that is standing still.
                 var minimumMs = 1000.0 / Observe();
@@ -929,10 +956,11 @@ internal sealed class ScreenSource : IAsyncDisposable
             return false; // too small for H.264 this frame; the tile path handles it
         }
 
-        // Only the graphics card can scale on the way; when the processor is doing the conversion the crop is
-        // encoded at its own size. Guessing here is safe: if the card turns out not to do it after all, the next
-        // frame works it out again and the encoder is rebuilt once.
-        var output = OutputSize(videoCrop, !_gpuFailed && capture.UsesSharedDevice);
+        // Whichever of the two is converting can scale on the way: the graphics card as part of the conversion,
+        // the processor just before it (see BgraScaler). It used to be the card or nothing, and a card that is not
+        // used for conversion — this one's colours are not the ones the two ends agreed on — meant every frame
+        // went out at the screen's own size for the viewer to shrink.
+        var output = OutputSize(videoCrop, canScale: true);
         if (_videoEncoder is null || _videoEncoder.Width != output.Width || _videoEncoder.Height != output.Height)
         {
             _videoEncoder?.Dispose();
@@ -977,9 +1005,22 @@ internal sealed class ScreenSource : IAsyncDisposable
                     return true; // nothing to hand over this turn; the next frame carries a newer picture
                 }
 
-                // The processor path cannot scale, so this only produces anything when the sizes already agree;
-                // when they do not, the frame is skipped and the next one is encoded at the crop's own size.
-                _videoEncoder.Feed(frame, width, videoCrop, force);
+                if (output.Width == videoCrop.Width && output.Height == videoCrop.Height)
+                {
+                    _videoEncoder.Feed(frame, width, videoCrop, force);
+                }
+                else
+                {
+                    // Made smaller first, in a buffer kept for the purpose, and handed over as a whole picture.
+                    var needed = output.Width * output.Height * 4;
+                    if (_scaled.Length != needed)
+                    {
+                        _scaled = new byte[needed];
+                    }
+
+                    BgraScaler.Scale(frame, width, videoCrop, _scaled, output.Width, output.Height);
+                    _videoEncoder.Feed(_scaled, output.Width, new Rectangle(0, 0, output.Width, output.Height), force);
+                }
             }
 
             _fedAt = Stopwatch.GetTimestamp();
@@ -1146,12 +1187,24 @@ internal sealed class ScreenSource : IAsyncDisposable
 
                 foreach (var message in messages)
                 {
-                    // A slot stands for a picture on its way, whichever way it goes.
-                    await _window.TakeAsync(ct).ConfigureAwait(false);
+                    // A slot stands for a picture on its way, whichever way it goes. It is taken under the
+                    // picture's own number (both kinds of frame carry it in the same place), so that the
+                    // acknowledgement that comes back is matched to this picture and not to whichever is oldest.
+                    var frameNo = message.Length >= 9 ? System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(5)) : 0;
+                    await _window.TakeAsync(frameNo, ct).ConfigureAwait(false);
                     Interlocked.Increment(ref _framesSent);
                     Interlocked.Add(ref _bytesSent, message.Length);
+                    var carried = _link is { Carries: true };
                     if (!TrySendByUdp(message))
                     {
+                        if (carried && _link is { Carries: false })
+                        {
+                            // The path has just been given up on, which means the pictures sent on it lately did
+                            // not arrive: what goes on the connection from here would be read against pictures the
+                            // viewer never saw. The next one is a whole one.
+                            Volatile.Write(ref _forceAll, 1);
+                        }
+
                         await Session.SendAsync(ChannelId.Screen, message, ct).ConfigureAwait(false);
                     }
                 }

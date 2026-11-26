@@ -36,8 +36,17 @@ internal sealed class SendWindow : IDisposable
     private readonly SemaphoreSlim _acked = new(0);
     private readonly Stopwatch _clock = Stopwatch.StartNew();
 
-    /// <summary>When each frame still waiting for an acknowledgement went out, oldest first.</summary>
-    private readonly List<double> _inFlight = [];
+    /// <summary>
+    /// Each frame still waiting for an acknowledgement — its number and when it went out — oldest first.
+    ///
+    /// By number, not just in order. An acknowledgement used to be taken as the answer to whichever frame had been
+    /// waiting longest, which is true only while every frame is answered. A picture that goes by UDP and is lost
+    /// whole is never answered, and from then on every acknowledgement was matched to the frame before the one it
+    /// was for: each round trip read one frame too long, frames were counted late that were not, the bitrate came
+    /// down for a link that had nothing wrong with it, and the lost frame held a slot until it aged out.
+    /// </summary>
+    private readonly List<(uint FrameNo, double SentMs)> _inFlight = [];
+    private uint _unnumbered;
 
     private double _delayMs;
     private double _viewerMs;
@@ -116,8 +125,35 @@ internal sealed class SendWindow : IDisposable
         }
     }
 
+    /// <summary>
+    /// How long the oldest frame still unanswered has been waiting, in milliseconds; 0 while none is. On a stream
+    /// that has stopped sending, this growing is the only sign there is that its last picture never arrived.
+    /// </summary>
+    public double OldestAgeMs
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _inFlight.Count == 0 ? 0 : _clock.Elapsed.TotalMilliseconds - _inFlight[0].SentMs;
+            }
+        }
+    }
+
+    /// <summary>Takes a slot for a frame nobody numbered: they are then answered in the order they went out.</summary>
+    public Task TakeAsync(CancellationToken ct)
+    {
+        uint number;
+        lock (_gate)
+        {
+            number = ++_unnumbered;
+        }
+
+        return TakeAsync(number, ct);
+    }
+
     /// <summary>Takes a slot for one frame message, waiting at most the grace period for an acknowledgement.</summary>
-    public async Task TakeAsync(CancellationToken ct)
+    public async Task TakeAsync(uint frameNo, CancellationToken ct)
     {
         while (true)
         {
@@ -127,16 +163,16 @@ internal sealed class SendWindow : IDisposable
                 var now = _clock.Elapsed.TotalMilliseconds;
                 if (_inFlight.Count < _size)
                 {
-                    _inFlight.Add(now);
+                    _inFlight.Add((frameNo, now));
                     return;
                 }
 
-                wait = _graceMs - (now - _inFlight[0]);
+                wait = _graceMs - (now - _inFlight[0].SentMs);
                 if (wait <= 0)
                 {
                     // The viewer is slow, hidden or gone: let the frame go rather than stop the stream for it.
                     _inFlight.RemoveAt(0);
-                    _inFlight.Add(now);
+                    _inFlight.Add((frameNo, now));
                     _givenUp++;
                     return;
                 }
@@ -146,22 +182,43 @@ internal sealed class SendWindow : IDisposable
         }
     }
 
-    /// <summary>
-    /// A frame came back. <paramref name="viewerMs"/> is how long the viewer says it held the frame and
-    /// <paramref name="paintMs"/> how long its window then took to put a picture on the screen; either is a
-    /// negative number from a viewer that does not report it.
-    /// </summary>
+    /// <summary>The oldest frame waiting came back (for frames taken without a number).</summary>
     public void OnAck(int viewerMs = -1, int paintMs = -1)
     {
+        uint oldest;
         lock (_gate)
         {
             if (_inFlight.Count == 0)
             {
+                return;
+            }
+
+            oldest = _inFlight[0].FrameNo;
+        }
+
+        OnAck(oldest, viewerMs, paintMs);
+    }
+
+    /// <summary>
+    /// Frame <paramref name="frameNo"/> came back. <paramref name="viewerMs"/> is how long the viewer says it held
+    /// the frame and <paramref name="paintMs"/> how long its window then took to put a picture on the screen;
+    /// either is a negative number from a viewer that does not report it.
+    ///
+    /// Frames sent before it go with it. The viewer answers them in order, so one that is still unanswered when a
+    /// later one comes back is not going to be: it was lost on the way, and its slot is free.
+    /// </summary>
+    public void OnAck(uint frameNo, int viewerMs, int paintMs)
+    {
+        lock (_gate)
+        {
+            var at = _inFlight.FindIndex(f => f.FrameNo == frameNo);
+            if (at < 0)
+            {
                 return; // an acknowledgement for a frame this window already gave up on
             }
 
-            var elapsed = _clock.Elapsed.TotalMilliseconds - _inFlight[0];
-            _inFlight.RemoveAt(0);
+            var elapsed = _clock.Elapsed.TotalMilliseconds - _inFlight[at].SentMs;
+            _inFlight.RemoveRange(0, at + 1);
             _delayMs = _delayMs <= 0 ? elapsed : (_delayMs * 0.75) + (elapsed * 0.25);
             _acks++;
             if (elapsed > _lateMs)

@@ -92,7 +92,7 @@ public sealed class ScreenViewer : IAsyncDisposable
         // The window paints on the dispatcher, whose timing is as coarse as the system timer; while a view is open
         // that is worth making fine (see MediaTimerResolution).
         _timer = MediaTimerResolution.Hold();
-        _ = Task.Run(DecodeLoopAsync);
+        _decodeLoop = Task.Run(DecodeLoopAsync);
         _ = Task.Run(SendLoopAsync);
     }
 
@@ -235,6 +235,14 @@ public sealed class ScreenViewer : IAsyncDisposable
     private string _mediaKey = string.Empty;
     private Task? _mediaTicks;
     private int _udpReported;
+    private long _udpAnsweredTicks = long.MinValue / 2;
+
+    /// <summary>
+    /// How often a probe is answered at most. Each round of probes needs an answer of its own — a source whose
+    /// path went quiet probes again later, and an answer given once per view left it asking for ever — but a round
+    /// is a probe every hundred and twenty milliseconds, and one answer serves the round.
+    /// </summary>
+    private static readonly TimeSpan AnswerProbesEvery = TimeSpan.FromMilliseconds(400);
 
     /// <summary>Half a frame at sixty a second: how closely the clock is watched while a picture is in pieces.</summary>
     private static readonly TimeSpan TickWhileWaiting = TimeSpan.FromMilliseconds(8);
@@ -326,7 +334,14 @@ public sealed class ScreenViewer : IAsyncDisposable
 
             if (kind == VideoLink.ProbeKind)
             {
-                ReportUdpWorks();
+                var now = Environment.TickCount64;
+                if (now - _udpAnsweredTicks >= AnswerProbesEvery.TotalMilliseconds)
+                {
+                    _udpAnsweredTicks = now;
+                    Volatile.Write(ref _udpReported, 1);
+                    _outbox.Writer.TryWrite(ScreenCodec.EncodeRequest(ScreenMessageType.UdpReady, StreamId));
+                }
+
                 return;
             }
 
@@ -376,7 +391,50 @@ public sealed class ScreenViewer : IAsyncDisposable
         }
     }
 
-    internal void Enqueue(byte[] message) => _frames.Writer.TryWrite(new Incoming(message, Stopwatch.GetTimestamp()));
+    internal void Enqueue(byte[] message)
+    {
+        Interlocked.Increment(ref _waiting);
+        if (!_frames.Writer.TryWrite(new Incoming(message, Stopwatch.GetTimestamp())))
+        {
+            Interlocked.Decrement(ref _waiting);
+        }
+    }
+
+    /// <summary>
+    /// A frame that came on the connection rather than as datagrams. The side that puts datagrams together is told
+    /// the picture's number first, so it does not go on waiting for one that has already arrived this way.
+    /// </summary>
+    internal void OnFrameFromConnection(byte[] message)
+    {
+        if (ScreenCodec.TryReadVideoFrame(message, out var frameNo, out _, out _, out _, out _))
+        {
+            lock (_mediaGate)
+            {
+                _reassembly?.Passed(frameNo);
+            }
+        }
+
+        Enqueue(message);
+    }
+
+    /// <summary>Frames that have arrived and are waiting for the decoder, the one it is working on not counted.</summary>
+    private int _waiting;
+
+    /// <summary>
+    /// How many pictures in a row may be decoded without being drawn. When a newer picture is already waiting, the
+    /// one in hand is out of date before it is finished, so only the part of the work the next picture depends on
+    /// is done for it. Without this a device that takes a hair longer over a frame than frames take to arrive
+    /// builds up a queue it never works off: every picture is then shown two or three frames late, for as long as
+    /// the screen keeps moving, which is exactly when the delay is felt. Bounded, so that a device that can never
+    /// keep up still shows every third picture rather than none.
+    /// </summary>
+    private const int MaxHurried = 2;
+    private int _hurriedInARow;
+    private long _hurried;
+    private long _reportedHurried;
+    private bool _videoShown;
+    private int _videoWidth;
+    private int _videoHeight;
 
     /// <summary>
     /// The source's pointer, taken as it arrives rather than queued behind the frames: the whole reason it travels
@@ -443,7 +501,33 @@ public sealed class ScreenViewer : IAsyncDisposable
         return notifySource ? SendControlAsync(new ScreenStopMessage(StreamId, "closed by viewer")) : Task.CompletedTask;
     }
 
+    /// <summary>
+    /// The loop that decodes, kept so that closing can wait for it. The decoders belong to it: it is the only
+    /// thing that calls into them, and it gives them up itself when it ends. They used to be given up by whoever
+    /// closed the view, at once — while this loop could be in the middle of a picture, inside the decoder, which
+    /// was then freed under it. That is an access violation, and it takes the whole application with it: closing a
+    /// view at the wrong moment closed everything.
+    /// </summary>
+    private readonly Task _decodeLoop;
+
+    /// <summary>How long closing waits for a picture in the decoder to be finished before leaving it be.</summary>
+    private static readonly TimeSpan DecoderFinishesWithin = TimeSpan.FromSeconds(3);
+
     private async Task DecodeLoopAsync()
+    {
+        try
+        {
+            await DecodeFramesAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _videoDecoder?.Dispose();
+            _videoDecoder = null;
+            _decoder.Dispose();
+        }
+    }
+
+    private async Task DecodeFramesAsync()
     {
         var ct = _cts.Token;
         try
@@ -451,6 +535,7 @@ public sealed class ScreenViewer : IAsyncDisposable
             await _attached.Task.WaitAsync(ct).ConfigureAwait(false);
             await foreach (var incoming in _frames.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
+                Interlocked.Decrement(ref _waiting);
                 if (ScreenCodec.TryReadHeader(incoming.Message, out var type, out _) && type == ScreenMessageType.VideoFrame)
                 {
                     await DecodeVideoAsync(incoming, ct).ConfigureAwait(false);
@@ -521,6 +606,17 @@ public sealed class ScreenViewer : IAsyncDisposable
             }
         }
 
+        // Behind: a newer picture is already here. This one is decoded, because the next is read against it, but
+        // not drawn (see MaxHurried). Never the first picture, and never across a change of size — those are the
+        // ones the window is waiting on to know what it is showing.
+        var hurry = _videoShown
+            && _hurriedInARow < MaxHurried
+            && frame.Width == _videoWidth
+            && frame.Height == _videoHeight
+            && Volatile.Read(ref _waiting) > 0;
+        _videoWidth = frame.Width;
+        _videoHeight = frame.Height;
+
         var produced = false;
         var resized = false;
         if (_videoDecoder is not null)
@@ -530,8 +626,8 @@ public sealed class ScreenViewer : IAsyncDisposable
             _videoDecoder.Expect(frame.Width, frame.Height);
             try
             {
-                produced = _videoDecoder.DecodeInto(frame.Data, ref _image, out var width, out var height);
-                if (produced)
+                produced = _videoDecoder.DecodeInto(frame.Data, ref _image, out var width, out var height, read: !hurry);
+                if (produced && !hurry)
                 {
                     resized = width != _width || height != _height;
                     _width = width;
@@ -571,6 +667,17 @@ public sealed class ScreenViewer : IAsyncDisposable
 
         _videoSilentSince = null;
         await AckAsync(frame.FrameNo, incoming.Arrived, ct).ConfigureAwait(false);
+        if (hurry)
+        {
+            _hurriedInARow++;
+            _hurried++;
+            _decoded++;
+            Report();
+            return;
+        }
+
+        _hurriedInARow = 0;
+        _videoShown = true;
 
         // Video carries the whole picture every time, so nothing has to be carried over between buffers.
         Present(frame.FrameNo, [new Rectangle(0, 0, _width, _height)], resized, accumulates: false);
@@ -650,11 +757,13 @@ public sealed class ScreenViewer : IAsyncDisposable
         var decoded = _decoded - _reportedDecoded;
         var skipped = _skipped - _reportedSkipped;
         var (delivered, repaired, lost) = Datagrams;
+        var hurried = _hurried - _reportedHurried;
         _logger.LogInformation(
             "View of {Peer} (stream {Stream}): {Rate:F1} frames/s decoded, {Shown:F1} shown, {Skipped} not shown "
-            + "while the window was busy; by UDP {Delivered} pictures of which {Repaired} had a lost datagram "
-            + "rebuilt, {Lost} given up on",
-            PeerName, StreamId, decoded / seconds, (decoded - skipped) / seconds, skipped, delivered, repaired, lost);
+            + "while the window was busy, {Hurried} decoded without being drawn to catch up; by UDP {Delivered} "
+            + "pictures of which {Repaired} had a lost datagram rebuilt, {Lost} given up on",
+            PeerName, StreamId, decoded / seconds, (decoded - skipped - hurried) / seconds, skipped, hurried, delivered, repaired, lost);
+        _reportedHurried = _hurried;
         _reportedTicks = now;
         _reportedDecoded = _decoded;
         _reportedSkipped = _skipped;
@@ -719,8 +828,19 @@ public sealed class ScreenViewer : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await CloseAsync(notifySource: true, reason: null).ConfigureAwait(false);
-        _decoder.Dispose();
-        _videoDecoder?.Dispose();
+
+        // The decoders are given up by the loop that uses them, when it ends (see _decodeLoop). If it is stuck
+        // inside one for longer than this, they are left alone: something leaked is better than something freed
+        // while it is being used.
+        try
+        {
+            await _decodeLoop.WaitAsync(DecoderFinishesWithin).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+        {
+            _logger.LogDebug("The decoder of the view of {Peer} was still busy when the view closed", PeerName);
+        }
+
         lock (_mediaGate)
         {
             _mediaCipher?.Dispose();
