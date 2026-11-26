@@ -531,6 +531,11 @@ internal sealed class ScreenSource : IAsyncDisposable
         {
             ReportIfBlocked();
         }
+        else if (touchAction == Injection.TouchInjector.Action.Up)
+        {
+            // Whoever watches for text boxes being tapped looks at where the focus went once the tap is over.
+            RemoteInputTracker.NoteTouchEnded(Session.PeerId, StreamId);
+        }
     }
 
     /// <summary>Tells the viewer (at most every 10 s) that an elevated window in front swallows its input.</summary>

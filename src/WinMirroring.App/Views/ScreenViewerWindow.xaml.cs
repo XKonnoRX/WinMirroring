@@ -89,6 +89,7 @@ public partial class ScreenViewerWindow : Window
         InitializeComponent();
         InitializeZoom();
         _viewer = viewer;
+        InitializeKeyboardHints(services);
         _dragDrop = services.GetService<DragDropCoordinator>();
         _clipboard = services.GetService<ClipboardSyncService>();
         _quick = services.GetService<ViewModels.MainViewModel>();

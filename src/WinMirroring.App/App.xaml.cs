@@ -201,6 +201,9 @@ public partial class App : Application
             hub.Register();
             _services.GetRequiredService<SettingsUi>().Register();
 
+            // A text box tapped through a view of this screen brings the viewer's keyboard up.
+            _services.GetRequiredService<RemoteKeyboardWatcher>().Start();
+
             var panel = _services.GetRequiredService<PanelUi>();
             panel.Hide = HideWebPanel;
             panel.OpenHub = ShowHub;
@@ -512,6 +515,7 @@ public partial class App : Application
         services.AddSingleton<HubUi>();
         services.AddSingleton<SettingsUi>();
         services.AddSingleton<RemoteGuard>();
+        services.AddSingleton<RemoteKeyboardWatcher>();
         services.AddSingleton<IViewerControl>(_ => this);
         services.AddSingleton<PanelUi>();
         services.AddSingleton<MainViewModel>();

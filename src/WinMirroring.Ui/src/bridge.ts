@@ -180,6 +180,7 @@ const sampleSettings = {
     allowControl: true,
     windowDrag: true,
     hideSentWindow: true,
+    autoKeyboard: true,
     closeUnusedMinutes: 5,
     maxFps: 60,
     quality: 70,

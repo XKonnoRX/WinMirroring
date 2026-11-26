@@ -520,7 +520,11 @@ public partial class ScreenViewerWindow
         SetLift(Math.Clamp(wanted, 0, Math.Max(0, Surface.ActualHeight - top.Y)));
     }
 
-    private void OnKeyboardHiding() => SetLift(0);
+    private void OnKeyboardHiding()
+    {
+        SetLift(0);
+        ForgetTapKeyboard();
+    }
 
     private void SetLift(double lift)
     {

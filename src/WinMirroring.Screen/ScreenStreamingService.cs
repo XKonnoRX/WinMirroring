@@ -391,6 +391,29 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
         RaiseSourcesChanged();
     }
 
+    /// <summary>
+    /// Tells the device watching stream <paramref name="streamId"/> that its tap put the focus in a text box here (or
+    /// out of one), so it can bring its touch keyboard up or down. False when that stream is not shown to that device.
+    /// </summary>
+    public async Task<bool> SendKeyboardHintAsync(string peerId, uint streamId, bool show)
+    {
+        if (!_sources.TryGetValue(streamId, out var source) || source.Session.PeerId != peerId)
+        {
+            return false;
+        }
+
+        try
+        {
+            await source.Session.SendControlAsync(new ScreenKeyboardMessage(streamId, show)).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
+        {
+            _logger.LogDebug("Keyboard hint to {Peer} not sent: {Message}", source.Session.PeerName, ex.Message);
+            return false;
+        }
+    }
+
     private void OnControlMessage(PeerSession session, ControlMessage message)
     {
         switch (message)
@@ -416,6 +439,14 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
                 if (!caps.IsReply)
                 {
                     SendCapabilities(session, reply: true);
+                }
+
+                break;
+
+            case ScreenKeyboardMessage keyboard:
+                if (_viewers.TryGetValue(keyboard.StreamId, out var tapped) && ReferenceEquals(tapped.Session, session))
+                {
+                    tapped.OnKeyboardHint(keyboard.Show);
                 }
 
                 break;

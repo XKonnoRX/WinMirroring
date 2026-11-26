@@ -204,6 +204,11 @@ public sealed class ScreenViewer : IAsyncDisposable
 
     public void Close() => _ = CloseAsync(notifySource: true, reason: null);
 
+    /// <summary>The source says a tap from here put the focus in a text box there (true), or took it out (false).</summary>
+    public event Action<ScreenViewer, bool>? KeyboardHint;
+
+    internal void OnKeyboardHint(bool show) => KeyboardHint?.Invoke(this, show);
+
     internal void OnInfo(ScreenStreamMessage info)
     {
         Info = info;

@@ -146,6 +146,7 @@ public sealed class SettingsUi
             allowControl = _vm.ScreenAllowControl,
             windowDrag = _vm.ScreenWindowDrag,
             hideSentWindow = _vm.ScreenHideSentWindow,
+            autoKeyboard = _vm.ScreenAutoKeyboard,
             closeUnusedMinutes = _node.Settings.Screen.CloseUnusedViewMinutes,
             maxFps = _vm.ScreenMaxFps,
             quality = _vm.ScreenQuality,
@@ -287,6 +288,7 @@ public sealed class SettingsUi
             case "power.fps": _vm.PowerFps = Number(); break;
             case "screen.windowDrag": _vm.ScreenWindowDrag = Flag(); break;
             case "screen.hideSentWindow": _vm.ScreenHideSentWindow = Flag(); break;
+            case "screen.autoKeyboard": _vm.ScreenAutoKeyboard = Flag(); break;
             case "screen.maxFps": _vm.ScreenMaxFps = Number(); break;
             case "screen.closeUnusedMinutes":
                 _node.Settings.Screen.CloseUnusedViewMinutes = Math.Clamp(Number(), 0, 600);

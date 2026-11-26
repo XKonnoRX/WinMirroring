@@ -30,6 +30,14 @@ public static class RemoteInputTracker
         }
     }
 
+    /// <summary>
+    /// A finger of a viewing device left the screen here (peer id, stream id). Raised on whatever thread the touch
+    /// arrived on: a handler that looks at what the touch did does it elsewhere.
+    /// </summary>
+    public static event Action<string, uint>? TouchEnded;
+
+    public static void NoteTouchEnded(string peerId, uint streamId) => TouchEnded?.Invoke(peerId, streamId);
+
     /// <summary>A viewing device pressed a key here.</summary>
     public static void NoteKey() => Volatile.Write(ref _active, Environment.TickCount64);
 

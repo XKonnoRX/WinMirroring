@@ -74,6 +74,12 @@ public sealed class ScreenSettings
     /// stops showing it. Without the driver the window stays where it is.
     /// </summary>
     public bool HideSentWindow { get; set; } = true;
+
+    /// <summary>
+    /// Viewing another device: a tap on a text box there brings this device's touch keyboard up, and a tap elsewhere
+    /// takes it down again (only a keyboard brought up that way). Off for a device that has a keyboard of its own.
+    /// </summary>
+    public bool AutoKeyboard { get; set; } = true;
 }
 
 /// <summary>

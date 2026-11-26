@@ -163,6 +163,16 @@ public class CodecTests
     }
 
     [Fact]
+    public void AKeyboardHintRoundTripsAndAnUnknownMessageIsDroppedQuietly()
+    {
+        var hint = Assert.IsType<ScreenKeyboardMessage>(ControlMessageCodec.TryDecode(ControlMessageCodec.Encode(new ScreenKeyboardMessage(7, Show: true))));
+        Assert.Equal((7u, true), (hint.StreamId, hint.Show));
+
+        // What an older device does with a message from a newer one it does not know: nothing, and no exception.
+        Assert.Null(ControlMessageCodec.TryDecode("""{"t":"screen-something-new","streamId":7}"""u8));
+    }
+
+    [Fact]
     public void ALayoutFromAnOlderDeviceHasWholeDeviceCells()
     {
         var json = """{"t":"layout","version":7,"cells":[{"deviceId":"pc","column":1,"row":2}]}"""u8.ToArray();

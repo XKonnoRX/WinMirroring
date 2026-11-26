@@ -35,6 +35,7 @@ export type SettingsState = {
     allowControl: boolean
     windowDrag: boolean
     hideSentWindow: boolean
+    autoKeyboard: boolean
     closeUnusedMinutes: number
     maxFps: number
     quality: number

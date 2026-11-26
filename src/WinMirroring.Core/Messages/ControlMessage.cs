@@ -20,6 +20,7 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(ScreenRequestMessage), "screen-request")]
 [JsonDerivedType(typeof(ScreenStreamMessage), "screen-stream")]
 [JsonDerivedType(typeof(ScreenStopMessage), "screen-stop")]
+[JsonDerivedType(typeof(ScreenKeyboardMessage), "screen-keyboard")]
 [JsonDerivedType(typeof(ScreenCodecFallbackMessage), "screen-fallback")]
 [JsonDerivedType(typeof(LogRequestMessage), "log-request")]
 [JsonDerivedType(typeof(LogResponseMessage), "log-response")]
@@ -212,6 +213,13 @@ public sealed record ScreenStreamMessage(
 
 /// <summary>Either side: the stream ends.</summary>
 public sealed record ScreenStopMessage(uint StreamId, string? Reason) : ControlMessage;
+
+/// <summary>
+/// Source → viewer: a touch from that viewer just put the focus in a text box here (<see cref="Show"/>), or moved
+/// it out of one again. The viewer brings its own touch keyboard up or down, as a tap on a text box would on a
+/// tablet itself. An older viewer does not know the message and ignores it.
+/// </summary>
+public sealed record ScreenKeyboardMessage(uint StreamId, bool Show) : ControlMessage;
 
 /// <summary>Viewer → source: H.264 gives no picture here (no decoder, or it stays silent); send JPEG tiles instead.</summary>
 public sealed record ScreenCodecFallbackMessage(uint StreamId, string Reason) : ControlMessage;
