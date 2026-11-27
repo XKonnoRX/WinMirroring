@@ -103,6 +103,20 @@ public sealed class PeerSessionManager : IAsyncDisposable
                     result.Add(new IPEndPoint(ip, peer.DiscoveryPort));
                 }
             }
+
+            // And where Tailscale knows a machine by this device's name, there: away from the local network that
+            // is the only place it can be found without its address being typed in (see TailscalePeers).
+            if (_settings.FindPeersOnTailscale)
+            {
+                foreach (var ip in Network.TailscalePeers.AddressesOf([peer.Name]))
+                {
+                    var there = new IPEndPoint(ip, peer.DiscoveryPort);
+                    if (!result.Contains(there))
+                    {
+                        result.Add(there);
+                    }
+                }
+            }
         }
 
         return result;

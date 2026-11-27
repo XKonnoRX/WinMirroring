@@ -26,6 +26,13 @@ public sealed class AppSettings
     /// </summary>
     public bool PinConnectionsToInterface { get; set; } = true;
 
+    /// <summary>
+    /// Look for paired devices on the Tailscale network this machine is on, by their names, so that they are found
+    /// away from home without an address being entered (see Network.TailscalePeers). Only machines that carry the
+    /// name of a device already paired are ever asked. On by default; does nothing where there is no Tailscale.
+    /// </summary>
+    public bool FindPeersOnTailscale { get; set; } = true;
+
     /// <summary>Peers that cannot be found by broadcast (VPN): "host" or "host:discoveryPort".</summary>
     public List<string> ManualPeerAddresses { get; set; } = [];
 
