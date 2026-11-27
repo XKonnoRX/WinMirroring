@@ -72,7 +72,10 @@ internal sealed class H264VideoDecoder : IDisposable
     /// <paramref name="useGraphicsCard"/> false keeps the whole thing in memory, which is what a retry after
     /// <see cref="GraphicsCardFailed"/> asks for.
     /// </summary>
-    public static H264VideoDecoder? TryCreate(int width, int height, ILogger logger, bool useGraphicsCard = true)
+    /// <summary>The format this decoder reads (see <see cref="VideoFormat"/>).</summary>
+    public VideoFormat Format { get; private set; }
+
+    public static H264VideoDecoder? TryCreate(int width, int height, ILogger logger, bool useGraphicsCard = true, VideoFormat format = VideoFormat.H264)
     {
         if (width < 16 || height < 16)
         {
@@ -97,7 +100,7 @@ internal sealed class H264VideoDecoder : IDisposable
             gpu = null;
         }
 
-        var input = new RegisterTypeInfo { GuidMajorType = MediaTypeGuids.Video, GuidSubtype = VideoInterop.H264 };
+        var input = new RegisterTypeInfo { GuidMajorType = MediaTypeGuids.Video, GuidSubtype = VideoInterop.SubtypeOf(format) };
         var output = new RegisterTypeInfo { GuidMajorType = MediaTypeGuids.Video, GuidSubtype = VideoInterop.Nv12 };
         IMFActivateCollection? activates = null;
         try
@@ -114,7 +117,7 @@ internal sealed class H264VideoDecoder : IDisposable
                 try
                 {
                     transform = activate.ActivateObject<IMFTransform>();
-                    var decoder = Configure(transform, manager, gpu, width, height, logger);
+                    var decoder = Configure(transform, manager, gpu, width, height, logger, format);
                     if (decoder is not null)
                     {
                         logger.LogInformation(
@@ -169,7 +172,7 @@ internal sealed class H264VideoDecoder : IDisposable
         }
     }
 
-    private static H264VideoDecoder? Configure(IMFTransform transform, IMFDXGIDeviceManager? manager, GpuFrameReader? gpu, int width, int height, ILogger logger)
+    private static H264VideoDecoder? Configure(IMFTransform transform, IMFDXGIDeviceManager? manager, GpuFrameReader? gpu, int width, int height, ILogger logger, VideoFormat format)
     {
         transform.Attributes.Set(VideoInterop.LowLatency, true);
 
@@ -192,13 +195,13 @@ internal sealed class H264VideoDecoder : IDisposable
         using (var inputType = MediaFactory.MFCreateMediaType())
         {
             inputType.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Video);
-            inputType.Set(MediaTypeAttributeKeys.Subtype, VideoInterop.H264);
+            inputType.Set(MediaTypeAttributeKeys.Subtype, VideoInterop.SubtypeOf(format));
             inputType.Set(MediaTypeAttributeKeys.FrameSize, VideoInterop.Pack(width, height));
             inputType.Set(MediaTypeAttributeKeys.InterlaceMode, VideoInterop.InterlaceProgressive);
             transform.SetInputType(0, inputType, 0);
         }
 
-        var decoder = new H264VideoDecoder(transform, onGpu ? manager : null, onGpu ? gpu : null, width, height, logger);
+        var decoder = new H264VideoDecoder(transform, onGpu ? manager : null, onGpu ? gpu : null, width, height, logger) { Format = format };
         decoder.SelectNv12Output();
         decoder.RefreshOutputSize();
         transform.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
@@ -503,10 +506,9 @@ internal sealed class H264VideoDecoder : IDisposable
     /// starts, so without it every picture would come out one access unit late, and the last one of a still screen
     /// never.
     /// </summary>
-    private static readonly byte[] AccessUnitDelimiter = [0, 0, 0, 1, 0x09, 0x10];
-
-    private static IMFSample BuildSample(byte[] accessUnit)
+    private IMFSample BuildSample(byte[] accessUnit)
     {
+        var AccessUnitDelimiter = VideoInterop.DelimiterOf(Format);
         var length = accessUnit.Length + AccessUnitDelimiter.Length;
         var buffer = MediaFactory.MFCreateMemoryBuffer(length);
         buffer.Lock(out var pointer, out _, out _);

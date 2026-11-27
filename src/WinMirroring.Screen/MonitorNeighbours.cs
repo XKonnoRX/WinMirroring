@@ -61,8 +61,8 @@ public static class MonitorNeighbours
     }
 
     /// <summary>
-    /// Whether a movement of two fingers together is a swipe sideways: clearly more across than up or down. A
-    /// scroll drifts sideways a little and must not be taken for one.
+    /// Whether a movement of fingers together is a swipe sideways: clearly more across than up or down. A
+    /// movement up or down drifts sideways a little and must not be taken for one.
     /// </summary>
     public static bool IsSideways(double dx, double dy) => Math.Abs(dx) >= Math.Abs(dy) * 2 && Math.Abs(dx) > 0;
 

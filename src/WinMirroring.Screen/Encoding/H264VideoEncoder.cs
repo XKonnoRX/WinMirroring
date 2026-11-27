@@ -95,7 +95,10 @@ internal sealed class H264VideoEncoder : IDisposable
     public bool UsesSharedDevice => _sharedDevice;
 
     /// <summary>Creates a hardware H.264 encoder for the given size, or null when none can be configured.</summary>
-    public static H264VideoEncoder? TryCreate(int width, int height, int fps, int bitrateKbps, ILogger logger)
+    /// <summary>The format this encoder produces (see <see cref="VideoFormat"/>).</summary>
+    public VideoFormat Format { get; private set; }
+
+    public static H264VideoEncoder? TryCreate(int width, int height, int fps, int bitrateKbps, ILogger logger, VideoFormat format = VideoFormat.H264)
     {
         width = Nv12Converter.Even(width);
         height = Nv12Converter.Even(height);
@@ -123,7 +126,7 @@ internal sealed class H264VideoEncoder : IDisposable
             CreateDeviceManager(logger, out device, out manager, out shared);
 
             var input = new RegisterTypeInfo { GuidMajorType = MediaTypeGuids.Video, GuidSubtype = VideoInterop.Nv12 };
-            var output = new RegisterTypeInfo { GuidMajorType = MediaTypeGuids.Video, GuidSubtype = VideoInterop.H264 };
+            var output = new RegisterTypeInfo { GuidMajorType = MediaTypeGuids.Video, GuidSubtype = VideoInterop.SubtypeOf(format) };
             using var activates = MediaFactory.MFTEnumEx(
                 TransformCategoryGuids.VideoEncoder,
                 (uint)(EnumFlag.EnumFlagHardware | EnumFlag.EnumFlagSortandfilter),
@@ -136,7 +139,7 @@ internal sealed class H264VideoEncoder : IDisposable
                 try
                 {
                     transform = activate.ActivateObject<IMFTransform>();
-                    var encoder = Configure(transform, manager, device, shared, width, height, fps, bitrateKbps, logger);
+                    var encoder = Configure(transform, manager, device, shared, width, height, fps, bitrateKbps, logger, format);
                     if (encoder is not null)
                     {
                         transform = null; // ownership moved into the encoder
@@ -229,7 +232,7 @@ internal sealed class H264VideoEncoder : IDisposable
         }
     }
 
-    private static H264VideoEncoder? Configure(IMFTransform transform, IMFDXGIDeviceManager? manager, ID3D11Device? device, bool shared, int width, int height, int fps, int bitrateKbps, ILogger logger)
+    private static H264VideoEncoder? Configure(IMFTransform transform, IMFDXGIDeviceManager? manager, ID3D11Device? device, bool shared, int width, int height, int fps, int bitrateKbps, ILogger logger, VideoFormat format)
     {
         var attributes = transform.Attributes;
         attributes.Set(TransformAttributeKeys.TransformAsyncUnlock, true);
@@ -243,13 +246,13 @@ internal sealed class H264VideoEncoder : IDisposable
         using (var outputType = MediaFactory.MFCreateMediaType())
         {
             outputType.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Video);
-            outputType.Set(MediaTypeAttributeKeys.Subtype, VideoInterop.H264);
+            outputType.Set(MediaTypeAttributeKeys.Subtype, VideoInterop.SubtypeOf(format));
             outputType.Set(MediaTypeAttributeKeys.AvgBitrate, (uint)Math.Clamp(bitrateKbps, 500, 100_000) * 1000u);
             outputType.Set(MediaTypeAttributeKeys.FrameSize, VideoInterop.Pack(width, height));
             outputType.Set(MediaTypeAttributeKeys.FrameRate, VideoInterop.Pack(fps, 1));
             outputType.Set(MediaTypeAttributeKeys.PixelAspectRatio, VideoInterop.Pack(1, 1));
             outputType.Set(MediaTypeAttributeKeys.InterlaceMode, VideoInterop.InterlaceProgressive);
-            outputType.Set(MediaTypeAttributeKeys.Mpeg2Profile, VideoInterop.H264ProfileMain);
+            outputType.Set(MediaTypeAttributeKeys.Mpeg2Profile, VideoInterop.ProfileOf(format));
             transform.SetOutputType(0, outputType, 0);
         }
 
@@ -269,7 +272,7 @@ internal sealed class H264VideoEncoder : IDisposable
         var outputSize = Math.Max(streamInfo.Size, width * height * 2);
 
         var events = transform.QueryInterface<IMFMediaEventGenerator>();
-        var encoder = new H264VideoEncoder(transform, events, manager, device, shared, providesSamples, outputSize, width, height, fps, logger);
+        var encoder = new H264VideoEncoder(transform, events, manager, device, shared, providesSamples, outputSize, width, height, fps, logger) { Format = format };
         encoder.TryTuneCodec(fps, bitrateKbps);
 
         transform.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
@@ -644,7 +647,7 @@ internal sealed class H264VideoEncoder : IDisposable
                 contiguous.Unlock();
                 if (bytes.Length > 0)
                 {
-                    _outputs.Enqueue(new VideoAccessUnit(bytes, VideoInterop.ContainsKeyframe(bytes)));
+                    _outputs.Enqueue(new VideoAccessUnit(bytes, VideoInterop.ContainsKeyframe(bytes, Format)));
                     Interlocked.Increment(ref DiagOutputs);
                     _outputQueued.Set();
                 }

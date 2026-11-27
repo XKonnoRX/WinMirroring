@@ -152,9 +152,9 @@ public partial class ScreenViewerWindow
         _gesture.Clear();
         _gestureStart = null;
         _undecided = false;
+        _swiping = false;
         _paging = false;
         _pageShift = 0;
-        _overpull = 0;
         _edgeTimer?.Stop();
         ApplyView();
         UpdateZoomText();
@@ -323,6 +323,28 @@ public partial class ScreenViewerWindow
         var id = e.TouchDevice.Id;
         if (_gesture.Count > 0)
         {
+            if (JoinsAsThird())
+            {
+                // Three fingers put down together, where there is another monitor to go to: they may be a swipe
+                // to it (see ScreenViewerWindow.Paging). Whatever the first two did to the picture in the moment
+                // before the third arrived is taken back — they were never two fingers.
+                if (_gestureStart is { } before)
+                {
+                    _zoom = before.Zoom;
+                    _pan = before.Pan;
+                }
+
+                _undecided = false;
+                _swiping = true;
+                _gesture[id] = e.TouchDevice;
+                e.TouchDevice.Capture(ScreenImage);
+                StartGesture();
+                ApplyView();
+                UpdateZoomText();
+                e.Handled = true;
+                return true;
+            }
+
             if (_undecided)
             {
                 // A third finger before the two decided: a gesture of more fingers, for the other device.
@@ -335,6 +357,7 @@ public partial class ScreenViewerWindow
                 _gesture[id] = e.TouchDevice;
                 e.TouchDevice.Capture(ScreenImage);
                 StartGesture();
+                _twoSince = Environment.TickCount64;
             }
 
             e.Handled = true;
@@ -364,6 +387,11 @@ public partial class ScreenViewerWindow
         _gesture[id] = e.TouchDevice;
         e.TouchDevice.Capture(ScreenImage);
         StartGesture();
+        if (_gesture.Count == 2)
+        {
+            _twoSince = Environment.TickCount64;
+        }
+
         e.Handled = true;
         return true;
     }
@@ -380,8 +408,31 @@ public partial class ScreenViewerWindow
         if (_paging)
         {
             // Sliding the picture towards the monitor beside it (see ScreenViewerWindow.Paging).
-            _pageShift = (middle - start.Middle).X;
+            _pageShift = (middle - start.Middle).X - _pageFrom;
             ApplyView();
+            return true;
+        }
+
+        if (_swiping)
+        {
+            var slide = middle - start.Middle;
+            if (slide.Length >= SlideDecides)
+            {
+                _swiping = false;
+                if (StartsPaging(slide))
+                {
+                    // Sideways, and there is a monitor that way: the picture goes with the fingers, from where
+                    // it stands — what they moved before saying so is not made up in a jump.
+                    _paging = true;
+                    _pageFrom = slide.X;
+                    _pageShift = 0;
+                }
+                else
+                {
+                    HandOverToRemote(); // three fingers going anywhere else are the other device's
+                }
+            }
+
             return true;
         }
 
@@ -390,21 +441,9 @@ public partial class ScreenViewerWindow
             var pinched = start.Distance > 0 && Math.Abs((distance / start.Distance) - 1) >= PinchDecides;
             if (!pinched)
             {
-                var slide = middle - start.Middle;
-                if (slide.Length >= SlideDecides)
+                if ((middle - start.Middle).Length >= SlideDecides)
                 {
-                    if (StartsPaging(slide))
-                    {
-                        // Sideways, and there is a monitor that way: the picture goes with the fingers.
-                        _undecided = false;
-                        _paging = true;
-                        _pageShift = slide.X;
-                        ApplyView();
-                    }
-                    else
-                    {
-                        HandOverToRemote();
-                    }
+                    HandOverToRemote();
                 }
 
                 return true;
@@ -429,19 +468,7 @@ public partial class ScreenViewerWindow
             _pan = start.Pan + (middle - start.Middle);
         }
 
-        // What the fingers asked for and what the edge of the picture allowed: the difference is how far they
-        // have pulled past it. Only while they are moving it, not while they are changing its size.
-        var wanted = _pan.X;
-        _pageShift = 0;
         ApplyView();
-        var moving = _zoom > 1.02 && start.Zoom > 0 && Math.Abs((_zoom / start.Zoom) - 1) < 0.08;
-        _overpull = moving && SwipeBetweenMonitors ? wanted - _pan.X : 0;
-        if (_overpull != 0 && MonitorRevealedBy(_overpull) is not null)
-        {
-            _pageShift = _overpull * OverpullShown;
-            ApplyView();
-        }
-
         return true;
     }
 
@@ -449,15 +476,16 @@ public partial class ScreenViewerWindow
     {
         if (_paging && _gesture.ContainsKey(e.TouchDevice.Id))
         {
-            // Either finger lifting ends a swipe between monitors.
+            // Any of the fingers lifting ends a swipe between monitors.
             e.Handled = true;
             FinishPaging();
             return true;
         }
 
-        if (_undecided && _gesture.ContainsKey(e.TouchDevice.Id))
+        if ((_undecided || _swiping) && _gesture.ContainsKey(e.TouchDevice.Id))
         {
-            // Lifted before deciding — a two-finger tap: it is the other device's, and the lift goes there too.
+            // Lifted before deciding — a tap of two fingers or three: it is the other device's, and the lift goes
+            // there too.
             HandOverToRemote();
             return false;
         }
@@ -477,11 +505,6 @@ public partial class ScreenViewerWindow
         else
         {
             _gestureStart = null;
-            if (FinishOverpull())
-            {
-                return true; // pulled past the edge far enough: it has gone to the monitor on that side
-            }
-
             if (_zoom < 1.03)
             {
                 ResetZoom();
@@ -503,6 +526,7 @@ public partial class ScreenViewerWindow
     private void HandOverToRemote()
     {
         _undecided = false;
+        _swiping = false;
         foreach (var (id, device) in _gesture.ToList())
         {
             if (_touches.Count >= MaxContacts
@@ -529,13 +553,15 @@ public partial class ScreenViewerWindow
 
     private (double Distance, Point Middle) Measure()
     {
-        var points = _gesture.Values.Take(2).Select(d => d.GetTouchPoint(Surface).Position).ToList();
+        // The distance is between the first two fingers, which is all a pinch has; the middle is of however many
+        // there are, so that three fingers swiping are followed by where the hand is and not by two of them.
+        var points = _gesture.Values.Select(d => d.GetTouchPoint(Surface).Position).ToList();
         if (points.Count == 1)
         {
             return (0, points[0]);
         }
 
-        return ((points[0] - points[1]).Length, new Point((points[0].X + points[1].X) / 2, (points[0].Y + points[1].Y) / 2));
+        return ((points[0] - points[1]).Length, new Point(points.Average(p => p.X), points.Average(p => p.Y)));
     }
 
     // ---- the touch keyboard -----------------------------------------------------------------------------

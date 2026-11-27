@@ -260,7 +260,19 @@ internal sealed class ScreenSource : IAsyncDisposable
     }
 
     /// <summary>The codec this stream announces to the viewer: H.264 when negotiated, otherwise JPEG tiles.</summary>
-    private string Codec => _useVideo && !_videoFailed ? "h264" : "jpeg";
+    private string Codec => _useVideo && !_videoFailed ? VideoInterop.NameOf(Format) : "jpeg";
+
+    /// <summary>
+    /// Set before the stream starts, by whoever knows what both devices can do: send HEVC rather than H.264. It
+    /// stops being true for this stream the first time HEVC lets it down — the encoder will not start, or the
+    /// viewer says no picture comes of it — and the stream is H.264 from there, as it would have been.
+    /// </summary>
+    public bool PreferHevc { get; set; }
+
+    private bool _hevcFailed;
+    private bool _hevcReported;
+
+    private VideoFormat Format => PreferHevc && !_hevcFailed ? VideoFormat.Hevc : VideoFormat.H264;
 
     public PeerSession Session { get; }
 
@@ -960,6 +972,25 @@ internal sealed class ScreenSource : IAsyncDisposable
                     crop = ScreenCodec.ToPixels(cropFraction, width, height);
                 }
 
+                if (_tilesRequested is { } noPicture && _useVideo && !_videoFailed && Format == VideoFormat.Hevc)
+                {
+                    // The viewer gets no picture out of HEVC. Before tiles there is H.264, which every device
+                    // that got this far decodes: the stream steps down to that, and only a second complaint
+                    // takes it to tiles.
+                    _logger.LogInformation("{Peer} gets no picture from HEVC ({Reason}); sending H.264", Session.PeerName, noPicture);
+                    _hevcFailed = true;
+                    _tilesRequested = null;
+                    lock (_encoderGate)
+                    {
+                        _videoEncoder?.Dispose();
+                        _videoEncoder = null;
+                        _fedTags.Clear();
+                    }
+
+                    force = true;
+                    _ = Session.SendControlAsync(Describe());
+                }
+
                 if (_tilesRequested is { } reason && _useVideo && !_videoFailed)
                 {
                     _logger.LogInformation("{Peer} gets no picture from H.264 ({Reason}); sending JPEG tiles", Session.PeerName, reason);
@@ -1038,11 +1069,25 @@ internal sealed class ScreenSource : IAsyncDisposable
         // used for conversion — this one's colours are not the ones the two ends agreed on — meant every frame
         // went out at the screen's own size for the viewer to shrink.
         var output = OutputSize(videoCrop, canScale: true);
-        if (_videoEncoder is null || _videoEncoder.Width != output.Width || _videoEncoder.Height != output.Height)
+        if (_videoEncoder is null || _videoEncoder.Width != output.Width || _videoEncoder.Height != output.Height || _videoEncoder.Format != Format)
         {
             _videoEncoder?.Dispose();
             _fedTags.Clear();
-            _videoEncoder = H264VideoEncoder.TryCreate(output.Width, output.Height, _pacing.Fps, ScaleBitrate(output.Width, output.Height), _logger);
+            _videoEncoder = H264VideoEncoder.TryCreate(output.Width, output.Height, _pacing.Fps, ScaleBitrate(output.Width, output.Height), _logger, Format);
+            if (_videoEncoder is null && Format == VideoFormat.Hevc)
+            {
+                // No HEVC encoder after all (it was there when asked, which is not a promise): H.264 instead.
+                _logger.LogInformation("The HEVC encoder would not start for {Title}; sending H.264", Title);
+                _hevcFailed = true;
+                _videoEncoder = H264VideoEncoder.TryCreate(output.Width, output.Height, _pacing.Fps, ScaleBitrate(output.Width, output.Height), _logger, VideoFormat.H264);
+                _ = Session.SendControlAsync(Describe());
+            }
+            else if (_videoEncoder is { Format: VideoFormat.Hevc } && !_hevcReported)
+            {
+                _hevcReported = true;
+                _logger.LogInformation("{Title} is sent to {Peer} as HEVC", Title, Session.PeerName);
+            }
+
             if (_videoEncoder is null)
             {
                 _logger.LogInformation("H.264 encoder unavailable for {Title}; using JPEG tiles", Title);

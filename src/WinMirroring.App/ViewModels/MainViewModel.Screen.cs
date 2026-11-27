@@ -24,6 +24,7 @@ public sealed partial class MainViewModel
     [
         new(VideoCodec.Auto, "Авто — H.264, иначе JPEG"),
         new(VideoCodec.H264, "H.264 (аппаратный)"),
+        new(VideoCodec.Hevc, "HEVC, где оба устройства умеют — иначе H.264"),
         new(VideoCodec.Jpeg, "JPEG (изменённые участки)"),
     ];
 

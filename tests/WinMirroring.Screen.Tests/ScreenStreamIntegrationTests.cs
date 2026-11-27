@@ -55,6 +55,18 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
         return StreamThePrimaryMonitorAsync(Core.Settings.VideoCodec.Auto, "h264");
     }
 
+    /// <summary>The same stream, asked for as HEVC on a machine that has both a hardware encoder and a decoder for it.</summary>
+    [Fact(Explicit = true)]
+    public Task ViewerReceivesTheMonitorAsHevc()
+    {
+        if (!VideoCodecSupport.CanEncodeHevc || !VideoCodecSupport.CanDecodeHevc)
+        {
+            Assert.Skip("No hardware HEVC encoder, or no HEVC decoding on the graphics card, on this machine.");
+        }
+
+        return StreamThePrimaryMonitorAsync(Core.Settings.VideoCodec.Hevc, "hevc");
+    }
+
     /// <summary>
     /// The picture is encoded at the size the viewer says it is showing, not the size of the screen. A view at
     /// half the size costs the far device a quarter of the decoding and a quarter of the colour conversion, which

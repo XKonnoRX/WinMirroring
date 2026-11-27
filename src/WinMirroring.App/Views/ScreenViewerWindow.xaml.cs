@@ -317,6 +317,7 @@ public partial class ScreenViewerWindow : Window
         MonitorPanel.Visibility = monitors;
         QuickMonitorPanel.Visibility = monitors;
         MonitorText.Text = $"{info.MonitorIndex + 1} из {info.MonitorCount}";
+        WarnIfWindowsTakesTheSwipe();
         QuickMonitorText.Text = $"Монитор {info.MonitorIndex + 1} из {info.MonitorCount}";
         ControlToggle.IsEnabled = info.ControlAllowed;
         KeyboardButton.IsEnabled = info.ControlAllowed;
@@ -360,11 +361,12 @@ public partial class ScreenViewerWindow : Window
         }
     }
 
-    private void ShowNotice(string text)
+    private void ShowNotice(string text, double seconds = 4)
     {
         NoticeText.Text = text;
         NoticeBorder.Visibility = Visibility.Visible;
         _noticeTimer.Stop();
+        _noticeTimer.Interval = TimeSpan.FromSeconds(seconds);
         _noticeTimer.Start();
     }
 
@@ -905,7 +907,11 @@ public partial class ScreenViewerWindow : Window
         _fingers.Remove(e.TouchDevice.Id);
         if (_gesture.Remove(e.TouchDevice.Id))
         {
-            if (_undecided)
+            if (_paging)
+            {
+                CancelPaging(); // taken away mid-swipe (by the system, mostly): the picture goes back where it was
+            }
+            else if (_undecided || _swiping)
             {
                 HandOverToRemote(); // the finger left is a touch there after all
             }

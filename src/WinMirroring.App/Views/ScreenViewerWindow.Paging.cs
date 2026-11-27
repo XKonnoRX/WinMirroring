@@ -1,36 +1,72 @@
-using System.Windows.Input;
+﻿using System.Windows.Input;
+using WinMirroring.App.Services;
 using WinMirroring.Screen;
 
 namespace WinMirroring.App.Views;
 
 /// <summary>
-/// From one monitor of the other device to the one beside it, with a swipe.
+/// From one monitor of the other device to the one beside it, with a swipe of three fingers.
 ///
-/// Two fingers moved sideways together slide the picture with them, and letting go far enough over shows the
-/// monitor that stands on that side — the picture moves left, so what comes is what was to its right, as when
-/// turning a page. Which monitor is on which side is taken from where they stand on that device's desktop.
+/// Three fingers put down together and moved sideways slide the picture with them, and letting go far enough over
+/// shows the monitor that stands on that side — the picture moves left, so what comes is what was to its right, as
+/// when turning a page. Which monitor is on which side is taken from where they stand on that device's desktop.
 ///
-/// Two fingers on the picture already meant something: a pinch zooms here, and two fingers moving together are
-/// handed to the other device, where they mostly scroll. A swipe sideways is taken from that second case, and only
-/// where it leads somewhere — on a device with one monitor, or towards a side with no monitor on it, two fingers
-/// moving sideways still go to the other device as they did. What is given up is scrolling sideways with two
-/// fingers towards a side that has a monitor; it can be switched off for whoever needs that more.
+/// It was two fingers at first, and that did not hold: two fingers on the picture already zoom it and move it, and
+/// the start of a swipe is not told from the start of a pinch until the fingers have moved — by which time the
+/// picture has moved with them, the wrong way as often as not. Three fingers are nothing else here, so there is
+/// nothing to tell apart: the picture is not touched until they have said which way they go, and it is the same
+/// gesture whether the picture is zoomed or not.
 ///
-/// Zoomed in, two fingers move the picture, so there the same thing is done by pulling on past its edge.
+/// What is given up is small. Three fingers moving sideways towards a side that has a monitor no longer reach the
+/// other device; any other three fingers — up, down, a tap, towards a side with nothing on it, or on a device with
+/// one monitor — still do, as before.
+///
+/// One thing is not this program's to decide. Windows 11 has gestures of three and four fingers of its own for a
+/// touch screen, on unless switched off, and it takes them before any program sees them: with those on, a swipe of
+/// three fingers changes the program on this device instead. See <see cref="SystemTouchGestures"/>.
 /// </summary>
 public partial class ScreenViewerWindow
 {
-    /// <summary>Two fingers are sliding the picture sideways towards another monitor.</summary>
+    /// <summary>Three fingers are sliding the picture sideways towards another monitor.</summary>
     private bool _paging;
 
-    /// <summary>How far the picture is slid from its place while they do, or pulled past its edge when zoomed in.</summary>
+    /// <summary>Three fingers are down and have not said yet which way they go.</summary>
+    private bool _swiping;
+
+    /// <summary>How far the picture is slid from its place while they do.</summary>
     private double _pageShift;
 
-    /// <summary>How far a zoomed picture has been pulled past its edge by the fingers on it now.</summary>
-    private double _overpull;
+    /// <summary>How far the fingers had already gone when the picture started to follow them.</summary>
+    private double _pageFrom;
 
-    /// <summary>How much of a pull past the edge is shown: enough to see it give, not so much that it comes away.</summary>
-    private const double OverpullShown = 0.35;
+    /// <summary>When the second finger of the gesture came down.</summary>
+    private long _twoSince;
+
+    /// <summary>
+    /// A third finger belongs with the two only if it comes this soon after the second: three put down together.
+    /// One that lands later — the side of a hand, mostly, while two fingers are moving a zoomed picture — is not a
+    /// swipe starting.
+    /// </summary>
+    private const int ThirdFingerWithinMs = 400;
+
+    /// <summary>Whether a finger coming down now makes the two already down into three that may swipe.</summary>
+    private bool JoinsAsThird() =>
+        _gesture.Count == 2 && !_paging && !_swiping && SwipeBetweenMonitors
+        && Environment.TickCount64 - _twoSince <= ThirdFingerWithinMs;
+
+    /// <summary>Said once, in the first window where it matters: Windows will take these three fingers itself.</summary>
+    private static bool _saidWindowsTakesThem;
+
+    private void WarnIfWindowsTakesTheSwipe()
+    {
+        if (_saidWindowsTakesThem || !SwipeBetweenMonitors || !SystemTouchGestures.TakeThreeFingers)
+        {
+            return;
+        }
+
+        _saidWindowsTakesThem = true;
+        ShowNotice("Свайп тремя пальцами между мониторами перехватывает Windows. Выключите «Жесты тремя и четырьмя пальцами»: Параметры → Bluetooth и устройства → Сенсорный ввод", seconds: 14);
+    }
 
     private bool SwipeBetweenMonitors =>
         _node?.Settings.Screen.SwipeMonitors != false && _viewer.Info.Kind == "monitor" && _viewer.Info.MonitorCount > 1;
@@ -60,7 +96,7 @@ public partial class ScreenViewerWindow
         return position < 0 ? null : (position, beside);
     }
 
-    /// <summary>Whether two fingers that have moved this far together are a swipe to another monitor.</summary>
+    /// <summary>Whether three fingers that have moved this far together are a swipe to another monitor.</summary>
     private bool StartsPaging(System.Windows.Vector slide) =>
         MonitorNeighbours.IsSideways(slide.X, slide.Y) && MonitorRevealedBy(slide.X) is not null;
 
@@ -68,15 +104,7 @@ public partial class ScreenViewerWindow
     private void FinishPaging()
     {
         var shift = _pageShift;
-        _paging = false;
-        _pageShift = 0;
-        foreach (var device in _gesture.Values.ToList())
-        {
-            ScreenImage.ReleaseTouchCapture(device);
-        }
-
-        _gesture.Clear();
-        _gestureStart = null;
+        LetGoOfPaging();
         if (Math.Abs(shift) >= MonitorNeighbours.CommitsAfter(Surface.ActualWidth) && MonitorRevealedBy(shift) is { } target)
         {
             GoToMonitor(target.Position, target.Key);
@@ -87,22 +115,26 @@ public partial class ScreenViewerWindow
         }
     }
 
-    /// <summary>
-    /// Zoomed in, the fingers let go after pulling the picture past its edge: the same, if they pulled far enough.
-    /// True when it went to another monitor.
-    /// </summary>
-    private bool FinishOverpull()
+    /// <summary>The swipe was taken away before it was finished: the picture goes back, wherever it had got to.</summary>
+    private void CancelPaging()
     {
-        var pull = _overpull;
-        _overpull = 0;
-        _pageShift = 0;
-        if (Math.Abs(pull) >= MonitorNeighbours.CommitsAfter(Surface.ActualWidth) * 1.4 && MonitorRevealedBy(pull) is { } target)
-        {
-            GoToMonitor(target.Position, target.Key);
-            return true;
-        }
+        LetGoOfPaging();
+        ApplyView();
+    }
 
-        return false;
+    private void LetGoOfPaging()
+    {
+        _paging = false;
+        _swiping = false;
+        _pageShift = 0;
+        _pageFrom = 0;
+        var held = _gesture.Values.ToList();
+        _gesture.Clear(); // first: letting go of a finger says so at once, and by then it must be nobody's
+        _gestureStart = null;
+        foreach (var device in held)
+        {
+            ScreenImage.ReleaseTouchCapture(device);
+        }
     }
 
     private void GoToMonitor(int position, string key)

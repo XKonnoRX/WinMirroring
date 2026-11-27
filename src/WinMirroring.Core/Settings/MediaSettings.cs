@@ -28,6 +28,13 @@ public enum VideoCodec
 
     /// <summary>Hardware H.264 when both devices support it (same as <see cref="Auto"/>; forces the preference).</summary>
     H264,
+
+    /// <summary>
+    /// HEVC where this device has a hardware encoder for it and the viewer decodes it on its graphics card; H.264
+    /// (or tiles) otherwise, exactly as <see cref="Auto"/>. The same picture in fewer bits — worth it where the
+    /// link is what limits the picture.
+    /// </summary>
+    Hevc,
 }
 
 public sealed class ScreenSettings

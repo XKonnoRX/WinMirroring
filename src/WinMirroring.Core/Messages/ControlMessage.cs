@@ -59,7 +59,9 @@ public sealed record DeviceCapabilitiesMessage(
     List<RemoteMonitor>? Monitors = null,
     bool CanEncodeH264 = false,
     bool CanDecodeH264 = false,
-    bool DrawsPointer = false) : ControlMessage;
+    bool DrawsPointer = false,
+    bool CanEncodeHevc = false,
+    bool CanDecodeHevc = false) : ControlMessage;
 
 /// <summary>
 /// The app version this device runs ("1.0.13"), so devices can show it and offer to bring an older one up to date

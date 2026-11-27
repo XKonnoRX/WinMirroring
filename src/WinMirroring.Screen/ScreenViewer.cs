@@ -1049,14 +1049,35 @@ public sealed class ScreenViewer : IAsyncDisposable
             return;
         }
 
+        // Which format the stream is in is read off each key picture rather than taken from the stream's
+        // description: a stream that steps down from HEVC to H.264 says so on the connection, while its pictures
+        // may be coming by datagram, and the two do not arrive in step.
+        var format = frame.Keyframe ? VideoInterop.Sniff(frame.Data) : _videoDecoder?.Format ?? VideoInterop.FormatNamed(Info.Codec);
+        if (_videoDecoder is not null && _videoDecoder.Format != format)
+        {
+            _videoDecoder.Dispose();
+            _videoDecoder = null;
+            _videoDecodeUnavailable = false;
+            _videoSilentSince = null;
+            ReleaseSurfaces();
+            Interlocked.Exchange(ref _tilesRequested, 0); // a new format is a new chance to say it does not work
+        }
+
         if (_videoDecoder is null && !_videoDecodeUnavailable)
         {
-            _videoDecoder = H264VideoDecoder.TryCreate(frame.Width, frame.Height, _logger, useGraphicsCard: !_decodeInMemory);
+            // HEVC only on the graphics card: decoded in memory its pictures come out wrong (see VideoCodecSupport).
+            _videoDecoder = H264VideoDecoder.TryCreate(frame.Width, frame.Height, _logger, useGraphicsCard: format == VideoFormat.Hevc || !_decodeInMemory, format);
+            if (_videoDecoder is { Format: VideoFormat.Hevc, UsesGraphicsCard: false })
+            {
+                _videoDecoder.Dispose();
+                _videoDecoder = null;
+            }
+
             if (_videoDecoder is null)
             {
                 _videoDecodeUnavailable = true;
-                _logger.LogWarning("No H.264 decoder available for the stream from {Peer}", PeerName);
-                RequestTiles("на этом устройстве нет декодера H.264");
+                _logger.LogWarning("No {Format} decoder available for the stream from {Peer}", VideoInterop.NameOf(format), PeerName);
+                RequestTiles(format == VideoFormat.Hevc ? "HEVC на этом устройстве не декодируется видеокартой" : "на этом устройстве нет декодера H.264");
             }
         }
 
@@ -1114,7 +1135,18 @@ public sealed class ScreenViewer : IAsyncDisposable
 
             // The card took the stream and then would not finish a picture: build the decoder again without it.
             // A stream on the processor is slower, which is not the same as no picture.
-            if (_videoDecoder.GraphicsCardFailed)
+            if (_videoDecoder.GraphicsCardFailed && _videoDecoder.Format == VideoFormat.Hevc)
+            {
+                // For HEVC there is no going on in memory: the source is asked for H.264 instead.
+                _logger.LogWarning("The graphics card stopped producing pictures for the HEVC stream from {Peer}; asking for H.264", PeerName);
+                _videoDecoder.Dispose();
+                _videoDecoder = null;
+                _videoDecodeUnavailable = true;
+                ReleaseSurfaces();
+                RequestTiles("видеокарта перестала декодировать HEVC");
+                produced = false;
+            }
+            else if (_videoDecoder.GraphicsCardFailed)
             {
                 _logger.LogWarning("The graphics card stopped producing pictures for the stream from {Peer}; the processor takes the stream over", PeerName);
                 _decodeInMemory = true;

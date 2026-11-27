@@ -212,7 +212,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             ScreenSource source;
             try
             {
-                source = ScreenSource.ForWindow(_node, session, NewStreamId(), window, _node.Settings.Screen, NegotiateVideo(session), PeerDrawsPointer(session), _logger);
+                source = WithFormat(session, ScreenSource.ForWindow(_node, session, NewStreamId(), window, _node.Settings.Screen, NegotiateVideo(session), PeerDrawsPointer(session), _logger));
             }
             catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or ArgumentException or InvalidOperationException)
             {
@@ -317,7 +317,9 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             .Where(m => !string.Equals(m.DeviceName, virtualDevice, StringComparison.OrdinalIgnoreCase))
             .Select(m => new RemoteMonitor(m.Index, $"{m.Bounds.Width}×{m.Bounds.Height}", m.IsPrimary, m.DeviceName))
             .ToList();
-        return new DeviceCapabilitiesMessage(virtualDevice is not null, reply, monitors, VideoCodecSupport.CanEncodeH264, VideoCodecSupport.CanDecodeH264, DrawsPointer: true);
+        return new DeviceCapabilitiesMessage(
+            virtualDevice is not null, reply, monitors, VideoCodecSupport.CanEncodeH264, VideoCodecSupport.CanDecodeH264, DrawsPointer: true,
+            CanEncodeHevc: VideoCodecSupport.CanEncodeHevc, CanDecodeHevc: VideoCodecSupport.CanDecodeHevc);
     }
 
     /// <summary>Built off the caller's thread: the first codec probe starts Media Foundation and can take a moment.</summary>
@@ -343,6 +345,19 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
                 SendCapabilities(session, reply: true);
             }
         }
+    }
+
+    /// <summary>
+    /// HEVC is used only where it was asked for in the settings, this device has a hardware encoder for it, and
+    /// the peer says it decodes it. Everywhere else the stream is what it would have been.
+    /// </summary>
+    private ScreenSource WithFormat(PeerSession session, ScreenSource source)
+    {
+        source.PreferHevc = _node.Settings.Screen.VideoCodec == VideoCodec.Hevc
+            && VideoCodecSupport.CanEncodeHevc
+            && _peerCaps.TryGetValue(session.PeerId, out var caps)
+            && caps.CanDecodeHevc;
+        return source;
     }
 
     /// <summary>H.264 is used only when this device may encode it, the setting allows it, and the peer can decode it.</summary>
@@ -542,7 +557,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
                 return;
             }
 
-            var source = ScreenSource.ForMonitor(_node, session, request.StreamId, request.MonitorIndex, request.MonitorKey, _node.Settings.Screen, NegotiateVideo(session), PeerDrawsPointer(session), _logger);
+            var source = WithFormat(session, ScreenSource.ForMonitor(_node, session, request.StreamId, request.MonitorIndex, request.MonitorKey, _node.Settings.Screen, NegotiateVideo(session), PeerDrawsPointer(session), _logger));
             source.ViewerFps = request.MaxFps;
             await StartSourceAsync(session, source).ConfigureAwait(false);
         }

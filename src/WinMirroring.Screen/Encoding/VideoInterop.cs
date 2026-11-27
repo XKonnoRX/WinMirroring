@@ -4,6 +4,18 @@ using Vortice.MediaFoundation;
 namespace WinMirroring.Screen.Encoding;
 
 /// <summary>
+/// Which video format a stream is in. H.264 is what every device here can do; HEVC gives the same picture in
+/// noticeably fewer bits where both ends have it in hardware, which matters most on a link that is the limit.
+/// The two differ in three places and nowhere else: the format's name to Media Foundation, how a key picture is
+/// recognised in the bytes, and what marks the end of a picture.
+/// </summary>
+internal enum VideoFormat
+{
+    H264,
+    Hevc,
+}
+
+/// <summary>
 /// Shared Media Foundation glue for the H.264 screen path: the subtype GUIDs Vortice does not predefine, the
 /// one-time platform start-up, small attribute/keyframe helpers, and the <c>ICodecAPI</c> interop used to tune the
 /// hardware encoder. Everything here is best-effort: a failure means the caller falls back to the JPEG tile path.
@@ -39,6 +51,52 @@ internal static class VideoInterop
     /// <summary>eAVEncH264VProfile_Main.</summary>
     public const uint H264ProfileMain = 77;
 
+    /// <summary>MFVideoFormat_HEVC ('HEVC').</summary>
+    public static readonly Guid Hevc = new(0x43564548, 0x0000, 0x0010, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71);
+
+    /// <summary>eAVEncH265VProfile_Main_420_8.</summary>
+    public const uint HevcProfileMain = 1;
+
+    /// <summary>
+    /// Which format a key picture is in, read off its first bytes. An HEVC picture a decoder can start from opens
+    /// with a parameter set or a delimiter whose two-byte header is one of 0x40, 0x42, 0x44, 0x46 followed by
+    /// 0x01; nothing an H.264 encoder puts first looks like that. This is how a viewer notices that a stream has
+    /// changed format without waiting to be told — the telling travels another way and may arrive after.
+    /// </summary>
+    public static VideoFormat Sniff(ReadOnlySpan<byte> annexB)
+    {
+        for (var i = 0; i + 4 < annexB.Length && i < 64; i++)
+        {
+            if (annexB[i] == 0 && annexB[i + 1] == 0 && annexB[i + 2] == 1)
+            {
+                return annexB[i + 3] is 0x40 or 0x42 or 0x44 or 0x46 && annexB[i + 4] == 0x01 ? VideoFormat.Hevc : VideoFormat.H264;
+            }
+        }
+
+        return VideoFormat.H264;
+    }
+
+    public static Guid SubtypeOf(VideoFormat format) => format == VideoFormat.Hevc ? Hevc : H264;
+
+    public static uint ProfileOf(VideoFormat format) => format == VideoFormat.Hevc ? HevcProfileMain : H264ProfileMain;
+
+    /// <summary>The name a stream's description carries for each format, and back ("h264" for anything unknown).</summary>
+    public static string NameOf(VideoFormat format) => format == VideoFormat.Hevc ? "hevc" : "h264";
+
+    public static VideoFormat FormatNamed(string? name) => string.Equals(name, "hevc", StringComparison.OrdinalIgnoreCase) ? VideoFormat.Hevc : VideoFormat.H264;
+
+    private static readonly byte[] H264Delimiter = [0, 0, 0, 1, 0x09, 0x10];
+
+    // NAL type 35 (access unit delimiter) in HEVC's two-byte header, then "any picture type" and the stop bit.
+    private static readonly byte[] HevcDelimiter = [0, 0, 0, 1, 0x46, 0x01, 0x50];
+
+    /// <summary>
+    /// An access unit delimiter in <paramref name="format"/>: the decoder finds the end of a picture only where
+    /// the next one starts, so without it every picture would come out one access unit late, and the last one of
+    /// a still screen never.
+    /// </summary>
+    public static byte[] DelimiterOf(VideoFormat format) => format == VideoFormat.Hevc ? HevcDelimiter : H264Delimiter;
+
     /// <summary>MFVideoInterlace_Progressive.</summary>
     public const uint InterlaceProgressive = 2;
 
@@ -70,12 +128,25 @@ internal static class VideoInterop
     /// True when the Annex-B access unit carries a key frame: it contains a NAL unit of type 5 (IDR slice) or
     /// type 7 (sequence parameter set). Scans for 3-byte start codes, which the 4-byte form also ends with.
     /// </summary>
-    public static bool ContainsKeyframe(ReadOnlySpan<byte> annexB)
+    public static bool ContainsKeyframe(ReadOnlySpan<byte> annexB, VideoFormat format = VideoFormat.H264)
     {
         for (var i = 0; i + 3 < annexB.Length; i++)
         {
             if (annexB[i] == 0 && annexB[i + 1] == 0 && annexB[i + 2] == 1)
             {
+                if (format == VideoFormat.Hevc)
+                {
+                    // HEVC keeps the type in the six bits after the first: 16 to 21 are pictures a decoder can
+                    // start from, 32 and 33 the parameter sets that travel with them.
+                    var type = (annexB[i + 3] >> 1) & 0x3F;
+                    if (type is (>= 16 and <= 21) or 32 or 33)
+                    {
+                        return true;
+                    }
+
+                    continue;
+                }
+
                 var nalType = annexB[i + 3] & 0x1F;
                 if (nalType is 5 or 7)
                 {
