@@ -166,6 +166,32 @@
                  HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-2,0,0" IsHitTestVisible="False" />
     </Border>
 
+    <!-- Voice typing: the microphone button beside the keyboard button, and the box what is said lands in before it
+         is sent on (ScreenViewerWindow.Compose). -->
+    <Border x:Name="DictationHandle" Grid.Row="1" Width="46" Height="46" CornerRadius="23"
+            HorizontalAlignment="Left" VerticalAlignment="Top" Visibility="Collapsed" Focusable="False"
+            Background="#E61F2937" BorderBrush="#4B5563" BorderThickness="1" Opacity="0.6" Cursor="Hand"
+            ToolTip="Голосовой ввод: говорите здесь — текст набирается на том устройстве">
+      <TextBlock Text="🎤" Foreground="White" FontSize="19" FontFamily="Segoe UI Emoji"
+                 HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />
+    </Border>
+
+    <Border x:Name="ComposeBorder" Grid.Row="1" VerticalAlignment="Top" HorizontalAlignment="Center" Margin="12,56,12,0"
+            Background="#F2111827" BorderBrush="#4B5563" BorderThickness="1" CornerRadius="10" Padding="12" Visibility="Collapsed"
+            MaxWidth="900">
+      <StackPanel>
+        <DockPanel>
+          <Button x:Name="ComposeClose" DockPanel.Dock="Right" Content="✕" MinWidth="44" MinHeight="40" Margin="6,0,0,0"
+                  ToolTip="Закрыть, ничего не отправляя (Esc)" />
+          <Button x:Name="ComposeSend" DockPanel.Dock="Right" Content="Отправить" MinHeight="40" Padding="14,0" Margin="8,0,0,0"
+                  ToolTip="Набрать этот текст на том устройстве (Enter)" />
+          <TextBox x:Name="ComposeBox" MinWidth="360" MinHeight="40" MaxHeight="180" FontSize="18" Padding="8,6"
+                   TextWrapping="Wrap" AcceptsReturn="False" VerticalScrollBarVisibility="Auto" SpellCheck.IsEnabled="True" />
+        </DockPanel>
+        <TextBlock x:Name="ComposeHint" Foreground="#9CA3AF" FontSize="12" Margin="2,8,0,0" TextWrapping="Wrap" />
+      </StackPanel>
+    </Border>
+
     <!-- Borderless window view: an invisible strip over the top of the window to drag it (a plain click passes
          through to the window below), and a small menu button since there is no toolbar. -->
     <Border x:Name="DragStrip" Grid.Row="1" VerticalAlignment="Top" Height="34" Background="Transparent" Visibility="Collapsed"

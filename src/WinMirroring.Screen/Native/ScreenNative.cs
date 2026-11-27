@@ -139,6 +139,9 @@ internal static class ScreenNative
     public static extern uint GetWindowThreadProcessId(nint hwnd, out uint processId);
 
     [DllImport("user32.dll")]
+    public static extern nint GetForegroundWindow();
+
+    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetForegroundWindow(nint hwnd);
 

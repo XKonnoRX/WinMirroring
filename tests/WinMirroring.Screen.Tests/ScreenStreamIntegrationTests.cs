@@ -677,6 +677,9 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
         Assert.InRange(stats.AckMs, 0, 5000);
         Assert.InRange(stats.SharePercent, 30, 100);
 
+        // Which program is in front there: said when the stream starts, without being asked.
+        await WaitUntilAsync(() => viewer.ForegroundProcess.Length > 0, ct);
+
         // Small pictures of the other monitors, for as long as they are asked for.
         Assert.Empty(viewer.MonitorPictures);
         if (DisplayCatalog.Monitors().Count > 1)

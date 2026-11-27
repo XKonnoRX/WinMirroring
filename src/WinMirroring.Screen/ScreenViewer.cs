@@ -410,6 +410,18 @@ public sealed class ScreenViewer : IAsyncDisposable
 
     public void Close() => _ = CloseAsync(notifySource: true, reason: null);
 
+    /// <summary>The program in front on the source, by its process name, or empty until it has said.</summary>
+    public string ForegroundProcess { get; private set; } = string.Empty;
+
+    /// <summary>The program in front on the source changed. Raised off the UI thread.</summary>
+    public event Action<ScreenViewer>? ForegroundChanged;
+
+    internal void OnForeground(string process)
+    {
+        ForegroundProcess = process;
+        ForegroundChanged?.Invoke(this);
+    }
+
     // ---- small pictures of the source's other monitors ------------------------------------------------
 
     /// <summary>One of them: a JPEG, and when it came.</summary>

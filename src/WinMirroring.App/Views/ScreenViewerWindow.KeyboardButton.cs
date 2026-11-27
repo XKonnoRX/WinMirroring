@@ -141,6 +141,7 @@ public partial class ScreenViewerWindow
         var x = Math.Clamp(screen?.KeyboardButtonX ?? 0.97, 0, 1) * roomX;
         var y = Math.Clamp(screen?.KeyboardButtonY ?? 0.62, 0, 1) * roomY;
         KeyboardHandle.Margin = new Thickness(x, y, 0, 0);
+        PlaceDictationHandle();
     }
 
     /// <summary>Shown while this window can type into the other device; asked again whenever that may have changed.</summary>
@@ -151,6 +152,14 @@ public partial class ScreenViewerWindow
         if (show)
         {
             PlaceKeyboardHandle();
+        }
+        else
+        {
+            PlaceDictationHandle();
+            if (_composing && !ControlEnabled)
+            {
+                CloseCompose(); // control was switched off under an open box: there is nowhere to send it
+            }
         }
     }
 }

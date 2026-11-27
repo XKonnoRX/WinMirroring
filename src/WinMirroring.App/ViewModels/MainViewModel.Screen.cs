@@ -55,6 +55,9 @@ public sealed partial class MainViewModel
     public partial bool ScreenShowStats { get; set; }
 
     [ObservableProperty]
+    public partial bool ScreenDictationButton { get; set; }
+
+    [ObservableProperty]
     public partial int ScreenMaxFps { get; set; }
 
     [ObservableProperty]
@@ -78,6 +81,7 @@ public sealed partial class MainViewModel
         ScreenDirectPresent = settings.DirectPresent;
         ScreenSwipeMonitors = settings.SwipeMonitors;
         ScreenShowStats = settings.ShowStats;
+        ScreenDictationButton = settings.DictationButton;
         ScreenMaxFps = settings.MaxFps;
         ScreenQuality = settings.Quality;
         ScreenVideoCodec = settings.VideoCodec;
@@ -400,6 +404,8 @@ public sealed partial class MainViewModel
     partial void OnScreenSwipeMonitorsChanged(bool value) => SaveScreen(s => s.SwipeMonitors = value);
 
     partial void OnScreenShowStatsChanged(bool value) => SaveScreen(s => s.ShowStats = value);
+
+    partial void OnScreenDictationButtonChanged(bool value) => SaveScreen(s => s.DictationButton = value);
 
     partial void OnScreenMaxFpsChanged(int value)
     {

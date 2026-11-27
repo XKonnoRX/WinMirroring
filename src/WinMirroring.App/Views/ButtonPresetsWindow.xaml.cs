@@ -61,6 +61,8 @@ public partial class ButtonPresetsWindow : Window
         _updating = true;
         PresetNameBox.Text = preset?.Name ?? string.Empty;
         PresetNameBox.IsEnabled = preset is not null;
+        PresetProgramsBox.Text = preset?.Programs ?? string.Empty;
+        PresetProgramsBox.IsEnabled = preset is not null;
         _updating = false;
         ReloadButtons(preset is { Buttons.Count: > 0 } ? 0 : -1);
     }
@@ -70,6 +72,37 @@ public partial class ButtonPresetsWindow : Window
         if (!_updating)
         {
             ShowPreset(PresetBox.SelectedItem as ButtonPreset);
+        }
+    }
+
+    /// <summary>The program in front on the device being watched just now, for the button that adds it; null when there is none.</summary>
+    public Func<string?>? CurrentProgram { get; set; }
+
+    private void OnPresetProgramsChanged(object sender, TextChangedEventArgs e)
+    {
+        if (!_updating && _preset is not null)
+        {
+            _preset.Programs = PresetProgramsBox.Text.Trim();
+        }
+    }
+
+    private void OnAddCurrentProgram(object sender, RoutedEventArgs e)
+    {
+        if (_preset is null)
+        {
+            return;
+        }
+
+        var name = ButtonPreset.Normalize(CurrentProgram?.Invoke());
+        if (name.Length == 0)
+        {
+            StatusText.Text = "Сейчас не открыт экран другого устройства, или оно ещё не сказало, какая программа активна.";
+            return;
+        }
+
+        if (!_preset.ProgramNames().Contains(name))
+        {
+            PresetProgramsBox.Text = _preset.Programs.Length == 0 ? name : $"{_preset.Programs}, {name}";
         }
     }
 

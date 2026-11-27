@@ -91,6 +91,7 @@ public partial class ScreenViewerWindow : Window
         _viewer = viewer;
         InitializeKeyboardHints(services);
         InitializeKeyboardButton();
+        InitializeCompose();
         _dragDrop = services.GetService<DragDropCoordinator>();
         _clipboard = services.GetService<ClipboardSyncService>();
         _quick = services.GetService<ViewModels.MainViewModel>();
@@ -100,6 +101,9 @@ public partial class ScreenViewerWindow : Window
         {
             _bar.Changed += OnButtonBarChanged;
         }
+
+        // The buttons follow the program in front on the other device (see RebuildButtonBar).
+        _viewer.ForegroundChanged += _ => Dispatcher.BeginInvoke(OnForegroundChanged);
 
         UpdateInfo();
 
@@ -958,11 +962,27 @@ public partial class ScreenViewerWindow : Window
 
     private void OnButtonBarChanged() => Dispatcher.BeginInvoke(RebuildButtonBar);
 
+    /// <summary>The set of buttons on the bar now, by name, so it is only rebuilt when it is a different one.</summary>
+    private string _shownPreset = string.Empty;
+
+    /// <summary>
+    /// The program in front on the other device changed: if a set of buttons is for that program, it is the one
+    /// shown now, and when the program is left the set somebody chose comes back.
+    /// </summary>
+    private void OnForegroundChanged()
+    {
+        if (_bar is not null && _bar.PresetNameFor(_viewer.ForegroundProcess) != _shownPreset)
+        {
+            RebuildButtonBar();
+        }
+    }
+
     private void RebuildButtonBar()
     {
         ButtonBarItems.Children.Clear();
         _latchButtons.Clear();
-        foreach (var button in _bar?.ActiveButtons ?? [])
+        _shownPreset = _bar?.PresetNameFor(_viewer.ForegroundProcess) ?? string.Empty;
+        foreach (var button in _bar?.ButtonsFor(_viewer.ForegroundProcess) ?? [])
         {
             if (button.Latch)
             {
@@ -988,6 +1008,14 @@ public partial class ScreenViewerWindow : Window
                 press.Click += (_, _) => PressBarButton(button);
                 ButtonBarItems.Children.Add(press);
             }
+        }
+
+        // A modifier held down by a button that is no longer on the bar would stay held with nothing to let it
+        // go: it is let go here.
+        var stillThere = _latchButtons.SelectMany(b => b.Modifiers).ToHashSet();
+        foreach (var held in _latched.Where(vk => !stillThere.Contains(vk)).ToList())
+        {
+            SetLatch([held], on: false);
         }
 
         RefreshLatchButtons();
@@ -1089,6 +1117,11 @@ public partial class ScreenViewerWindow : Window
     private void OnPreviewKey(object sender, KeyEventArgs e)
     {
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (ComposeTakesKey(key, e.IsDown, e))
+        {
+            return; // the box for dictated and composed text is open: keys are its own
+        }
+
         if (key == Key.F11)
         {
             if (e.IsDown && !_windowMode)
@@ -1188,6 +1221,11 @@ public partial class ScreenViewerWindow : Window
 
     private void OnPreviewTextInput(object sender, TextCompositionEventArgs e)
     {
+        if (_composing)
+        {
+            return; // into the box, not across
+        }
+
         if (ControlEnabled && !string.IsNullOrEmpty(e.Text) && !char.IsControl(e.Text[0]))
         {
             _viewer.SendText(e.Text);

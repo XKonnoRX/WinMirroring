@@ -185,6 +185,7 @@ const sampleSettings = {
     directPresent: true,
     swipeMonitors: true,
     showStats: false,
+    dictationButton: true,
     closeUnusedMinutes: 5,
     maxFps: 60,
     quality: 70,

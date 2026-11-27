@@ -359,6 +359,8 @@ internal sealed class ScreenSource : IAsyncDisposable
             _pointerLoop = Task.Run(() => PointerLoopAsync(_cts.Token));
         }
 
+        _foregroundLoop = Task.Run(() => ForegroundLoopAsync(_cts.Token));
+
         _logger.LogInformation(
             "Streaming {Title} to {Peer} (stream {Stream}){Pointer}",
             Title,
@@ -1485,6 +1487,58 @@ internal sealed class ScreenSource : IAsyncDisposable
         }
     }
 
+    // ---- which program is in front ---------------------------------------------------------------------
+
+    /// <summary>How often the program in front is looked at. A change of window is a human-speed event.</summary>
+    private static readonly TimeSpan ForegroundEvery = TimeSpan.FromMilliseconds(400);
+
+    private Task? _foregroundLoop;
+
+    /// <summary>
+    /// Tells the viewer which program is in front here, when the stream starts and whenever it changes — so that
+    /// the buttons it shows can be the ones for that program (see ScreenForegroundMessage).
+    /// </summary>
+    private async Task ForegroundLoopAsync(CancellationToken ct)
+    {
+        uint knownProcess = 0;
+        var said = string.Empty;
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                var window = Kind == StreamKind.Window ? Window : GetForegroundWindow();
+                if (window != 0 && GetWindowThreadProcessId(window, out var processId) != 0 && processId != 0 && processId != knownProcess)
+                {
+                    knownProcess = processId;
+                    var name = ProcessName(processId);
+                    if (name.Length > 0 && !string.Equals(name, said, StringComparison.OrdinalIgnoreCase))
+                    {
+                        said = name;
+                        await Session.SendControlAsync(new ScreenForegroundMessage(StreamId, name), ct).ConfigureAwait(false);
+                    }
+                }
+
+                await Task.Delay(ForegroundEvery, ct).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or InvalidOperationException or ObjectDisposedException)
+        {
+        }
+    }
+
+    private static string ProcessName(uint processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById((int)processId);
+            return process.ProcessName;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return string.Empty; // it has gone already, or is one this process may not look at
+        }
+    }
+
     // ---- small pictures of the other monitors ------------------------------------------------------------
 
     /// <summary>How often each of them is taken while the viewer wants them.</summary>
@@ -1662,7 +1716,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         Interlocked.Exchange(ref _ended, 1);
         await _cts.CancelAsync().ConfigureAwait(false);
         _outbound.Writer.TryComplete();
-        foreach (var running in new[] { _loop, _collectLoop, _sendLoop, _pointerLoop })
+        foreach (var running in new[] { _loop, _collectLoop, _sendLoop, _pointerLoop, _foregroundLoop })
         {
             if (running is null)
             {

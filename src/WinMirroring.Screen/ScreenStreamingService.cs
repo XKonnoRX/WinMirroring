@@ -466,6 +466,14 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
 
                 break;
 
+            case ScreenForegroundMessage foreground:
+                if (_viewers.TryGetValue(foreground.StreamId, out var fronted) && ReferenceEquals(fronted.Session, session))
+                {
+                    fronted.OnForeground(foreground.Process.Length > 128 ? foreground.Process[..128] : foreground.Process);
+                }
+
+                break;
+
             case ScreenThumbsMessage thumbs:
                 if (_sources.TryGetValue(thumbs.StreamId, out var pictured) && ReferenceEquals(pictured.Session, session))
                 {

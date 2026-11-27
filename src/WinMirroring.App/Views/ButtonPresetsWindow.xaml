@@ -46,6 +46,13 @@
       <TextBlock Text="Название" VerticalAlignment="Center" Margin="0,0,10,0" />
       <TextBox x:Name="PresetNameBox" TextChanged="OnPresetNameChanged" />
     </DockPanel>
+    <DockPanel DockPanel.Dock="Top" Margin="0,8,0,0"
+               ToolTip="Имена программ через запятую, как в диспетчере задач без «.exe»: chrome, msedge. Пока одна из них активна на устройстве, экран которого открыт, панель сама показывает этот набор. Пусто — набор включается только вручную.">
+      <TextBlock Text="Для программ" VerticalAlignment="Center" Margin="0,0,10,0" />
+      <Button x:Name="CurrentProgramButton" DockPanel.Dock="Right" Margin="6,0,0,0" Padding="10,2" Click="OnAddCurrentProgram"
+              Content="+ активная сейчас" ToolTip="Добавить программу, которая сейчас активна на устройстве, экран которого открыт" />
+      <TextBox x:Name="PresetProgramsBox" TextChanged="OnPresetProgramsChanged" />
+    </DockPanel>
 
     <!-- Save -->
     <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0" LastChildFill="True">

@@ -25,6 +25,7 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(ScreenMarkMessage), "screen-mark")]
 [JsonDerivedType(typeof(ScreenThumbsMessage), "screen-thumbs")]
 [JsonDerivedType(typeof(ScreenThumbMessage), "screen-thumb")]
+[JsonDerivedType(typeof(ScreenForegroundMessage), "screen-foreground")]
 [JsonDerivedType(typeof(ScreenCodecFallbackMessage), "screen-fallback")]
 [JsonDerivedType(typeof(LogRequestMessage), "log-request")]
 [JsonDerivedType(typeof(LogResponseMessage), "log-response")]
@@ -264,6 +265,12 @@ public sealed record ScreenMarkMessage(uint StreamId, string Note) : ControlMess
 /// viewer has its menu open, where each monitor is a button, so that the buttons show what is on them.
 /// </summary>
 public sealed record ScreenThumbsMessage(uint StreamId, bool On) : ControlMessage;
+
+/// <summary>
+/// Source → viewer: which program is in front on the source now, by its process name ("chrome"). Sent when a stream
+/// starts and whenever it changes, so the viewer can put up the buttons that go with that program.
+/// </summary>
+public sealed record ScreenForegroundMessage(uint StreamId, string Process) : ControlMessage;
 
 /// <summary>Source → viewer: one of those pictures, a JPEG a couple of hundred pixels wide.</summary>
 public sealed record ScreenThumbMessage(uint StreamId, string MonitorKey, int Width, int Height, byte[] Jpeg) : ControlMessage;

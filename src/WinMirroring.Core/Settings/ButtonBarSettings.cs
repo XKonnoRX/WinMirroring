@@ -22,7 +22,37 @@ public sealed class ButtonPreset
 
     public List<ButtonBinding> Buttons { get; set; } = [];
 
-    public ButtonPreset Clone() => new() { Name = Name, Buttons = Buttons.Select(b => b.Clone()).ToList() };
+    /// <summary>
+    /// The programs this set is for, by the name of their process ("chrome, msedge"), separated by commas, spaces
+    /// or semicolons; ".exe" may be left on or off. While one of them is the program in front on the device being
+    /// watched, this set is the one shown — without anybody choosing it. Empty: only when chosen.
+    /// </summary>
+    public string Programs { get; set; } = string.Empty;
+
+    public ButtonPreset Clone() => new() { Name = Name, Programs = Programs, Buttons = Buttons.Select(b => b.Clone()).ToList() };
+
+    private static readonly char[] ProgramSeparators = [',', ';', ' ', '\t', '\n', '\r'];
+
+    /// <summary>The names in <see cref="Programs"/>, as they are compared: lower case, without ".exe".</summary>
+    public IEnumerable<string> ProgramNames() =>
+        Programs.Split(ProgramSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(Normalize).Where(n => n.Length > 0);
+
+    /// <summary>A process name as it is compared.</summary>
+    public static string Normalize(string? process)
+    {
+        var name = (process ?? string.Empty).Trim().ToLowerInvariant();
+        return name.EndsWith(".exe", StringComparison.Ordinal) ? name[..^4] : name;
+    }
+
+    /// <summary>
+    /// The set that is for <paramref name="process"/> — the first that names it — or null when none does, and the
+    /// set somebody chose stays.
+    /// </summary>
+    public static ButtonPreset? For(IEnumerable<ButtonPreset> presets, string? process)
+    {
+        var name = Normalize(process);
+        return name.Length == 0 ? null : presets.FirstOrDefault(p => p.ProgramNames().Contains(name));
+    }
 
     public static List<ButtonPreset> CreateDefaults() =>
     [

@@ -42,21 +42,28 @@ public sealed class ButtonBarService
     private ButtonPreset? Active => Settings.Presets.FirstOrDefault(p => p.Name == Settings.ActivePreset) ?? Settings.Presets.FirstOrDefault();
 
     /// <summary>The active preset's buttons; a button whose keys cannot be read is left out.</summary>
-    public IReadOnlyList<BarButton> ActiveButtons
-    {
-        get
-        {
-            var buttons = new List<BarButton>();
-            foreach (var binding in Active?.Buttons ?? [])
-            {
-                if (ToButton(binding, out _) is { } button)
-                {
-                    buttons.Add(button);
-                }
-            }
+    public IReadOnlyList<BarButton> ActiveButtons => ButtonsOf(Active);
 
-            return buttons;
+    /// <summary>
+    /// The set to show while <paramref name="process"/> is the program in front on the device being watched: the
+    /// one that names that program, or the one that was chosen when none does.
+    /// </summary>
+    public string PresetNameFor(string? process) => (ButtonPreset.For(Settings.Presets, process) ?? Active)?.Name ?? string.Empty;
+
+    public IReadOnlyList<BarButton> ButtonsFor(string? process) => ButtonsOf(ButtonPreset.For(Settings.Presets, process) ?? Active);
+
+    private static List<BarButton> ButtonsOf(ButtonPreset? preset)
+    {
+        var buttons = new List<BarButton>();
+        foreach (var binding in preset?.Buttons ?? [])
+        {
+            if (ToButton(binding, out _) is { } button)
+            {
+                buttons.Add(button);
+            }
         }
+
+        return buttons;
     }
 
     /// <summary>Checks one binding; null with the reason when its keys cannot be read or it does nothing.</summary>

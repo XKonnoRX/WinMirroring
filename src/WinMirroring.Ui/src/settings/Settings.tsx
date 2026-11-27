@@ -239,6 +239,12 @@ export function Settings() {
                 onChange={(v) => void set('screen.directPresent', v)}
               />
               <Toggle
+                label="Кнопка голосового ввода рядом с кнопкой клавиатуры"
+                hint="Кнопка 🎤 открывает голосовой ввод Windows на этом устройстве: сказанное появляется в поле поверх изображения и после паузы набирается на том устройстве. В то же поле можно напечатать текст и отправить его Enter."
+                checked={state.screen.dictationButton}
+                onChange={(v) => void set('screen.dictationButton', v)}
+              />
+              <Toggle
                 label="Кнопка клавиатуры поверх трансляции"
                 hint="Круглая кнопка ⌨ над изображением открывает и закрывает сенсорную клавиатуру. Её можно перетащить в удобное место — оно запомнится."
                 checked={state.screen.keyboardButton}

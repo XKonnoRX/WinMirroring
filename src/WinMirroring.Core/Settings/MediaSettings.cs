@@ -111,6 +111,12 @@ public sealed class ScreenSettings
     /// feels wrong and one wants to see what.
     /// </summary>
     public bool ShowStats { get; set; }
+
+    /// <summary>
+    /// Viewing another device: a microphone button beside the keyboard button that takes this device's voice
+    /// typing and types what it hears on the other device.
+    /// </summary>
+    public bool DictationButton { get; set; } = true;
 }
 
 /// <summary>

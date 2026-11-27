@@ -873,7 +873,11 @@ public partial class App : Application
             return;
         }
 
-        _buttonEditor = new Views.ButtonPresetsWindow(_services.GetRequiredService<ButtonBarService>());
+        _buttonEditor = new Views.ButtonPresetsWindow(_services.GetRequiredService<ButtonBarService>())
+        {
+            // The program in front on the device whose screen is being looked at, for "+ активная сейчас".
+            CurrentProgram = () => (FindView(_activeView) ?? _openViewers.FirstOrDefault())?.Viewer.ForegroundProcess,
+        };
         _buttonEditor.Closed += (_, _) => _buttonEditor = null;
         _buttonEditor.Show();
         _buttonEditor.Activate();
