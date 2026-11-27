@@ -107,6 +107,13 @@ public sealed class ScreenSettings
     public bool DirectPresent { get; set; } = true;
 
     /// <summary>
+    /// The version of the program in which drawing from the graphics card was found to bring WPF's drawing thread
+    /// down on this device, or empty. Written by the program when that happens; while it names the version that is
+    /// running, pictures go through memory as if <see cref="DirectPresent"/> were off. A newer version tries again.
+    /// </summary>
+    public string DirectPresentBrokeIn { get; set; } = string.Empty;
+
+    /// <summary>
     /// Viewing a device with several monitors: three fingers swiped sideways go to the monitor on that side (and so
     /// are not passed on to the other device where there is one). On by default.
     /// </summary>

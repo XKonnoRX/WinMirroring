@@ -212,6 +212,12 @@ public sealed class ScreenViewer : IAsyncDisposable
     private long _reportedOnCard;
 
     /// <summary>
+    /// Asks the source for a whole picture now. For a window that has lost what it was showing (the surface it was
+    /// drawing from, say) and whose screen may not change by itself for a long while.
+    /// </summary>
+    public void AskForWholePicture() => _outbox.Writer.TryWrite(ScreenCodec.EncodeRequest(ScreenMessageType.Refresh, StreamId));
+
+    /// <summary>
     /// Whether the window can draw pictures straight from the graphics card. While it says so, and while the card
     /// is the one decoding, pictures are left there (<see cref="FrameUpdate.Surface"/>); otherwise, and whenever
     /// the window takes this back, they arrive in memory as they always did. The window may change its mind at

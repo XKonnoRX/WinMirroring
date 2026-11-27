@@ -1091,10 +1091,86 @@ public partial class App : Application
         }.Start();
     }
 
+    private bool _errorBoxOpen;
+    private bool _restartingAfterDrawingDied;
+
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
-        Log.Error(e.Exception, "Unhandled UI exception");
-        MessageBox.Show(e.Exception.Message, "WinMirroring: ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
         e.Handled = true;
+        if (DrawingThreadDied(e.Exception))
+        {
+            RestartAfterDrawingDied(e.Exception);
+            return;
+        }
+
+        Log.Error(e.Exception, "Unhandled UI exception");
+        if (_errorBoxOpen)
+        {
+            return; // one box at a time: a fault that repeats would otherwise bury the screen in them
+        }
+
+        _errorBoxOpen = true;
+        try
+        {
+            MessageBox.Show(e.Exception.Message, "WinMirroring: ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            _errorBoxOpen = false;
+        }
+    }
+
+    /// <summary>
+    /// WPF draws on a thread of its own, and when that thread dies — over a graphics card that was reset or went
+    /// away under it — every window fails from then on, each time it has something to tell that thread. What it
+    /// throws then is "out of memory", whatever the memory, from the call that waits for the thread's answer.
+    /// </summary>
+    private static bool DrawingThreadDied(Exception exception) =>
+        (exception is OutOfMemoryException && exception.StackTrace?.Contains("DUCE.Channel", StringComparison.Ordinal) == true)
+        || (exception is System.Runtime.InteropServices.COMException { HResult: unchecked((int)0x88980406) }); // UCEERR_RENDERTHREADFAILURE
+
+    /// <summary>
+    /// Nothing in this process can be drawn any more, so it is replaced: a new one is started and this one leaves
+    /// the ordinary way (speakers unmuted, virtual monitor detached). It used to stay, showing an error box for
+    /// each thing that tried to draw. If pictures were being drawn straight from the graphics card, that is noted
+    /// against this version — it is the one thing here that hands WPF's drawing thread something of the card's —
+    /// and the new process draws them through memory.
+    /// </summary>
+    private void RestartAfterDrawingDied(Exception exception)
+    {
+        if (_restartingAfterDrawingDied || _exiting)
+        {
+            return;
+        }
+
+        _restartingAfterDrawingDied = true;
+        Log.Error(exception, "WPF's drawing thread has died; restarting the program");
+        try
+        {
+            if (Views.ScreenViewerWindow.SurfacesWereUsed && _services?.GetService<MirroringNode>() is { } node)
+            {
+                node.Settings.Screen.DirectPresentBrokeIn = GithubUpdater.CurrentVersion.ToString();
+                node.SaveSettings();
+                Log.Warning("Pictures were being drawn straight from the graphics card when it happened; in this version they will go through memory from now on");
+            }
+
+            if (Environment.ProcessPath is { } path)
+            {
+                var start = new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = false };
+                foreach (var argument in Environment.GetCommandLineArgs().Skip(1).Where(a => !string.Equals(a, RestartedArgument, StringComparison.OrdinalIgnoreCase)))
+                {
+                    start.ArgumentList.Add(argument);
+                }
+
+                start.ArgumentList.Add(RestartedArgument);
+                System.Diagnostics.Process.Start(start)?.Dispose();
+            }
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            Log.Error(ex, "Could not start the program again");
+        }
+
+        _ = ExitAsync();
     }
 }

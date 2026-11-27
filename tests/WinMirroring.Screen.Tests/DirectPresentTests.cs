@@ -125,7 +125,10 @@ public class DirectPresentTests
         image.Lock();
         try
         {
-            image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, surface, enableSoftwareFallback: true);
+            // As the window does it: without the software fallback, so that WPF itself lets go of the surface when
+            // it loses the card's front buffer (see ScreenViewerWindow.Surfaces).
+            Assert.True(image.IsFrontBufferAvailable, "WPF should have the card's front buffer on a machine that runs this test");
+            image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, surface);
             image.AddDirtyRect(new Int32Rect(0, 0, image.PixelWidth, image.PixelHeight));
         }
         finally

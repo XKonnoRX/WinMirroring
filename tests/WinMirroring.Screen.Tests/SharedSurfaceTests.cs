@@ -89,6 +89,18 @@ public class SharedSurfaceTests
     }
 
     [Fact]
+    public void ABridgeKnowsWhetherItsDeviceIsStillThere()
+    {
+        var bridge = Direct3D9Bridge.TryCreate();
+        Assert.SkipWhen(bridge is null, "No Direct3D 9 device on this machine.");
+
+        // A device that was just made is there; one that has been given up is not, and says so rather than throwing.
+        Assert.True(bridge!.IsUsable);
+        bridge.Dispose();
+        Assert.False(bridge.IsUsable);
+    }
+
+    [Fact]
     public void TwoSurfacesAreTwoPictures()
     {
         Assert.SkipUnless(VideoCodecSupport.CanEncodeH264 && VideoCodecSupport.CanDecodeH264, "No hardware H.264 encoder on this machine.");

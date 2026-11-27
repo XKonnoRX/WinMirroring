@@ -365,6 +365,17 @@ public partial class ScreenViewerWindow : Window
 
     private void ShowNotice(string text, double seconds = 4)
     {
+        if (_noticeTimer is null)
+        {
+            // Asked for from inside the constructor, before the timer that takes a notice away has been made
+            // (the first reading of the stream's description happens there, and it has things to say). Shown once
+            // the window is up. Not waiting for it was a null reference in the constructor: on a device where
+            // Windows keeps three-finger gestures for itself — a tablet — the first view opened after every start
+            // failed with an error box, and only the second try opened.
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () => ShowNotice(text, seconds));
+            return;
+        }
+
         NoticeText.Text = text;
         NoticeBorder.Visibility = Visibility.Visible;
         _noticeTimer.Stop();
@@ -1753,6 +1764,7 @@ public partial class ScreenViewerWindow : Window
         _partTimer?.Stop();
         _noticeTimer.Stop();
         _layoutTimer.Stop();
+        StopSurfaces();
         InputLanguageManager.Current.InputLanguageChanged -= OnInputLanguageChanged;
         if (_bar is not null)
         {

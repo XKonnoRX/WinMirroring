@@ -66,6 +66,34 @@ public sealed class Direct3D9Bridge : IDisposable
     }
 
     /// <summary>
+    /// Whether the device surfaces are opened on is still there. It can be lost under a program — the card reset,
+    /// a driver replaced, some ways of sleeping — and what was opened on it is then not a picture any more: a new
+    /// bridge has to be made, and nothing from this one handed on.
+    /// </summary>
+    public bool IsUsable
+    {
+        get
+        {
+            if (_disposed)
+            {
+                return false;
+            }
+
+            try
+            {
+                // Throws for a device that is lost, hung or removed. Occluded, or the display mode changed, are
+                // not failures: both are a device that is there.
+                _device.CheckDeviceState(GetDesktopWindow());
+                return true;
+            }
+            catch (Exception ex) when (ex is SharpGen.Runtime.SharpGenException or COMException)
+            {
+                return false;
+            }
+        }
+    }
+
+    /// <summary>
     /// The Direct3D 9 surface that is <paramref name="shared"/>, as the pointer <c>D3DImage.SetBackBuffer</c> takes.
     /// Opened once and kept while the picture is in use; throws when the card will not open it, and the caller
     /// then stops asking for pictures this way.
