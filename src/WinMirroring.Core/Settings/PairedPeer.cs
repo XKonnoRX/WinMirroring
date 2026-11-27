@@ -13,6 +13,15 @@ public sealed class PairedPeer
 
     public DateTimeOffset PairedAt { get; set; }
 
+    /// <summary>
+    /// True for a device that was trusted here on the word of a third one (see PeerIntroductions) and has not yet
+    /// said that it has this device paired in return. Until it has, its "not paired" in a handshake is not news
+    /// that it has forgotten this device — it never knew it — and the pairing is kept rather than undone. Cleared
+    /// by the first session that comes up ready. A pairing confirmed on both screens never has it, and neither
+    /// does one written by a version that did not know the difference, which leaves those behaving as before.
+    /// </summary>
+    public bool AwaitingTheirTrust { get; set; }
+
     public int TransportPort { get; set; } = ProtocolConstants.DefaultTransportPort;
 
     public int DiscoveryPort { get; set; } = ProtocolConstants.DefaultDiscoveryPort;

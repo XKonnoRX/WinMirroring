@@ -228,7 +228,13 @@ public sealed class LocalShellServer : IAsyncDisposable
                 _shell,
                 target,
                 command,
-                (stream, text) => Send(ShellCodec.EncodeOutput(0, stream, text)),
+                (stream, text) =>
+                {
+                    foreach (var piece in ShellCodec.EncodeOutputLine(0, stream, text))
+                    {
+                        Send(piece);
+                    }
+                },
                 reason => Send(ShellCodec.Encode(ShellMessageType.Refused, 0, reason)),
                 // Passed on rather than swallowed: the tool is the one with somebody watching it, and whether a
                 // wait is a person being asked or a device gone quiet is the whole of what it needs to know.

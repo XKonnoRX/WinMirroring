@@ -7,9 +7,9 @@ namespace WinMirroring.Core.Media;
 public delegate void MediaPacketHandler(IPEndPoint from, ReadOnlySpan<byte> packet);
 
 /// <summary>
-/// One UDP socket per node for real-time media (audio now, screen later). It binds the transport port number on
-/// UDP; packets are authenticated and decrypted per stream by <see cref="MediaCipher"/>, so the socket itself
-/// accepts anything and leaves filtering to the stream owners.
+/// One UDP socket per node for real-time media: sound, and the video of a screen stream. It binds the transport
+/// port number on UDP; packets are authenticated and decrypted per stream by <see cref="MediaCipher"/>, so the
+/// socket itself accepts anything and leaves filtering to the stream owners.
 /// </summary>
 public sealed class MediaSocket : IAsyncDisposable
 {
@@ -53,7 +53,10 @@ public sealed class MediaSocket : IAsyncDisposable
 
     public int Port { get; }
 
-    /// <summary>Asks for what goes to this peer to travel ahead of bulk traffic (see <see cref="MediaPriority"/>).</summary>
+    /// <summary>
+    /// Asks for what this socket sends to this peer to travel ahead of ordinary traffic. Everything it sends
+    /// there: one socket is one flow, so sound and video share the class (see <see cref="MediaPriority"/>).
+    /// </summary>
     public void Prioritize(IPEndPoint peer) => _priority.Add(peer);
 
     /// <summary>Gives that up again once nothing is sending there.</summary>

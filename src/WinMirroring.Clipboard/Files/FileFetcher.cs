@@ -19,6 +19,13 @@ public interface IRemoteFileSource
     /// </summary>
     Task<IBundleReader?> OpenBundleAsync(long offerId, int first, int end, CancellationToken ct) =>
         Task.FromResult<IBundleReader?>(null);
+
+    /// <summary>
+    /// Ends when nothing more can be read from this source: its connection closed, or the service it belongs to
+    /// stopped — whichever comes first. For what reads through the source on someone else's call (Explorer asking
+    /// for a file) and so has no token of its own to go by. A source that never closes has none.
+    /// </summary>
+    CancellationToken Closed => CancellationToken.None;
 }
 
 /// <summary>Request/response over one session's File channel.</summary>
@@ -37,6 +44,7 @@ internal sealed class FileFetcher : IRemoteFileSource
 
     private readonly PeerSession _session;
     private readonly ConcurrentDictionary<uint, TaskCompletionSource<FileChunk>> _pending = new();
+    private readonly CancellationTokenSource _closing = new();
     private int _nextId;
     private volatile bool _closed;
 
@@ -44,6 +52,8 @@ internal sealed class FileFetcher : IRemoteFileSource
     {
         _session = session;
     }
+
+    public CancellationToken Closed => _closing.Token;
 
     public async Task<FileChunk> ReadAsync(long offerId, int index, long offset, int length, CancellationToken ct)
     {
@@ -168,5 +178,9 @@ internal sealed class FileFetcher : IRemoteFileSource
                 waiter.TrySetException(new IOException($"The connection to {_session.PeerName} closed."));
             }
         }
+
+        // Last, so that whoever was in the middle of a read hears why it ended (the connection closed) rather than
+        // only that it was cancelled. The token is for those who are not reading right now and would never find out.
+        _closing.Cancel();
     }
 }

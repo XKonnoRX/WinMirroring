@@ -96,6 +96,38 @@ public sealed class FilesTests : IDisposable
     }
 
     [Fact]
+    public void RemoteStreamRefusesMoreThanItAskedFor()
+    {
+        // Three bytes announced, and a device that answers the request for them with a megabyte.
+        using var stream = new RemoteFileStream(new MemorySource(new byte[1 << 20]) { IgnoresRequestedLength = true }, 1, 0, 3);
+
+        Assert.Throws<IOException>(() => stream.ReadByte());
+    }
+
+    [Theory]
+    [InlineData(1000)] // gathered in memory
+    [InlineData(2_000_000)] // written to the disk as it comes
+    public async Task DownloaderStopsAtTheFirstByteBeyondTheAnnouncedSize(int announced)
+    {
+        var content = ScriptedSource.RandomFiles(announced);
+        var manifest = ScriptedSource.ManifestOf(content);
+
+        // The whole file, then more of it without end — and never the record that would say it is complete, which
+        // is where the size used to be checked.
+        var source = new ScriptedSource(content)
+        {
+            Script = _ => ScriptedSource.DataOf(0, content[0]).Concat(Enumerable.Repeat(ScriptedSource.Data(0, ScriptedSource.RecordSize), 100_000)),
+        };
+        var target = Path.Combine(_root, "taken");
+
+        await Assert.ThrowsAsync<IOException>(() => OfferDownloader.DownloadAsync(manifest, source, null, TestContext.Current.CancellationToken, target));
+
+        var whole = (announced + ScriptedSource.RecordSize - 1) / ScriptedSource.RecordSize;
+        Assert.Equal(whole + 1, source.Bundles[0].Read);
+        Assert.Empty(Directory.EnumerateFiles(target));
+    }
+
+    [Fact]
     public void DataObjectDescribesAndStreamsFiles()
     {
         var content = Encoding.UTF8.GetBytes("hello from the other device");
@@ -204,6 +236,9 @@ public sealed class FilesTests : IDisposable
 
         public FileChunkStatus Status { get; init; } = FileChunkStatus.Ok;
 
+        /// <summary>Answers with everything it has from the offset on, however little was asked for.</summary>
+        public bool IgnoresRequestedLength { get; init; }
+
         public int MaxConcurrent { get; private set; }
 
         public async Task<FileChunk> ReadAsync(long offerId, int index, long offset, int length, CancellationToken ct)
@@ -218,7 +253,7 @@ public sealed class FilesTests : IDisposable
             }
 
             var start = (int)Math.Min(offset, data.Length);
-            var count = Math.Min(length, data.Length - start);
+            var count = IgnoresRequestedLength ? data.Length - start : Math.Min(length, data.Length - start);
             return new FileChunk(FileChunkStatus.Ok, data.AsSpan(start, count).ToArray());
         }
     }

@@ -76,6 +76,9 @@ public static class ShellCodec
 
     private const int Header = 5;
 
+    /// <summary>After the text of an output message: this line goes on in the next message of the same stream.</summary>
+    private const byte LineGoesOn = 1;
+
     public static byte[] Encode(ShellMessageType type, uint consoleId) => Encode(type, consoleId, string.Empty);
 
     /// <summary>Any of the messages that is a type, a console and one piece of text.</summary>
@@ -106,36 +109,69 @@ public static class ShellCodec
             return [Encode(ShellMessageType.Run, consoleId, command)];
         }
 
-        // Three bytes per character is the worst case for anything outside the astral planes, and a surrogate pair
-        // counts as one character here, so a piece this size always encodes within one message.
-        var step = MaxText / 3;
-        var messages = new List<byte[]>();
-        for (var at = 0; at < command.Length;)
+        var pieces = Pieces(command);
+        var messages = new List<byte[]>(pieces.Count);
+        for (var i = 0; i < pieces.Count; i++)
         {
-            var take = Math.Min(step, command.Length - at);
-            if (at + take < command.Length && char.IsHighSurrogate(command[at + take - 1]))
-            {
-                take--; // never end a piece between the halves of one character
-            }
-
-            var piece = command.Substring(at, take);
-            at += take;
-            messages.Add(Encode(at >= command.Length ? ShellMessageType.Run : ShellMessageType.RunPart, consoleId, piece));
+            messages.Add(Encode(i == pieces.Count - 1 ? ShellMessageType.Run : ShellMessageType.RunPart, consoleId, pieces[i]));
         }
 
         return messages;
     }
 
-    /// <summary>Output: which stream it came from, then the text.</summary>
-    public static byte[] EncodeOutput(uint consoleId, ShellStream stream, string text)
+    /// <summary>
+    /// Output: which stream it came from, then the text. One message and no more, so text too long for one is cut
+    /// to fit — a line of a command's output goes through <see cref="EncodeOutputLine"/> instead, which cuts nothing.
+    /// </summary>
+    public static byte[] EncodeOutput(uint consoleId, ShellStream stream, string text) =>
+        EncodeOutput(consoleId, stream, Clip(text), goesOn: false);
+
+    /// <summary>
+    /// One line of a command's output as the messages that carry it: one message when it fits, which is nearly
+    /// always, and otherwise as many as it takes, each but the last saying that the line goes on in the next
+    /// message of the same stream. Sent in this order; <see cref="OutputAssembly"/> on the other end puts the line
+    /// back together.
+    ///
+    /// A line longer than one message used to be cut to the front of itself and the rest dropped without a word.
+    /// Lines that long are not exotic: a JSON document on one line, a minified file, a base64 blob — exactly what
+    /// a script asks another device for.
+    ///
+    /// That the line goes on is said in one byte after the text, where a build older than this never looks: to it
+    /// every piece is a line of its own, so it shows a long line broken into pieces rather than whole, and loses
+    /// none of it. The last piece — and so every line that fits in one message — carries no such byte and is, to
+    /// the byte, the message it always was.
+    /// </summary>
+    public static IReadOnlyList<byte[]> EncodeOutputLine(uint consoleId, ShellStream stream, string line)
     {
-        var bytes = Encoding.UTF8.GetBytes(Clip(text));
-        var message = new byte[Header + 1 + 2 + bytes.Length];
+        if (Encoding.UTF8.GetByteCount(line) <= MaxText)
+        {
+            return [EncodeOutput(consoleId, stream, line, goesOn: false)];
+        }
+
+        var pieces = Pieces(line);
+        var messages = new List<byte[]>(pieces.Count);
+        for (var i = 0; i < pieces.Count; i++)
+        {
+            messages.Add(EncodeOutput(consoleId, stream, pieces[i], goesOn: i < pieces.Count - 1));
+        }
+
+        return messages;
+    }
+
+    private static byte[] EncodeOutput(uint consoleId, ShellStream stream, string text, bool goesOn)
+    {
+        var bytes = Encoding.UTF8.GetBytes(text);
+        var message = new byte[Header + 1 + 2 + bytes.Length + (goesOn ? 1 : 0)];
         message[0] = (byte)ShellMessageType.Output;
         BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(1), consoleId);
         message[Header] = (byte)stream;
         BinaryPrimitives.WriteUInt16LittleEndian(message.AsSpan(Header + 1), (ushort)bytes.Length);
         bytes.CopyTo(message.AsSpan(Header + 3));
+        if (goesOn)
+        {
+            message[^1] = LineGoesOn;
+        }
+
         return message;
     }
 
@@ -184,10 +220,18 @@ public static class ShellCodec
         return true;
     }
 
-    public static bool TryDecodeOutput(ReadOnlySpan<byte> message, out ShellStream stream, out string text)
+    public static bool TryDecodeOutput(ReadOnlySpan<byte> message, out ShellStream stream, out string text) =>
+        TryDecodeOutput(message, out stream, out text, out _);
+
+    /// <summary>
+    /// Output, and whether the line it is a piece of goes on in the next output message of the same stream (see
+    /// <see cref="EncodeOutputLine"/>). Never so for a message from a build that does not split lines.
+    /// </summary>
+    public static bool TryDecodeOutput(ReadOnlySpan<byte> message, out ShellStream stream, out string text, out bool goesOn)
     {
         stream = ShellStream.Output;
         text = string.Empty;
+        goesOn = false;
         if (message.Length < Header + 3 || message[0] != (byte)ShellMessageType.Output)
         {
             return false;
@@ -202,6 +246,7 @@ public static class ShellCodec
 
         stream = (ShellStream)kind;
         text = Encoding.UTF8.GetString(message.Slice(Header + 3, length));
+        goesOn = message.Length > Header + 3 + length && (message[Header + 3 + length] & LineGoesOn) != 0;
         return true;
     }
 
@@ -226,8 +271,35 @@ public static class ShellCodec
     }
 
     /// <summary>
-    /// Cut to what one message carries, on a character boundary that UTF-8 can encode in the room available. A
-    /// command's output is a stream and is sent in pieces anyway, so cutting here only decides where a piece ends.
+    /// Text as the pieces one message each can carry, in order, none of them ending between the halves of one
+    /// character. Put end to end they are the text again, which is the whole point: nothing is cut.
+    /// </summary>
+    private static List<string> Pieces(string text)
+    {
+        // Three bytes per unit of a string is the worst case: only characters outside the basic plane take four,
+        // and those are two units each. So a piece this size always encodes within one message.
+        var step = MaxText / 3;
+        var pieces = new List<string>((text.Length / step) + 1);
+        for (var at = 0; at < text.Length;)
+        {
+            var take = Math.Min(step, text.Length - at);
+            if (at + take < text.Length && char.IsHighSurrogate(text[at + take - 1]))
+            {
+                take--; // never end a piece between the halves of one character
+            }
+
+            pieces.Add(text.Substring(at, take));
+            at += take;
+        }
+
+        return pieces;
+    }
+
+    /// <summary>
+    /// Cut to what one message carries, on a character boundary that UTF-8 can encode in the room available. For
+    /// the texts that are one message by nature — a directory, a reason, a question — and never come near this
+    /// length. A command and a line of output are not cut: they go as several messages (<see cref="EncodeCommand"/>,
+    /// <see cref="EncodeOutputLine"/>).
     /// </summary>
     private static string Clip(string text)
     {
@@ -236,10 +308,11 @@ public static class ShellCodec
             return text;
         }
 
-        // Three bytes per character is the worst case for anything outside the astral planes, and a surrogate pair
-        // is never split because the pair counts as one character here.
+        // Three bytes per unit of a string is the worst case, as in Pieces. What must not be left on the end is the
+        // first half of a character whose second half was cut off: alone it encodes as a replacement mark. This
+        // used to look for the second half instead, and so took a whole character apart to leave exactly that.
         var characters = Math.Min(text.Length, MaxText / 3);
-        while (characters > 0 && char.IsLowSurrogate(text[characters - 1]))
+        if (characters > 0 && char.IsHighSurrogate(text[characters - 1]))
         {
             characters--;
         }

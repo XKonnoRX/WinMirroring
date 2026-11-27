@@ -17,7 +17,10 @@ public sealed partial class ClipboardSyncService
     /// <summary>A whole transfer may take a while (a build is tens of megabytes), but it must not wait forever.</summary>
     private static readonly TimeSpan SendFilesTimeout = TimeSpan.FromMinutes(15);
 
-    private readonly ConcurrentDictionary<uint, TaskCompletionSource<SendFilesResult>> _sendFilesWaiters = new();
+    /// <summary>The connection went before the answer came. Said on whichever side notices.</summary>
+    private const string ConnectionLost = "связь с устройством прервалась";
+
+    private readonly ConcurrentDictionary<uint, (PeerSession Session, TaskCompletionSource<SendFilesResult> Waiter)> _sendFilesWaiters = new();
     private uint _sendFilesNextId;
 
     /// <summary>
@@ -46,7 +49,7 @@ public sealed partial class ClipboardSyncService
 
         var requestId = Interlocked.Increment(ref _sendFilesNextId);
         var waiter = new TaskCompletionSource<SendFilesResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _sendFilesWaiters[requestId] = waiter;
+        _sendFilesWaiters[requestId] = (session, waiter);
         try
         {
             var request = new SendFilesRequest(requestId, purpose, note, manifest);
@@ -82,36 +85,84 @@ public sealed partial class ClipboardSyncService
     /// </summary>
     public async Task<IReadOnlyList<string>?> AcceptFilesAsync(PeerSession session, SendFilesRequest request, string targetDirectory, CancellationToken ct = default)
     {
+        var manifest = request.Manifest;
         if (!_fetchers.TryGetValue(session, out var source))
         {
+            // The connection went while this side was making up its mind. The answer will hardly get through
+            // either (the sender notices the loss by itself), but it is not for this side to decide that.
+            _logger.LogInformation("Files from {Peer} not taken: the connection is gone", session.PeerName);
+            await AnswerSendFilesAsync(session, new SendFilesResult(request.RequestId, false, ConnectionLost)).ConfigureAwait(false);
             return null;
         }
 
-        var manifest = request.Manifest;
-        var what = DescribeFiles(manifest);
-        Report($"Приём с {session.PeerName}: {what}…");
-        TransferProgress?.Invoke(new FileTransferProgress(manifest.OfferId, what, 0, manifest.TotalSize, false, false));
+        var what = string.Empty;
+        IReadOnlyList<string> paths;
         try
         {
-            var paths = await OfferDownloader.DownloadAsync(
+            what = DescribeFiles(manifest);
+            Report($"Приём с {session.PeerName}: {what}…");
+            ShowTransfer(new FileTransferProgress(manifest.OfferId, what, 0, manifest.TotalSize, false, false));
+            paths = await OfferDownloader.DownloadAsync(
                 manifest,
                 source,
-                (done, total) => TransferProgress?.Invoke(new FileTransferProgress(manifest.OfferId, what, done, total, false, false)),
+                (done, total) => ShowTransfer(new FileTransferProgress(manifest.OfferId, what, done, total, false, false)),
                 ct,
                 targetDirectory).ConfigureAwait(false);
-
-            TransferProgress?.Invoke(new FileTransferProgress(manifest.OfferId, what, manifest.TotalSize, manifest.TotalSize, true, true));
-            Report($"Получено с {session.PeerName}: {what}");
-            _logger.LogInformation("Took {What} from {Peer} into {Directory}", what, session.PeerName, targetDirectory);
-            await AnswerSendFilesAsync(session, new SendFilesResult(request.RequestId, true, null)).ConfigureAwait(false);
-            return paths;
         }
-        catch (Exception ex) when (ex is IOException or OperationCanceledException or UnauthorizedAccessException)
+        catch (Exception ex)
         {
-            TransferProgress?.Invoke(new FileTransferProgress(manifest.OfferId, what, 0, manifest.TotalSize, true, false));
-            _logger.LogWarning("Taking {What} from {Peer} failed: {Message}", what, session.PeerName, ex.Message);
+            // Whatever it was, the sender is told now. It waits for this answer for as long as a whole transfer may
+            // take, so a failure that was not one of the expected kinds — a target folder that cannot be made, an
+            // entry with a date no file can have — left it waiting a quarter of an hour for files that were never
+            // going to arrive.
+            ShowTransfer(new FileTransferProgress(manifest.OfferId, what, 0, manifest.TotalSize, true, false));
+            if (ex is IOException or OperationCanceledException or UnauthorizedAccessException)
+            {
+                _logger.LogWarning("Taking {What} from {Peer} failed: {Message}", what, session.PeerName, ex.Message);
+            }
+            else
+            {
+                _logger.LogError(ex, "Taking {What} from {Peer} failed", what, session.PeerName);
+            }
+
             await AnswerSendFilesAsync(session, new SendFilesResult(request.RequestId, false, ex.Message)).ConfigureAwait(false);
             return null;
+        }
+
+        // The indicator (which cannot fail) and then the answer, before anything else is said on this side: the
+        // files are here, and nothing that goes wrong while telling the user so changes that.
+        ShowTransfer(new FileTransferProgress(manifest.OfferId, what, manifest.TotalSize, manifest.TotalSize, true, true));
+        await AnswerSendFilesAsync(session, new SendFilesResult(request.RequestId, true, null)).ConfigureAwait(false);
+        _logger.LogInformation("Took {What} from {Peer} into {Directory}", what, session.PeerName, targetDirectory);
+        Report($"Получено с {session.PeerName}: {what}");
+        return paths;
+    }
+
+    /// <summary>Progress of files being taken, for whoever shows it. An indicator must never break the transfer it shows.</summary>
+    private void ShowTransfer(FileTransferProgress progress)
+    {
+        try
+        {
+            TransferProgress?.Invoke(progress);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "A handler of the transfer progress failed");
+        }
+    }
+
+    /// <summary>
+    /// A connection closed: an answer that was awaited over it cannot come any more (the other side answers on the
+    /// connection the offer came by), so whoever offered files over it is told now rather than at the timeout.
+    /// </summary>
+    private void OnSendFilesSessionClosed(PeerSession session)
+    {
+        foreach (var (requestId, waiting) in _sendFilesWaiters)
+        {
+            if (ReferenceEquals(waiting.Session, session))
+            {
+                waiting.Waiter.TrySetResult(new SendFilesResult(requestId, false, ConnectionLost));
+            }
         }
     }
 
@@ -139,9 +190,9 @@ public sealed partial class ClipboardSyncService
         if (payload[0] == ClipboardCodec.SendFilesResultMessage)
         {
             if (ClipboardCodec.TryDecodeSendFilesResult(payload) is { } result
-                && _sendFilesWaiters.TryGetValue(result.RequestId, out var waiter))
+                && _sendFilesWaiters.TryGetValue(result.RequestId, out var waiting))
             {
-                waiter.TrySetResult(result);
+                waiting.Waiter.TrySetResult(result);
             }
 
             return;

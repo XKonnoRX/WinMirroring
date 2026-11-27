@@ -19,6 +19,12 @@ public sealed class PeerSessionManager : IAsyncDisposable
     private static readonly TimeSpan ReconnectInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan InitiatorFallbackDelay = TimeSpan.FromSeconds(15);
 
+    /// <summary>
+    /// How often the list of devices is looked over for ones that have stopped announcing themselves. A quarter of
+    /// the silence that counts, so a device is said to be off the network within ten seconds of its last beacon.
+    /// </summary>
+    private static readonly TimeSpan LookForSilentPeers = Protocol.ProtocolConstants.PeerExpiry / 4;
+
     private readonly DeviceIdentity _identity;
     private readonly AppSettings _settings;
     private readonly Action _saveSettings;
@@ -32,6 +38,7 @@ public sealed class PeerSessionManager : IAsyncDisposable
     private readonly ConcurrentDictionary<string, byte> _connecting = new(StringComparer.Ordinal);
     private readonly object _sessionsGate = new();
     private readonly CancellationTokenSource _cts = new();
+    private readonly Timer _silentPeers;
     private int _disposed;
 
     public PeerSessionManager(
@@ -50,6 +57,32 @@ public sealed class PeerSessionManager : IAsyncDisposable
         _pairingUi = pairingUi;
         _power = power;
         _logger = logger;
+        _silentPeers = new Timer(_ => ExpireSilentPeers(), null, LookForSilentPeers, LookForSilentPeers);
+    }
+
+    /// <summary>
+    /// A device is listed as on the network because its beacons arrive, and nothing used to take that back when
+    /// they stopped: only a session closing or a pairing being removed looked at how long ago the last one was.
+    /// So this is looked at regularly instead, on a clock of its own — a beacon that does not come is not an
+    /// event anything can wait for.
+    /// </summary>
+    private void ExpireSilentPeers()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            _directory.ExpireUnseen(DateTimeOffset.UtcNow, Protocol.ProtocolConstants.PeerExpiry);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // Whoever listens to the list is called from here, on a timer's thread, where an exception that got
+            // away would take the whole program with it.
+            _logger.LogError(ex, "Looking for devices that have stopped announcing themselves failed");
+        }
     }
 
     public IReadOnlyCollection<PeerSession> Sessions => _sessions.Values.ToList();
@@ -398,20 +431,48 @@ public sealed class PeerSessionManager : IAsyncDisposable
     ///
     /// Nothing new had to be said for it. The handshake already asks both sides whether they have the other
     /// paired, and a session is only Ready when both say yes; one that is merely Unpaired means at least one said
-    /// no. So if this device's own answer was yes — the record is there, by the same certificate and the same id,
-    /// which is exactly the question <see cref="IsPaired"/> answers and exactly what the handshake asked — then
-    /// the no was theirs. There is no other way to arrive here. The pairing is over, and keeping half of it only
-    /// means offering a device that will refuse.
+    /// no. So if this device's own answer was yes then the no was theirs, the pairing is over, and keeping half of
+    /// it only means offering a device that will refuse.
     ///
     /// Nothing here takes anyone's word for anything new: that answer came over a connection whose certificate
     /// was pinned when the two were paired, and the only thing it can do is end a pairing with the device that
     /// sent it. A device can make this one forget it. It cannot make it forget anyone else.
+    ///
+    /// Two things have to be true for "their no" to mean "they have forgotten us", and this used to check neither
+    /// (see <see cref="WhatUnpairedMeans"/>). It looked at whether the record is there now, not at what this
+    /// device answered when the handshake asked; and it took for granted that they had this device paired at some
+    /// point, which a device trusted on a third one's word has not, until that word reaches it. Pressing "trust"
+    /// on an introduced device and connecting to it before the introduction had travelled back — or with nobody
+    /// able to carry it back at all — deleted the record just made and announced that the device had unpaired.
     /// </summary>
     private void ForgetIfTheyHaveForgottenUs(PeerSession session)
     {
-        if (session.State != SessionState.Unpaired || !IsPaired(session.PeerFingerprint, session.PeerId))
+        if (session.State != SessionState.Unpaired)
         {
             return;
+        }
+
+        var record = _settings.FindPairedByFingerprint(session.PeerFingerprint);
+        var pairedHere = record is not null && string.Equals(record.Id, session.PeerId, StringComparison.Ordinal);
+        switch (WhatUnpairedMeans(pairedHere, session.SaidPairedInHandshake, record?.AwaitingTheirTrust ?? false))
+        {
+            case UnpairedMeans.Nothing:
+                return;
+
+            case UnpairedMeans.AskAgain:
+                // What Trust does to a session that is open when it is called, done for one that was still being
+                // made at the time: whether the two are paired is settled in the handshake, so it is asked again.
+                _logger.LogInformation(
+                    "{Peer} was paired here while this connection was being made; connecting again so that both sides are asked afresh",
+                    session.PeerName);
+                _ = session.CloseAsync("trusted");
+                return;
+
+            case UnpairedMeans.NotTheirsYet:
+                _logger.LogInformation(
+                    "{Peer} does not have this device paired yet: it was trusted here on another device's word, and that word has not reached it. The pairing is kept",
+                    session.PeerName);
+                return;
         }
 
         _settings.PairedPeers.RemoveAll(p => string.Equals(p.Id, session.PeerId, StringComparison.Ordinal));
@@ -424,6 +485,39 @@ public sealed class PeerSessionManager : IAsyncDisposable
         PairedPeersChanged?.Invoke();
         UnpairedByPeer?.Invoke(session.PeerName);
     }
+
+    /// <summary>What a session that is not paired on both sides says about a pairing this device holds.</summary>
+    internal enum UnpairedMeans
+    {
+        /// <summary>This device has no pairing with the other one: two strangers, and nothing to conclude.</summary>
+        Nothing,
+
+        /// <summary>
+        /// The pairing here is newer than this session's handshake, in which this device therefore said no itself.
+        /// The session says nothing about them; it has to be made again for the question to be asked properly.
+        /// </summary>
+        AskAgain,
+
+        /// <summary>
+        /// They said no, and were never known to have said yes: this device trusted them on a third one's word
+        /// and they have not been told yet. Nothing was forgotten, because nothing was there to forget.
+        /// </summary>
+        NotTheirsYet,
+
+        /// <summary>This device said yes, they said no, and they had it paired once. They have forgotten it.</summary>
+        Forgotten,
+    }
+
+    /// <summary>
+    /// The rule behind <see cref="ForgetIfTheyHaveForgottenUs"/>, apart from it so that it can be read and tested
+    /// as a table: a pairing is only ever given up when this device really answered yes in the handshake and the
+    /// other one is known to have had it paired before.
+    /// </summary>
+    internal static UnpairedMeans WhatUnpairedMeans(bool pairedHereNow, bool saidPairedInHandshake, bool awaitingTheirTrust) =>
+        !pairedHereNow ? UnpairedMeans.Nothing
+        : !saidPairedInHandshake ? UnpairedMeans.AskAgain
+        : awaitingTheirTrust ? UnpairedMeans.NotTheirsYet
+        : UnpairedMeans.Forgotten;
 
     private void OnSessionClosed(PeerSession session, Exception? error)
     {
@@ -491,8 +585,12 @@ public sealed class PeerSessionManager : IAsyncDisposable
     /// hand. False when the record is unusable. Any session already open with that device is closed, because
     /// whether the two sides are paired is settled during the handshake: the reconnect a moment later comes up
     /// ready instead of unpaired.
+    ///
+    /// <paramref name="awaitingTheirs"/> is for the side that does this first, before the other device has heard
+    /// of it (see <see cref="PairedPeer.AwaitingTheirTrust"/>): until that device has said yes once, its no is
+    /// not taken to mean that it has forgotten this one.
     /// </summary>
-    public bool Trust(string id, string name, string fingerprint, int transportPort, int discoveryPort, IEnumerable<string>? addresses = null)
+    public bool Trust(string id, string name, string fingerprint, int transportPort, int discoveryPort, IEnumerable<string>? addresses = null, bool awaitingTheirs = false)
     {
         if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(fingerprint) || string.Equals(id, _identity.Id, StringComparison.Ordinal))
         {
@@ -500,12 +598,16 @@ public sealed class PeerSessionManager : IAsyncDisposable
         }
 
         var record = _settings.FindPairedById(id);
+        var sameAsBefore = record is not null && CertificateFingerprint.AreEqual(record.Fingerprint, fingerprint);
         if (record is null)
         {
             record = new PairedPeer { Id = id };
             _settings.PairedPeers.Add(record);
         }
 
+        // A pairing that was already there, by the same certificate, does not start waiting again because it was
+        // trusted a second time; and one the other device is known to hold is not waiting, whatever it was before.
+        record.AwaitingTheirTrust = awaitingTheirs && (!sameAsBefore || record.AwaitingTheirTrust);
         record.Name = string.IsNullOrWhiteSpace(name) ? id : name;
         record.Fingerprint = fingerprint;
         record.PairedAt = DateTimeOffset.UtcNow;
@@ -565,6 +667,7 @@ public sealed class PeerSessionManager : IAsyncDisposable
 
         record.Name = session.PeerName;
         record.Fingerprint = session.PeerFingerprint;
+        record.AwaitingTheirTrust = false;
         record.PairedAt = DateTimeOffset.UtcNow;
         record.TransportPort = session.PeerTransportPort;
         record.DiscoveryPort = session.PeerDiscoveryPort;
@@ -584,6 +687,8 @@ public sealed class PeerSessionManager : IAsyncDisposable
             return;
         }
 
+        // Ready means they said yes: from here on, a no from them is a pairing they have ended.
+        record.AwaitingTheirTrust = false;
         record.Name = session.PeerName;
         record.TransportPort = session.PeerTransportPort;
         record.DiscoveryPort = session.PeerDiscoveryPort;
@@ -606,6 +711,7 @@ public sealed class PeerSessionManager : IAsyncDisposable
             return;
         }
 
+        await _silentPeers.DisposeAsync().ConfigureAwait(false);
         await _cts.CancelAsync().ConfigureAwait(false);
         await CloseAllAsync("shutdown").ConfigureAwait(false);
         _cts.Dispose();

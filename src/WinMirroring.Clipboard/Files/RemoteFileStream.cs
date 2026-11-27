@@ -99,6 +99,13 @@ internal sealed class RemoteFileStream : Stream
             throw new IOException("The remote file is shorter than announced.");
         }
 
+        if (chunk.Data.Length > requested)
+        {
+            // Never asked for more than is left of the announced size, so more than was asked for is data past the
+            // file's end: taking it would carry the reader, and whatever it writes, beyond what the offer said.
+            throw new IOException("The other device sent more of the file than was asked for.");
+        }
+
         _current = chunk.Data;
         _currentOffset = offset;
         if (chunk.Data.Length < requested)

@@ -17,6 +17,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # A tag that is not the version in the project file would publish a build that calls itself something else,
+      # and the updater compares exactly these two: it would offer that build for ever, or never. Stop before building.
+      - name: The tag is the version
+        shell: pwsh
+        run: |
+          $version = ([xml](Get-Content src/WinMirroring.App/WinMirroring.App.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+          if ("v$version" -ne "${{ github.ref_name }}") { throw "The tag ${{ github.ref_name }} is not the version in WinMirroring.App.csproj, which is $version" }
+          "Building $version"
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'

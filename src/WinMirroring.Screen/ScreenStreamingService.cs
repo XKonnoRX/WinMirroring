@@ -237,6 +237,32 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
     /// <summary>How long telling the viewer that a stream has stopped may take before it is stopped regardless.</summary>
     private static readonly TimeSpan StopNoticeWithin = TimeSpan.FromSeconds(2);
 
+    /// <summary>What a device is told when it asks for a screen, or is watching one, that may not be watched.</summary>
+    private const string ViewingForbidden = "просмотр экрана запрещён на устройстве";
+
+    /// <summary>
+    /// The permissions were changed. Forbidding viewing ends the views of this device's monitors that are open —
+    /// it used to stop only new ones, so that whoever was watching went on watching. (Windows this device sent
+    /// and a second monitor it asked for were started from here, and are not what the switch is about.) And every
+    /// stream says again whether it may be controlled, so that the other side stops offering what will be refused.
+    /// </summary>
+    public void ApplySettings()
+    {
+        var settings = _node.Settings.Screen;
+        foreach (var source in _sources.Values.ToList())
+        {
+            if (!settings.AllowViewing && source.Kind == StreamKind.Monitor)
+            {
+                _logger.LogInformation("Viewing was forbidden here; {Peer} stops being shown {Title}", source.Session.PeerName, source.Title);
+                _ = StopSourceAsync(source.StreamId, ViewingForbidden);
+            }
+            else
+            {
+                source.DescribeAgain();
+            }
+        }
+    }
+
     public async Task StopSourceAsync(uint streamId, string reason = "stopped")
     {
         if (!_sources.TryRemove(streamId, out var source))
@@ -544,7 +570,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
         {
             if (!_node.Settings.Screen.AllowViewing)
             {
-                await session.SendControlAsync(new ScreenStopMessage(request.StreamId, "просмотр экрана запрещён на устройстве")).ConfigureAwait(false);
+                await session.SendControlAsync(new ScreenStopMessage(request.StreamId, ViewingForbidden)).ConfigureAwait(false);
                 return;
             }
 
@@ -606,6 +632,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
         }
 
         var viewer = new ScreenViewer(session, info, _logger, datagram => _node.SendMedia(session.PeerTransportEndPoint, datagram));
+        viewer.WantedFps = WantedFps;
         viewer.Closed += (closed, reason) => _viewers.TryRemove(closed.StreamId, out _);
         _viewers[info.StreamId] = viewer;
         _logger.LogInformation("Showing {Title} from {Peer}", info.Title, session.PeerName);

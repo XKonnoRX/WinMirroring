@@ -35,6 +35,10 @@ public sealed partial class MainViewModel
 
         _node.Settings.Shell.AllowCommands = value;
         _node.SaveSettings();
+
+        // Switched off, it ends the consoles that are open and forgets the yes already given: it used to stop only
+        // the next one from opening.
+        _shell.ApplySettings();
         Say(value
             ? "Другие устройства могут выполнять здесь команды — при первом разрешении вы его подтвердите."
             : "Выполнение команд с других устройств выключено.");
@@ -59,6 +63,7 @@ public sealed partial class MainViewModel
 
         _node.Settings.Shell.AllowElevatedCommands = value;
         _node.SaveSettings();
+        _shell.ApplySettings();
         Say(value
             ? "Другие устройства могут просить здесь консоль администратора — вы подтвердите это один раз, и Windows спросит один раз, до перезапуска приложения."
             : "Команды с правами администратора с других устройств выключены.");
@@ -93,6 +98,12 @@ public sealed partial class MainViewModel
 
     partial void OnPowerFpsChanged(int value)
     {
+        if (_initialized && Math.Clamp(value, 1, 240) is var kept && kept != value)
+        {
+            PowerFps = kept; // out of range: the nearest value that is in range, which the page then shows
+            return;
+        }
+
         if (!_initialized || value is < 1 or > 240)
         {
             return;

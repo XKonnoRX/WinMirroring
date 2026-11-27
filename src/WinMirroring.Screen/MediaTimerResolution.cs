@@ -23,6 +23,18 @@ internal static class MediaTimerResolution
     private static int _users;
     private static bool _granted;
 
+    /// <summary>How many holders there are now; for tests that check it is given back.</summary>
+    internal static int Users
+    {
+        get
+        {
+            lock (Gate)
+            {
+                return _users;
+            }
+        }
+    }
+
     /// <summary>Takes the fine timer; dispose the result to give it back.</summary>
     public static IDisposable Hold()
     {

@@ -392,9 +392,26 @@ public sealed partial class MainViewModel
         }
     }
 
-    partial void OnScreenAllowViewingChanged(bool value) => SaveScreen(s => s.AllowViewing = value);
+    partial void OnScreenAllowViewingChanged(bool value)
+    {
+        SaveScreen(s => s.AllowViewing = value);
+        ApplyScreenPermissions();
+    }
 
-    partial void OnScreenAllowControlChanged(bool value) => SaveScreen(s => s.AllowControl = value);
+    partial void OnScreenAllowControlChanged(bool value)
+    {
+        SaveScreen(s => s.AllowControl = value);
+        ApplyScreenPermissions();
+    }
+
+    /// <summary>What is open now is held to the permissions as they now stand, not only what is asked for next.</summary>
+    private void ApplyScreenPermissions()
+    {
+        if (_screenInitialized)
+        {
+            _screen.ApplySettings();
+        }
+    }
 
     partial void OnScreenWindowDragChanged(bool value) => SaveScreen(s => s.WindowDragEnabled = value);
 
@@ -416,6 +433,12 @@ public sealed partial class MainViewModel
 
     partial void OnScreenMaxFpsChanged(int value)
     {
+        if (Math.Clamp(value, 1, 60) is var kept && kept != value)
+        {
+            ScreenMaxFps = kept; // out of range: the nearest value that is in range, which the page then shows
+            return;
+        }
+
         if (value is >= 1 and <= 60)
         {
             SaveScreen(s => s.MaxFps = value);
@@ -424,6 +447,12 @@ public sealed partial class MainViewModel
 
     partial void OnScreenQualityChanged(int value)
     {
+        if (Math.Clamp(value, 30, 95) is var kept && kept != value)
+        {
+            ScreenQuality = kept; // out of range: the nearest value that is in range, which the page then shows
+            return;
+        }
+
         if (value is >= 30 and <= 95)
         {
             SaveScreen(s => s.Quality = value);
@@ -434,6 +463,12 @@ public sealed partial class MainViewModel
 
     partial void OnScreenVideoBitrateChanged(int value)
     {
+        if (Math.Clamp(value, 1000, 100_000) is var kept && kept != value)
+        {
+            ScreenVideoBitrate = kept; // out of range: the nearest value that is in range, which the page then shows
+            return;
+        }
+
         if (value is >= 1000 and <= 100_000)
         {
             SaveScreen(s => s.VideoBitrateKbps = value);

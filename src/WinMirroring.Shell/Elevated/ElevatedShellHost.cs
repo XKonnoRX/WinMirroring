@@ -22,8 +22,8 @@ namespace WinMirroring.Shell.Elevated;
 /// each other's console. Id 0 is not a console but this process: a <see cref="ShellMessageType.Close"/> for it is
 /// the app saying it is finished with administrator rights altogether.
 ///
-/// The shells it starts are the ordinary <see cref="RemoteShell"/> вЂ” the same marker, the same base64, the same
-/// four places encoding has to be set вЂ” because it is running here that makes them elevated and nothing else about
+/// The shells it starts are the ordinary <see cref="RemoteShell"/> — the same marker, the same base64, the same
+/// four places encoding has to be set — because it is running here that makes them elevated and nothing else about
 /// them differs. The messages on the pipe are the console channel's own, for the same reason: the app's job is to
 /// pass them on to whoever asked, and a second shape of message in the middle would be a second thing to keep in
 /// step.
@@ -126,7 +126,9 @@ public static class ElevatedShellHost
                             break;
 
                         case CommandPiece.TooLong:
-                            Send(ShellCodec.EncodeOutput(id, ShellStream.Error, "РљРѕРјР°РЅРґР° СЃР»РёС€РєРѕРј РґР»РёРЅРЅР°СЏ."));
+                            // The words are the ones the app itself uses, kept in one place: a copy of them
+                            // here was once saved in the wrong encoding and went out as mojibake.
+                            Send(ShellCodec.EncodeOutput(id, ShellStream.Error, CommandAssembly.TooLongText));
                             Send(ShellCodec.EncodeDone(id, 1, console.Shell.Directory));
                             break;
                     }
@@ -187,10 +189,17 @@ public static class ElevatedShellHost
             return;
         }
 
-        shell.Output += (kind, text) => send(ShellCodec.EncodeOutput(
-            id,
-            kind == ShellStreamKind.Error ? ShellStream.Error : ShellStream.Output,
-            text));
+        shell.Output += (kind, text) =>
+        {
+            // As many messages as the line takes, queued together from the one thread that read it.
+            foreach (var piece in ShellCodec.EncodeOutputLine(
+                id,
+                kind == ShellStreamKind.Error ? ShellStream.Error : ShellStream.Output,
+                text))
+            {
+                send(piece);
+            }
+        };
         shell.Done += (code, directory) => send(ShellCodec.EncodeDone(id, code, directory));
         shell.Ended += () =>
         {

@@ -30,6 +30,9 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
     private readonly Channel<ClipboardSnapshot> _outbox = Channel.CreateBounded<ClipboardSnapshot>(
         new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
     private readonly CancellationTokenSource _cts = new();
+
+    /// <summary>In what order clipboard content reached this device, so that the newest is what stays on the clipboard.</summary>
+    private readonly ArrivalOrder _order = new();
     private int _disposed;
 
     private ClipboardThread? _thread;
@@ -84,7 +87,13 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
         OfferDownloader.CleanUp();
 
         var thread = new ClipboardThread(_logger, () => MaxInlineBytes);
-        thread.LocalChanged += snapshot => _outbox.Writer.TryWrite(snapshot);
+        thread.LocalChanged += snapshot =>
+        {
+            // Raised on the clipboard thread, where the writes are made too: whatever from another device is still
+            // being fetched at this moment is older than this copy and will find that out when it comes to be applied.
+            _order.CopiedHere();
+            _outbox.Writer.TryWrite(snapshot);
+        };
         thread.Start();
         _thread = thread;
 
@@ -139,6 +148,7 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
         }
 
         _server.OnSessionClosed(session);
+        OnSendFilesSessionClosed(session);
     }
 
     // ---- outgoing ----------------------------------------------------------------------------------------
@@ -355,12 +365,15 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
             return ValueTask.CompletedTask;
         }
 
+        // Numbered here, on the receive loop, where messages still come one after another: from here on each goes
+        // its own way, and one that has to fetch its content first can be overtaken by the next.
+        var arrival = _order.Next();
         var message = payload.ToArray();
-        _ = Task.Run(() => ReceiveAsync(session, message));
+        _ = Task.Run(() => ReceiveAsync(session, message, arrival));
         return ValueTask.CompletedTask;
     }
 
-    private async Task ReceiveAsync(PeerSession session, byte[] message)
+    private async Task ReceiveAsync(PeerSession session, byte[] message, long arrival)
     {
         var thread = _thread;
         if (thread is null)
@@ -373,7 +386,7 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
             switch (message[0])
             {
                 case ClipboardCodec.DataMessage:
-                    await ApplyDataAsync(thread, session, message).ConfigureAwait(false);
+                    await ApplyDataAsync(thread, session, message, arrival).ConfigureAwait(false);
                     break;
 
                 case ClipboardCodec.DataRefMessage when ClipboardCodec.TryDecodeDataRef(message, out var blobId, out var length):
@@ -382,11 +395,18 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
                         return;
                     }
 
+                    if (_order.IsSuperseded(arrival))
+                    {
+                        // Overtaken before the fetch even began: megabytes that would only be thrown away.
+                        _logger.LogDebug("Clipboard from {Peer} not fetched: newer content is on the clipboard already", session.PeerName);
+                        return;
+                    }
+
                     using (var buffer = new MemoryStream((int)length))
                     {
                         await using var remote = new RemoteFileStream(fetcher, blobId, 0, length);
                         await remote.CopyToAsync(buffer, RemoteFileStream.ChunkSize, _cts.Token).ConfigureAwait(false);
-                        await ApplyDataAsync(thread, session, buffer.ToArray()).ConfigureAwait(false);
+                        await ApplyDataAsync(thread, session, buffer.ToArray(), arrival).ConfigureAwait(false);
                     }
 
                     break;
@@ -402,7 +422,12 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
                     // The progress itself reaches TransferProgress through TransferReports, the same way it does from a
                     // drag, which has no service of its own to hand it to.
                     dataObject.DownloadStarted += m => Report($"Вставка: загрузка {DescribeFiles(m)} с {m.SourceName}…");
-                    await thread.SetDataObjectAsync(dataObject).ConfigureAwait(false);
+                    if (!await thread.SetDataObjectAsync(dataObject, _order, arrival).ConfigureAwait(false))
+                    {
+                        _logger.LogInformation("Files from {Peer} not put on the clipboard: newer content is there already", session.PeerName);
+                        return;
+                    }
+
                     _logger.LogInformation("Files from {Peer} put on the clipboard: {What}", session.PeerName, DescribeFiles(manifest));
                     Report($"Получено с {session.PeerName}: {DescribeFiles(manifest)}");
                     break;
@@ -414,7 +439,7 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
         }
     }
 
-    private async Task ApplyDataAsync(ClipboardThread thread, PeerSession session, byte[] message)
+    private async Task ApplyDataAsync(ClipboardThread thread, PeerSession session, byte[] message, long arrival)
     {
         var items = ClipboardCodec.TryDecodeData(message, MaxInlineBytes);
         if (items is not { Count: > 0 })
@@ -422,7 +447,14 @@ public sealed partial class ClipboardSyncService : IAsyncDisposable
             return;
         }
 
-        await thread.WriteItemsAsync(items).ConfigureAwait(false);
+        if (!await thread.WriteItemsAsync(items, _order, arrival).ConfigureAwait(false))
+        {
+            // It took so long to get here (a large image pulled chunk by chunk) that something copied later was
+            // applied first. Writing this now would leave the older content on the clipboard.
+            _logger.LogInformation("Clipboard from {Peer} not applied ({What}): newer content is there already", session.PeerName, DescribeItems(items));
+            return;
+        }
+
         _logger.LogInformation("Clipboard from {Peer} applied: {What}", session.PeerName, DescribeItems(items));
         Report($"Получено с {session.PeerName}: {DescribeItems(items)}");
     }

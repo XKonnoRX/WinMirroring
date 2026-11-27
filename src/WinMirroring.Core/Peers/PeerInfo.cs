@@ -4,10 +4,10 @@ namespace WinMirroring.Core.Peers;
 
 public enum PeerState
 {
-    /// <summary>Known (paired) but not seen on the network.</summary>
+    /// <summary>Known (paired, or seen earlier) but not heard on the network now.</summary>
     Offline,
 
-    /// <summary>Beacons arrive, no session.</summary>
+    /// <summary>Beacons arrive, no session. Taken back once they stop (see <see cref="PeerDirectory.ExpireUnseen"/>).</summary>
     Discovered,
 
     Connecting,

@@ -106,6 +106,26 @@ internal sealed class ClipboardThread : IDisposable
     /// <summary>Replaces the clipboard with an OLE data object (virtual files from another device).</summary>
     public Task SetDataObjectAsync(ComTypes.IDataObject dataObject) => InvokeAsync(() => SetDataObject(dataObject));
 
+    /// <summary>
+    /// The same as <see cref="WriteItemsAsync(IReadOnlyList{ClipboardItem})"/>, unless something that arrived after
+    /// <paramref name="arrival"/> has got to the clipboard first (see <see cref="ArrivalOrder"/>). That is asked on
+    /// this thread, right before the write. False when it was not written.
+    /// </summary>
+    public async Task<bool> WriteItemsAsync(IReadOnlyList<ClipboardItem> items, ArrivalOrder order, long arrival)
+    {
+        var written = false;
+        await InvokeAsync(() => written = order.Apply(arrival, () => WriteItems(items))).ConfigureAwait(false);
+        return written;
+    }
+
+    /// <summary>The same for a data object.</summary>
+    public async Task<bool> SetDataObjectAsync(ComTypes.IDataObject dataObject, ArrivalOrder order, long arrival)
+    {
+        var written = false;
+        await InvokeAsync(() => written = order.Apply(arrival, () => SetDataObject(dataObject))).ConfigureAwait(false);
+        return written;
+    }
+
     private void Run()
     {
         try
@@ -179,6 +199,8 @@ internal sealed class ClipboardThread : IDisposable
             {
             }
 
+            // This thread is the only way to the object, and it is ending: nothing will be pasted through it now.
+            (own as IDisposable)?.Dispose();
             _ownDataObject = null;
         }
 
@@ -234,7 +256,7 @@ internal sealed class ClipboardThread : IDisposable
             return;
         }
 
-        _ownDataObject = null;
+        LetGoOfOwnDataObject();
         ClipboardSnapshot? snapshot;
         try
         {
@@ -390,7 +412,7 @@ internal sealed class ClipboardThread : IDisposable
             CloseClipboard();
         }
 
-        _ownDataObject = null;
+        LetGoOfOwnDataObject();
         _ignoreUpToSequence = GetClipboardSequenceNumber();
     }
 
@@ -413,8 +435,24 @@ internal sealed class ClipboardThread : IDisposable
             throw new COMException("OleSetClipboard failed", hr);
         }
 
+        if (!ReferenceEquals(_ownDataObject, dataObject))
+        {
+            LetGoOfOwnDataObject();
+        }
+
         _ownDataObject = dataObject;
         _ignoreUpToSequence = GetClipboardSequenceNumber();
+    }
+
+    /// <summary>
+    /// The files of ours that were on the clipboard no longer are: something else has taken their place. A paste
+    /// that began before that goes on (Explorer keeps the object for as long as it needs it), so the object is not
+    /// shut down, only told that no new paste will come — which is what lets it stop waiting for one.
+    /// </summary>
+    private void LetGoOfOwnDataObject()
+    {
+        (_ownDataObject as Files.VirtualFileDataObject)?.Retire();
+        _ownDataObject = null;
     }
 
     private bool OpenWithRetry()

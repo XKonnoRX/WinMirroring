@@ -10,6 +10,11 @@ namespace WinMirroring.Core.Peers;
 
 public sealed class HandshakeException(string message) : Exception(message);
 
+/// <param name="PairedHere">
+/// What this device itself answered when the handshake asked whether it has the other one paired. Kept beside
+/// <paramref name="PairedOnBothSides"/> because a no on both sides is two different things depending on whose it
+/// was, and the list of pairings may have changed by the time anyone looks at it again.
+/// </param>
 public sealed record HandshakeResult(
     string PeerId,
     string PeerName,
@@ -17,7 +22,8 @@ public sealed record HandshakeResult(
     X509Certificate2 PeerCertificate,
     int PeerTransportPort,
     int PeerDiscoveryPort,
-    bool PairedOnBothSides);
+    bool PairedOnBothSides,
+    bool PairedHere);
 
 /// <summary>
 /// Application-level authentication right after TLS. The client learned the server's identity from the TLS
@@ -82,7 +88,8 @@ public static class PeerHandshake
             serverCertificate,
             serverHello.TransportPort,
             serverHello.DiscoveryPort,
-            result.Paired && pairedLocally);
+            result.Paired && pairedLocally,
+            pairedLocally);
     }
 
     public static async Task<HandshakeResult> RunAsResponderAsync(
@@ -156,7 +163,8 @@ public static class PeerHandshake
             clientCertificate,
             clientHello.TransportPort,
             clientHello.DiscoveryPort,
-            pairedOnBothSides);
+            pairedOnBothSides,
+            pairedLocally);
     }
 
     private static byte[] BuildSignedData(byte[] challenge, string serverFingerprint, string clientFingerprint)

@@ -8,13 +8,16 @@ internal enum CommandPiece
     /// <summary>Not a piece of a command at all.</summary>
     Ignored,
 
-    /// <summary>Kept; the rest is still coming.</summary>
+    /// <summary>Not the end of the command; the rest is still coming.</summary>
     More,
 
     /// <summary>That was the last piece: the command is whole and is now out.</summary>
     Whole,
 
-    /// <summary>More arrived than will be put back together; nothing is kept.</summary>
+    /// <summary>
+    /// That was the last piece of a command longer than will be put back together. None of it was kept and none of
+    /// it is to run. Said once per command, by the piece that ends it — where the sender expects an answer.
+    /// </summary>
     TooLong,
 }
 
@@ -37,7 +40,20 @@ internal sealed class CommandAssembly
     /// </summary>
     public const int Longest = 1 << 20;
 
+    /// <summary>What a command that turned out too long is answered with, in words to show as they are.</summary>
+    public const string TooLongText = "Команда слишком длинная.";
+
     private readonly StringBuilder _arriving = new();
+
+    /// <summary>
+    /// The command now arriving has already passed <see cref="Longest"/>: the rest of it is dropped as it comes,
+    /// up to and including the piece that ends it.
+    ///
+    /// Without this, what was kept was thrown away at the moment the limit was passed and the pieces after it were
+    /// collected as though a new command had begun — so the piece that ended the script ran its tail. Half a
+    /// script is worse than none of it: the half that sets things up is the half that went missing.
+    /// </summary>
+    private bool _tooLong;
 
     public CommandPiece Add(ShellMessageType type, string text, out string command)
     {
@@ -47,10 +63,11 @@ internal sealed class CommandAssembly
             return CommandPiece.Ignored;
         }
 
-        if (_arriving.Length + text.Length > Longest)
+        if (_tooLong || _arriving.Length + text.Length > Longest)
         {
             _arriving.Clear();
-            return CommandPiece.TooLong;
+            _tooLong = type == ShellMessageType.RunPart;
+            return _tooLong ? CommandPiece.More : CommandPiece.TooLong;
         }
 
         _arriving.Append(text);

@@ -1,11 +1,15 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using WinMirroring.Core.Identity;
 using WinMirroring.Core.Messages;
 using WinMirroring.Core.Network;
 using WinMirroring.Core.Pairing;
 using WinMirroring.Core.Peers;
+using WinMirroring.Core.Protocol;
+using WinMirroring.Core.Transport;
 
 namespace WinMirroring.Core.Tests;
 
@@ -348,6 +352,215 @@ public sealed class NodeIntegrationTests : IAsyncLifetime
         Assert.False(PeerIntroductions.MayPassOn(new VouchRelayMessage("sender", mine), "sender", "AA:BB", true, true));
     }
 
+    /// <summary>
+    /// Trusting an introduced device is done on one side first: the record is written here, and the far end only
+    /// hears of it when the introduction has travelled back through the device in the middle — if that device has
+    /// a session with it at all. A direct connection made in between finds this side saying "paired" and the far
+    /// side saying "not", which is exactly what a device that has forgotten this one looks like, and was taken for
+    /// it: the record just written was deleted and the person was told the device had unpaired. With nothing to
+    /// carry the introduction back, that happened every time.
+    ///
+    /// Two nodes are enough to hold it. What the device in the middle does is hand each end the other's record,
+    /// and that is done here by hand, with the pause between the two that the fault lived in.
+    /// </summary>
+    [Fact]
+    public async Task ADeviceTrustedOnAnothersWordHasNotForgottenUsJustBecauseItHasNotHeardYet()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        // Neither is told about the other: the address A finds C at comes with the introduction.
+        var one = CreateNode("WordA", FreeUdpPort(), FreeTcpPort(), []);
+        var other = CreateNode("WordC", FreeUdpPort(), FreeTcpPort(), []);
+
+        // The device with the lower id is the one that connects at once (the other waits fifteen seconds first),
+        // so it plays the one that trusts: the order of things is the same either way, only slower.
+        var (a, c) = string.CompareOrdinal(one.Identity.Id, other.Identity.Id) < 0 ? (one, other) : (other, one);
+
+        var told = new ConcurrentQueue<string>();
+        a.Sessions.UnpairedByPeer += told.Enqueue;
+        c.Sessions.UnpairedByPeer += told.Enqueue;
+
+        await a.StartAsync();
+        await c.StartAsync();
+
+        // The press on A, as PeerIntroductions.TrustAsync makes it. The introduction back is still on its way.
+        Assert.True(a.Sessions.Trust(
+            c.Identity.Id, c.Settings.DeviceName, c.Identity.Fingerprint, c.Settings.TransportPort, c.Settings.DiscoveryPort, ["127.0.0.1"], awaitingTheirs: true));
+
+        // A finds C at that address and connects. C has never heard of A, so the session is not a paired one.
+        await WaitUntilAsync(
+            () => a.Sessions.TryGetSession(c.Identity.Id, out var early) && early.State == SessionState.Unpaired
+                && c.Sessions.TryGetSession(a.Identity.Id, out var seen) && seen.State == SessionState.Unpaired,
+            TimeSpan.FromSeconds(40), "A never reached C directly", ct);
+        await Task.Delay(500, ct);
+
+        // And that is all it is. C has not forgotten A; it has not been told yet.
+        var waiting = Assert.Single(a.Settings.PairedPeers);
+        Assert.Equal((c.Identity.Id, true), (waiting.Id, waiting.AwaitingTheirTrust));
+        Assert.Empty(told);
+        Assert.True(a.Peers.TryGet(c.Identity.Id, out var listed) && listed.IsPaired);
+
+        // Now the introduction arrives at C, as the relay delivers it there.
+        Assert.True(c.Sessions.Trust(
+            a.Identity.Id, a.Settings.DeviceName, a.Identity.Fingerprint, a.Settings.TransportPort, a.Settings.DiscoveryPort, ["127.0.0.1"]));
+
+        await WaitUntilAsync(() => IsReady(a, c) && IsReady(c, a),
+            TimeSpan.FromSeconds(40), "A and C never came up paired", ct);
+
+        // C has said yes now, so A is no longer waiting for it to.
+        await WaitUntilAsync(() => a.Settings.PairedPeers.FirstOrDefault() is { AwaitingTheirTrust: false },
+            TimeSpan.FromSeconds(5), "A went on waiting for a yes it had already been given", ct);
+        Assert.Empty(told);
+
+        // From here on it is a pairing like any other, and one that C ends does reach A.
+        await c.Sessions.UnpairAsync(a.Identity.Id);
+        await WaitUntilAsync(() => a.Settings.PairedPeers.Count == 0,
+            TimeSpan.FromSeconds(45), "A never learned that C had forgotten it", ct);
+        Assert.Equal(c.Settings.DeviceName, Assert.Single(told));
+    }
+
+    /// <summary>
+    /// The rule that test rests on, as a table. A pairing is given up only when this device really did say "paired"
+    /// in the handshake and the other one is known to have had it paired before; every other way of ending up in
+    /// an unpaired session with a device this one has paired is something else.
+    /// </summary>
+    [Fact]
+    public void ANoInTheHandshakeOnlyMeansForgottenWhenTheyOnceKnewUs()
+    {
+        // Strangers: nothing is paired here, so there is nothing to give up, whatever else is true.
+        Assert.Equal(PeerSessionManager.UnpairedMeans.Nothing, PeerSessionManager.WhatUnpairedMeans(false, false, false));
+        Assert.Equal(PeerSessionManager.UnpairedMeans.Nothing, PeerSessionManager.WhatUnpairedMeans(false, true, false));
+
+        // The record was written while the connection was being made, after this device had already answered "no"
+        // itself — an introduction arriving in the middle of a handshake. The session says nothing about them.
+        Assert.Equal(PeerSessionManager.UnpairedMeans.AskAgain, PeerSessionManager.WhatUnpairedMeans(true, false, false));
+        Assert.Equal(PeerSessionManager.UnpairedMeans.AskAgain, PeerSessionManager.WhatUnpairedMeans(true, false, true));
+
+        // Trusted on a third device's word, and they have not said yes once yet.
+        Assert.Equal(PeerSessionManager.UnpairedMeans.NotTheirsYet, PeerSessionManager.WhatUnpairedMeans(true, true, true));
+
+        // The one case that is what it looks like.
+        Assert.Equal(PeerSessionManager.UnpairedMeans.Forgotten, PeerSessionManager.WhatUnpairedMeans(true, true, false));
+    }
+
+    /// <summary>
+    /// A device nobody is connected to is on the network for as long as it says so. One that stops — switched off,
+    /// gone elsewhere — used to stay "on the network" in the list until the program was restarted.
+    /// </summary>
+    [Fact]
+    public async Task ADeviceThatStopsAnnouncingItselfIsNoLongerShownAsOnTheNetwork()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var discoveryA = FreeUdpPort();
+        var discoveryB = FreeUdpPort();
+        var a = CreateNode("QuietA", discoveryA, FreeTcpPort(), [$"127.0.0.1:{discoveryB}"]);
+        var b = CreateNode("QuietB", discoveryB, FreeTcpPort(), [$"127.0.0.1:{discoveryA}"]);
+
+        await a.StartAsync();
+        await b.StartAsync();
+        await WaitUntilAsync(
+            () => a.Peers.TryGet(b.Identity.Id, out var peer) && peer.State == PeerState.Discovered,
+            TimeSpan.FromSeconds(15), "A never discovered B", ct);
+
+        // For as long as B goes on answering, it stays that way: longer than the silence that would count.
+        await Task.Delay(ProtocolConstants.PeerExpiry + TimeSpan.FromSeconds(3), ct);
+        Assert.True(a.Peers.TryGet(b.Identity.Id, out var still));
+        Assert.Equal(PeerState.Discovered, still.State);
+
+        await b.StopAsync();
+
+        await WaitUntilAsync(
+            () => a.Peers.TryGet(b.Identity.Id, out var peer) && peer.State == PeerState.Offline,
+            TimeSpan.FromSeconds(30), "B went quiet and A went on listing it as on the network", ct);
+
+        // Still listed, and still where it was last seen: only no longer said to be there now.
+        Assert.True(a.Peers.TryGet(b.Identity.Id, out var gone));
+        Assert.Equal("QuietB", gone.Name);
+        Assert.NotNull(gone.TransportEndPoint);
+
+        // And it is back as soon as it is heard again.
+        await b.StartAsync();
+        await WaitUntilAsync(
+            () => a.Peers.TryGet(b.Identity.Id, out var peer) && peer.State == PeerState.Discovered,
+            TimeSpan.FromSeconds(15), "B came back and A did not notice", ct);
+    }
+
+    /// <summary>
+    /// A message that goes out in parts is only measured by the device receiving it, as the parts add up; and what
+    /// that device does with one that is too long is stop reading, which ends the session for everything on it.
+    /// The sender knows the length before it writes a byte, so it is the sender that refuses — and the session is
+    /// still there afterwards, for the message that does fit.
+    /// </summary>
+    [Fact]
+    public async Task AMessageTooLongForTheOtherSideIsRefusedBeforeItIsSentAndTheSessionLives()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var discoveryA = FreeUdpPort();
+        var discoveryB = FreeUdpPort();
+        var a = CreateNode("LongA", discoveryA, FreeTcpPort(), [$"127.0.0.1:{discoveryB}"]);
+        var b = CreateNode("LongB", discoveryB, FreeTcpPort(), [$"127.0.0.1:{discoveryA}"]);
+
+        await a.StartAsync();
+        await b.StartAsync();
+        await WaitUntilAsync(
+            () => a.Peers.TryGet(b.Identity.Id, out var peer) && peer.TransportEndPoint is not null,
+            TimeSpan.FromSeconds(15), "A never discovered B", ct);
+        Assert.True(await a.PairAsync(b.Identity.Id, ct), "A could not pair with B");
+        await WaitUntilAsync(() => IsReady(a, b) && IsReady(b, a), TimeSpan.FromSeconds(10), "the session never came up", ct);
+
+        Assert.True(a.Sessions.TryGetSession(b.Identity.Id, out var sending));
+        Assert.True(b.Sessions.TryGetSession(a.Identity.Id, out var receiving));
+        var arrived = new ConcurrentQueue<int>();
+        receiving.RegisterHandler(ChannelId.File, (_, payload, _) =>
+        {
+            arrived.Enqueue(payload.Length);
+            return ValueTask.CompletedTask;
+        });
+
+        var refused = await Assert.ThrowsAsync<MessageTooLargeException>(
+            async () => await sending.SendAsync(ChannelId.File, new byte[ProtocolConstants.MaxFrameSize + 1], ct));
+        Assert.Equal((ChannelId.File, ProtocolConstants.MaxFrameSize + 1), (refused.Channel, refused.Length));
+
+        // The largest message there is still goes, and arrives whole: the two ends agree on where the line is.
+        await sending.SendAsync(ChannelId.File, new byte[ProtocolConstants.MaxFrameSize], ct);
+        await WaitUntilAsync(() => !arrived.IsEmpty, TimeSpan.FromSeconds(30), "the message that fits never arrived", ct);
+        Assert.Equal(ProtocolConstants.MaxFrameSize, Assert.Single(arrived));
+
+        // Nothing of the refused one was written, so the same session carried the other, and is still up.
+        Assert.Equal(SessionState.Ready, sending.State);
+        Assert.Equal(SessionState.Ready, receiving.State);
+    }
+
+    /// <summary>
+    /// A settings file that cannot be read means a new device: a new id, a new certificate, every pairing gone on
+    /// both sides. That used to happen without a word. The node now says it, as an error, with where the old file
+    /// was put — and the old file is still there afterwards, whole, although the node has saved its new settings.
+    /// </summary>
+    [Fact]
+    public void ANodeWhoseSettingsCannotBeReadSaysSoAndKeepsTheFile()
+    {
+        const string cutShort = "{ \"deviceId\": \"0123456789abcdef\", \"pairedPeers\": [ { \"id\": \"fedcba\", \"finger";
+        var directory = NewDirectory();
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "settings.json"), cutShort);
+
+        var log = new KeptLog();
+        var node = CreateNode("Unreadable", FreeUdpPort(), FreeTcpPort(), [], directory: directory, log: log);
+
+        // A new device, as it has to be with nothing to go on.
+        Assert.NotEqual("0123456789abcdef", node.Identity.Id);
+        Assert.Empty(node.Settings.PairedPeers);
+
+        var kept = node.SettingsStore.Unreadable?.KeptAs;
+        Assert.NotNull(kept);
+        Assert.Equal(cutShort, File.ReadAllText(kept));
+        Assert.Equal(node.Identity.Id, new Settings.SettingsStore(directory).Load().DeviceId);
+
+        var said = Assert.Single(log.Lines, line => line.Level == LogLevel.Error);
+        Assert.Contains(kept, said.Text, StringComparison.Ordinal);
+        Assert.Contains("could not be read", said.Text, StringComparison.Ordinal);
+    }
+
     private static bool IsReady(MirroringNode from, MirroringNode to) =>
         from.Sessions.TryGetSession(to.Identity.Id, out var session) && session.State == SessionState.Ready;
 
@@ -392,9 +605,18 @@ public sealed class NodeIntegrationTests : IAsyncLifetime
             ct);
     }
 
-    private MirroringNode CreateNode(string name, int discoveryPort, int transportPort, string[] manualAddresses, bool accept = true)
+    private static string NewDirectory() => Path.Combine(Path.GetTempPath(), "WinMirroring.Tests", Guid.NewGuid().ToString("N"));
+
+    private MirroringNode CreateNode(
+        string name,
+        int discoveryPort,
+        int transportPort,
+        string[] manualAddresses,
+        bool accept = true,
+        string? directory = null,
+        ILoggerFactory? log = null)
     {
-        var directory = Path.Combine(Path.GetTempPath(), "WinMirroring.Tests", Guid.NewGuid().ToString("N"));
+        directory ??= NewDirectory();
         _directories.Add(directory);
         var ui = new FixedAnswerPairingUi(accept);
 
@@ -409,7 +631,7 @@ public sealed class NodeIntegrationTests : IAsyncLifetime
                 ManualAddresses = manualAddresses,
             },
             ui,
-            NullLoggerFactory.Instance);
+            log ?? NullLoggerFactory.Instance);
         _ui[node] = ui;
 
         var loopback = NetworkInterfaceCatalog.Enumerate(includeLoopback: true).First(i => i.IsLoopback);
@@ -459,5 +681,32 @@ public sealed class NodeIntegrationTests : IAsyncLifetime
         }
 
         public void PairingStarted(PairingPrompt prompt) => ShownCode = prompt.ConfirmationCode;
+    }
+
+    /// <summary>Keeps what a node writes to its log, for the things a node must not do without saying so.</summary>
+    private sealed class KeptLog : ILoggerFactory
+    {
+        public ConcurrentQueue<(LogLevel Level, string Text)> Lines { get; } = new();
+
+        public ILogger CreateLogger(string categoryName) => new Writer(this);
+
+        public void AddProvider(ILoggerProvider provider)
+        {
+        }
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class Writer(KeptLog log) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state)
+                where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+                log.Lines.Enqueue((logLevel, formatter(state, exception)));
+        }
     }
 }

@@ -19,6 +19,16 @@ public static class ShellExit
     /// this, so asking again unchanged will get the same answer.
     /// </summary>
     public const int Refused = 65;
+
+    /// <summary>
+    /// The console over there ended and no exit code came with it. Nobody said no and the device is still there,
+    /// so it is neither of the two above — and it was reported as a refusal, with no reason, until it had a code
+    /// of its own. What happened to the command is not known: it may have run in full. A device on this build
+    /// reports the code its shell exited with instead (a command that ends in <c>exit 3</c> comes back as 3), so
+    /// this is what is left: an older build whose shell was ended by the command, or a console that closed before
+    /// the command was ever handed to it. 66 is taken by the command-line tool.
+    /// </summary>
+    public const int ConsoleEnded = 67;
 }
 
 /// <summary>
@@ -87,27 +97,50 @@ public static class RemoteCommand
         // that waits there stops the session being read at all.
         var finished = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        console.Opened += _ => console.Run(command);
-        console.Asking += question => waiting?.Invoke(question);
-        console.Refused += reason =>
+        // One ending, and the reason for it said before the code is out: the caller passes both on in that order,
+        // and several things here can end a console at the same moment.
+        var ended = 0;
+        void End(int code, string? reason)
         {
-            failed($"{session.PeerName} отказал: {reason}.");
-            finished.TrySetResult(ShellExit.Refused);
-        };
+            if (Interlocked.Exchange(ref ended, 1) != 0)
+            {
+                return;
+            }
+
+            if (reason is not null)
+            {
+                failed(reason);
+            }
+
+            finished.TrySetResult(code);
+        }
+
+        var handedOver = false;
+        console.Opened += _ => handedOver = console.Run(command);
+        console.Asking += question => waiting?.Invoke(question);
+        console.Refused += reason => End(ShellExit.Refused, $"{session.PeerName} отказал: {reason}.");
 
         // Not a refusal, and it used to be reported as one: a device that goes to sleep mid-question ends a
         // console exactly as a person saying no does, and the answer read "отказал" with the exit code for it. The
         // two want opposite things from whoever is reading — go and wake the device, or stop asking — so they are
         // different words and different codes.
-        console.Lost += reason =>
-        {
-            failed($"{session.PeerName} перестал отвечать ({reason}) — возможно, устройство уснуло; команда не выполнена.");
-            finished.TrySetResult(ShellExit.CouldNotReach);
-        };
+        console.Lost += reason => End(
+            ShellExit.CouldNotReach,
+            $"{session.PeerName} перестал отвечать ({reason}) — возможно, устройство уснуло; команда не выполнена.");
 
         console.Output += (stream, text) => output(stream, text);
-        console.Done += (code, _) => finished.TrySetResult(code);
-        console.Finished += () => finished.TrySetResult(ShellExit.Refused);
+        console.Done += (code, _) => End(code, null);
+
+        // The console is over and nothing above said why: no code, no refusal, no lost connection. Not a refusal
+        // either, though it used to be reported as one and without a word — nobody over there said no. What is
+        // known is said, and it has a code of its own. A device on this build does not come this way for a command
+        // that ended its shell (it sends the shell's exit code first); an older one does.
+        console.Finished += () => End(
+            ShellExit.ConsoleEnded,
+            handedOver
+                ? $"{session.PeerName}: консоль закрылась, не сообщив код команды — оболочка на устройстве завершилась, "
+                    + "пока команда выполнялась (например, команда сама вышла из неё: exit). Выполнилась ли команда целиком, неизвестно."
+                : $"{session.PeerName}: консоль закрылась раньше, чем команда была передана; команда не выполнена.");
 
         try
         {
@@ -115,7 +148,7 @@ public static class RemoteCommand
         }
         catch (OperationCanceledException)
         {
-            failed("ожидание команды прервано.");
+            End(ShellExit.CouldNotReach, "ожидание команды прервано.");
             console.Cancel();
             return ShellExit.CouldNotReach;
         }

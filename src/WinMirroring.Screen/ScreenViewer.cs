@@ -409,7 +409,18 @@ public sealed class ScreenViewer : IAsyncDisposable
     private const int SizeStep = 160;
     private System.Drawing.Size _shownSize;
 
-    public void SwitchMonitor(int index, string? key = null) => _ = SendControlAsync(new ScreenRequestMessage(StreamId, index, key));
+    /// <summary>
+    /// The most frames a second this device wants right now, as the service that opened the view would ask (fewer
+    /// on a battery); null for "whatever the source sends".
+    /// </summary>
+    public Func<int?>? WantedFps { get; set; }
+
+    /// <summary>
+    /// Asks for another monitor of the same device in this view. Says again how many frames are wanted: the
+    /// source takes what a request says as the whole of it, and a request without that put a device on a battery
+    /// back to sixty a second with every change of monitor.
+    /// </summary>
+    public void SwitchMonitor(int index, string? key = null) => _ = SendControlAsync(new ScreenRequestMessage(StreamId, index, key, WantedFps?.Invoke()));
 
     /// <summary>Asks the source to act on its real window (restore it from minimised).</summary>
     public void SendWindowCommand(WindowCommand command) => _outbox.Writer.TryWrite(ScreenCodec.EncodeWindowCommand(StreamId, command));
@@ -986,7 +997,53 @@ public sealed class ScreenViewer : IAsyncDisposable
         _outbox.Writer.TryComplete();
         _cts.Cancel();
         Closed?.Invoke(this, reason);
+        _ = Task.Run(FinishAsync);
         return notifySource ? SendControlAsync(new ScreenStopMessage(StreamId, "closed by viewer")) : Task.CompletedTask;
+    }
+
+    private readonly TaskCompletionSource _finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>
+    /// Gives back what the view held, once: the fine timer and the keys. It is part of closing, not of disposing —
+    /// a view is closed by its window, by the source stopping it or by its connection going, and none of those
+    /// went on to dispose it; only the service did, at its own end, for the views still open then. So every view
+    /// ever closed kept the system timer at a millisecond and its keys in memory for as long as the program ran.
+    /// </summary>
+    private async Task FinishAsync()
+    {
+        try
+        {
+            // The decoders are given up by the loop that uses them, when it ends (see _decodeLoop). If it is stuck
+            // inside one for longer than this, they are left alone: something leaked is better than something
+            // freed while it is being used.
+            try
+            {
+                await _decodeLoop.WaitAsync(DecoderFinishesWithin).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+            {
+                _logger.LogDebug("The decoder of the view of {Peer} was still busy when the view closed", PeerName);
+            }
+
+            lock (_mediaGate)
+            {
+                _mediaCipher?.Dispose();
+                _mediaCipher = null;
+                lock (_replyGate)
+                {
+                    _replyCipher?.Dispose();
+                    _replyCipher = null;
+                }
+
+                _reassembly = null;
+            }
+
+            _timer.Dispose();
+        }
+        finally
+        {
+            _finished.TrySetResult();
+        }
     }
 
     /// <summary>
@@ -1386,35 +1443,10 @@ public sealed class ScreenViewer : IAsyncDisposable
         }
     }
 
+    /// <summary>Closes the view if it is still open, and waits until what it held has been given back.</summary>
     public async ValueTask DisposeAsync()
     {
         await CloseAsync(notifySource: true, reason: null).ConfigureAwait(false);
-
-        // The decoders are given up by the loop that uses them, when it ends (see _decodeLoop). If it is stuck
-        // inside one for longer than this, they are left alone: something leaked is better than something freed
-        // while it is being used.
-        try
-        {
-            await _decodeLoop.WaitAsync(DecoderFinishesWithin).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
-        {
-            _logger.LogDebug("The decoder of the view of {Peer} was still busy when the view closed", PeerName);
-        }
-
-        lock (_mediaGate)
-        {
-            _mediaCipher?.Dispose();
-            _mediaCipher = null;
-            lock (_replyGate)
-            {
-                _replyCipher?.Dispose();
-                _replyCipher = null;
-            }
-
-            _reassembly = null;
-        }
-
-        _timer.Dispose();
+        await _finished.Task.ConfigureAwait(false);
     }
 }

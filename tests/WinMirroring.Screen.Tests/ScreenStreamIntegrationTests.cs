@@ -212,6 +212,62 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Forbidding viewing ends a view that is open, not only the ones asked for afterwards; and when everything
+    /// is closed, the fine system timer both ends took for the stream has been given back — a closed view used to
+    /// keep it for as long as the program ran.
+    /// </summary>
+    [Fact(Explicit = true)]
+    public async Task ForbiddingViewingEndsTheOpenViewAndWhatItHeldIsGivenBack()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var discoveryA = FreeUdpPort();
+        var discoveryB = FreeUdpPort();
+        var a = CreateNode("ForbidA", discoveryA, $"127.0.0.1:{discoveryB}");
+        var b = CreateNode("ForbidB", discoveryB, $"127.0.0.1:{discoveryA}");
+        await a.StartAsync();
+        await b.StartAsync();
+
+        var held = MediaTimerResolution.Users;
+        var log = Path.Combine(Path.GetTempPath(), "winmirroring-stream-forbid.log");
+        File.WriteAllText(log, string.Empty);
+        await using var screenA = new ScreenStreamingService(a, new FileLogger<ScreenStreamingService>(log));
+        await using var screenB = new ScreenStreamingService(b, new FileLogger<ScreenStreamingService>(log));
+        screenA.Start();
+        screenB.Start();
+
+        await WaitUntilAsync(() => b.Peers.TryGet(a.Identity.Id, out var peer) && peer.TransportEndPoint is not null, ct);
+        Assert.True(await b.PairAsync(a.Identity.Id, ct));
+        await WaitUntilAsync(() => a.Sessions.TryGetSession(b.Identity.Id, out var s) && s.State == SessionState.Ready, ct);
+        await WaitUntilAsync(() => screenA.PeerVirtualDisplay(b.Identity.Id) is not null, ct);
+
+        var opened = new TaskCompletionSource<ScreenViewer>(TaskCreationOptions.RunContinuationsAsynchronously);
+        screenB.ViewerOpened += viewer => opened.TrySetResult(viewer);
+        Assert.True(await screenB.RequestScreenAsync(a.Identity.Id, 0));
+        var viewer = await opened.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+        var shown = 0;
+        var ended = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        viewer.Closed += (_, reason) => ended.TrySetResult(reason);
+        viewer.Attach(_ =>
+        {
+            Interlocked.Increment(ref shown);
+            viewer.FramePresented();
+        });
+        await WaitUntilAsync(() => Volatile.Read(ref shown) > 0, ct);
+        Assert.True(MediaTimerResolution.Users > held, "a running stream holds the fine timer");
+
+        a.Settings.Screen.AllowViewing = false;
+        screenA.ApplySettings();
+
+        var reason = await ended.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+        Assert.Contains("запрещён", reason);
+        Assert.False(viewer.CanResume); // it was a decision, and is not undone by asking again
+        await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
+
+        // Nobody disposed the view: its window only closes it. What it held comes back all the same.
+        await WaitUntilAsync(() => MediaTimerResolution.Users == held, ct);
+    }
+
+    /// <summary>
     /// Zoomed in, a viewer asks for the part of the screen it has in view. The pictures that come back have to be
     /// of that part — smaller than the screen — and each has to say which request it was made for, because the
     /// viewer draws a part in the place it is a part of and pictures of the last request are still arriving when

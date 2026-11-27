@@ -263,6 +263,16 @@ internal sealed class ScreenSource : IAsyncDisposable
     private string Codec => _useVideo && !_videoFailed ? VideoInterop.NameOf(Format) : "jpeg";
 
     /// <summary>
+    /// The datagram path, while pictures are actually going by it. It carries video only: a stream that has gone
+    /// over to tiles sends them on the connection, and its link — which nothing demotes, since nothing is sent on
+    /// it any more — would otherwise go on being reported as carrying the stream, and watched for lost tails.
+    /// </summary>
+    private VideoLink? Carrying => _useVideo && !_videoFailed && _link is { Carries: true } link ? link : null;
+
+    /// <summary>Tells the viewer once more what this stream is: whether it may be controlled can change under it.</summary>
+    public void DescribeAgain() => _ = Session.SendControlAsync(Describe());
+
+    /// <summary>
     /// Set before the stream starts, by whoever knows what both devices can do: send HEVC rather than H.264. It
     /// stops being true for this stream the first time HEVC lets it down — the encoder will not start, or the
     /// viewer says no picture comes of it — and the stream is H.264 from there, as it would have been.
@@ -912,7 +922,7 @@ internal sealed class ScreenSource : IAsyncDisposable
                 // Nothing new on the screen and a picture still unanswered: on UDP that is what a lost last picture
                 // looks like from here (see TailLossAfterMs). A whole one goes after it — and again, no more often
                 // than whole pictures are ever sent, until one is answered.
-                if (!fresh && seen != 0 && _link is { Carries: true } carrying)
+                if (!fresh && seen != 0 && Carrying is { } carrying)
                 {
                     var waited = _window.OldestAgeMs;
                     if (waited > Math.Max(TailLossAfterMs, _window.DelayMs * 3))
@@ -1469,7 +1479,7 @@ internal sealed class ScreenSource : IAsyncDisposable
                 StreamId,
                 Session.PeerName,
                 Codec,
-                _link is { Carries: true } carrying ? $"UDP ({carrying.Datagrams} datagrams, {carrying.Resent} sent again)" : "the connection",
+                Carrying is { } carrying ? $"UDP ({carrying.Datagrams} datagrams, {carrying.Resent} sent again)" : "the connection",
                 frames / seconds,
                 bytes * 8 / 1000.0 / seconds,
                 _pacing.Share,
@@ -1524,7 +1534,7 @@ internal sealed class ScreenSource : IAsyncDisposable
             (int)Math.Round(encoderMs),
             (int)Math.Round(bytes * 8 / 1000.0 / seconds),
             Math.Round(frames / seconds, 1),
-            _link is { Carries: true },
+            Carrying is not null,
             (int)Math.Round(_pacing.Share * 100),
             reading.GivenUp,
             _link?.Resent ?? 0);
@@ -1747,7 +1757,7 @@ internal sealed class ScreenSource : IAsyncDisposable
             + "{Delay:F0} ms of which the viewer {Viewer:F0} ms, {InFlight} in flight, oldest unanswered for "
             + "{Oldest:F0} ms, {GivenUp} not waited for so far, path {Path}",
             Title, Session.PeerName, StreamId, note, reading.DelayMs, reading.ViewerMs, _window.InFlight,
-            _window.OldestAgeMs, reading.GivenUp, _link is { Carries: true } ? "UDP" : "the connection");
+            _window.OldestAgeMs, reading.GivenUp, Carrying is not null ? "UDP" : "the connection");
         Interlocked.Exchange(ref _reportNow, 1);
     }
 

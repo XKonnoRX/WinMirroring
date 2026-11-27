@@ -47,6 +47,13 @@ public partial class ScreenViewerWindow
     private readonly TranslateTransform _zoomShift = new();
     private readonly Dictionary<int, TouchDevice> _fingers = [];
     private readonly Dictionary<int, TouchDevice> _gesture = [];
+
+    /// <summary>
+    /// Watching only, on a whole picture: the fingers that are down, which are nothing yet. One finger there is
+    /// left to Windows (it makes a mouse of it, and the mouse draws the frame when that is switched on); they are
+    /// remembered so that a second can make the two of them a gesture.
+    /// </summary>
+    private readonly Dictionary<int, TouchDevice> _watched = [];
     private double _zoom = 1;
 
     /// <summary>Where the scaled picture is moved from its place in the layout (its top-left), in this window's units.</summary>
@@ -385,9 +392,39 @@ public partial class ScreenViewerWindow
             _gesture[firstId] = first;
             _undecided = _zoom <= 1;
         }
-        else if (ControlEnabled || _zoom <= 1)
+        else if (ControlEnabled)
         {
             return false;
+        }
+        else if (_zoom <= 1)
+        {
+            // Watching only, on a whole picture. This used to give up on every finger, so that somebody only
+            // watching could neither pinch to zoom in nor swipe to another monitor until they had zoomed with a
+            // button first. One finger is still nothing; two are a gesture here, as they are everywhere else —
+            // unless a frame is being drawn, which is what the fingers are for then.
+            foreach (var gone in _watched.Where(w => !w.Value.IsActive).Select(w => w.Key).ToList())
+            {
+                _watched.Remove(gone);
+            }
+
+            _watched[id] = e.TouchDevice;
+            if (_watched.Count < 2 || CropToggle.IsChecked == true)
+            {
+                return false;
+            }
+
+            foreach (var (watchedId, device) in _watched)
+            {
+                _gesture[watchedId] = device;
+                device.Capture(ScreenImage);
+            }
+
+            _watched.Clear();
+            StartGesture();
+            _twoSince = Environment.TickCount64;
+            HavePagePicturesAtHand(); // a third finger may be on its way
+            e.Handled = true;
+            return true;
         }
 
         // (Watching only, on a zoomed picture: one finger already moves it.)
@@ -500,6 +537,7 @@ public partial class ScreenViewerWindow
         if (!_gesture.Remove(e.TouchDevice.Id))
         {
             _fingers.Remove(e.TouchDevice.Id);
+            _watched.Remove(e.TouchDevice.Id);
             return false;
         }
 

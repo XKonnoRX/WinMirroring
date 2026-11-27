@@ -22,9 +22,16 @@ public partial class App
     /// <summary>How long a view waits for its device to come back before it closes after all.</summary>
     private static readonly TimeSpan ResumeWithin = TimeSpan.FromMinutes(2);
 
-    /// <summary>How long after asking for the screen again it is asked for once more, and how many times in all.</summary>
+    /// <summary>
+    /// How long after asking for the screen again it is asked for once more, and how many times in all. The wait
+    /// doubles after every second ask (3, 3, 6, 6, 12, 12, 24 seconds), so that the asks reach across most of
+    /// <see cref="ResumeWithin"/>: at an even three seconds they were used up in twenty-four, and a device that was
+    /// connected again but slow to start serving screens was given up on long before the two minutes were out.
+    /// </summary>
     private static readonly TimeSpan AskAgainAfter = TimeSpan.FromSeconds(3);
     private const int MostAsks = 8;
+
+    private static long AskAgainAfterMs(int asked) => (long)AskAgainAfter.TotalMilliseconds << Math.Min(3, Math.Max(0, asked - 1) / 2);
 
     private sealed class WaitingView
     {
@@ -102,7 +109,7 @@ public partial class App
         var node = _services?.GetService<MirroringNode>();
         foreach (var waiting in _waitingViews.Values.ToList())
         {
-            if (now > waiting.Until || waiting.Asks >= MostAsks || screen is null || node is null)
+            if (now > waiting.Until || (waiting.Asks >= MostAsks && now >= waiting.NextAsk) || screen is null || node is null)
             {
                 Log.Information("The view of {Peer} did not come back; closing it", waiting.PeerName);
                 _waitingViews.Remove(waiting.PeerId);
@@ -118,7 +125,7 @@ public partial class App
             }
 
             waiting.Asks++;
-            waiting.NextAsk = now + (long)AskAgainAfter.TotalMilliseconds;
+            waiting.NextAsk = now + AskAgainAfterMs(waiting.Asks);
             _ = screen.RequestScreenAsync(waiting.PeerId, waiting.MonitorIndex, waiting.MonitorKey.Length > 0 ? waiting.MonitorKey : null);
         }
 

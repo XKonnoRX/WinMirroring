@@ -82,7 +82,11 @@ public sealed class PeerIntroductions
             return false;
         }
 
-        if (!_sessions.Trust(introduction.Id, introduction.Name, introduction.Fingerprint, introduction.TransportPort, introduction.DiscoveryPort, introduction.Addresses))
+        // Trusted here first, and the far end only hears of it once the introduction below has travelled back
+        // through the device in the middle. A direct connection made before that — or with nothing to carry it
+        // back at all — finds the far end not paired with this one, and that must not read as "it has forgotten
+        // us": hence awaiting.
+        if (!_sessions.Trust(introduction.Id, introduction.Name, introduction.Fingerprint, introduction.TransportPort, introduction.DiscoveryPort, introduction.Addresses, awaitingTheirs: true))
         {
             return false;
         }
@@ -221,7 +225,9 @@ public sealed class PeerIntroductions
                 return;
             }
 
-            if (_sessions.Trust(relay.Peer.Id, relay.Peer.Name, relay.Peer.Fingerprint, relay.Peer.TransportPort, relay.Peer.DiscoveryPort, relay.Peer.Addresses))
+            // Not awaiting anything: the far end trusted this device before it sent its record, so this pairing
+            // is held on both sides from the start.
+            if (_sessions.Trust(relay.Peer.Id, relay.Peer.Name, relay.Peer.Fingerprint, relay.Peer.TransportPort, relay.Peer.DiscoveryPort, relay.Peer.Addresses, awaitingTheirs: false))
             {
                 _logger.LogInformation("{Peer} is trusted from now on: {Via} vouched for it and it accepted us", relay.Peer.Name, session.PeerName);
                 Forget(relay.Peer.Id);

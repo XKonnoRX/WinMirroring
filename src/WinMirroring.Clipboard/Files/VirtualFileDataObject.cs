@@ -13,9 +13,13 @@ namespace WinMirroring.Clipboard.Files;
 /// each file through <c>FileContents</c> as a stream, with its own progress dialog, so nothing is transferred
 /// until the user pastes. Small sets additionally offer <c>CF_HDROP</c>, downloaded into a cache when an
 /// application asks for it, for programs that only understand real paths.
+///
+/// It owns what runs ahead of Explorer for it (an <see cref="OfferPrefetcher"/>), and is in turn owned by whoever put
+/// it where Explorer finds it — the clipboard thread, or a drag — who says when that is over: <see cref="Retire"/>
+/// once it is no longer on offer, <see cref="Dispose"/> when nothing can reach it any more.
 /// </summary>
 [ComVisible(true)]
-internal sealed class VirtualFileDataObject : ComTypes.IDataObject
+internal sealed class VirtualFileDataObject : ComTypes.IDataObject, IDisposable
 {
     private const int DescriptorSize = 592;
     private const uint FdAttributes = 0x00000004;
@@ -34,7 +38,9 @@ internal sealed class VirtualFileDataObject : ComTypes.IDataObject
     private readonly ComTypes.FORMATETC[] _formats;
     private readonly object _downloadGate = new();
     private IReadOnlyList<string>? _downloaded;
-    private OfferPrefetcher? _prefetcher;
+    private volatile OfferPrefetcher? _prefetcher;
+    private volatile bool _retired;
+    private volatile bool _disposed;
 
     public VirtualFileDataObject(FileOfferManifest manifest, IRemoteFileSource source, bool offerDropFiles, string sourceId, ILogger logger)
     {
@@ -72,6 +78,26 @@ internal sealed class VirtualFileDataObject : ComTypes.IDataObject
 
     /// <summary>A download ended; the flag says whether it succeeded.</summary>
     public event Action<FileOfferManifest, bool>? DownloadFinished;
+
+    /// <summary>
+    /// This is no longer what a paste or a drop would take: something else is on the clipboard now, or the drag that
+    /// carried it is over. Whoever got hold of it before that — Explorer half way through a paste, a drop target
+    /// still copying — reads on as before; only the waiting for a reader who has gone is cut short.
+    /// </summary>
+    public void Retire()
+    {
+        // Without the download lock: that one is held for as long as a direct paste downloads. The flag is set
+        // before the prefetcher is looked at, and looked at after a prefetcher is made, so one of the two sees it.
+        _retired = true;
+        _prefetcher?.Retire();
+    }
+
+    /// <summary>Nothing can reach this object any more (the thread it lived on is ending): what ran ahead for it stops now.</summary>
+    public void Dispose()
+    {
+        _disposed = true;
+        _prefetcher?.Dispose();
+    }
 
     public void GetData(ref ComTypes.FORMATETC format, out ComTypes.STGMEDIUM medium)
     {
@@ -216,9 +242,9 @@ internal sealed class VirtualFileDataObject : ComTypes.IDataObject
         {
             if (_prefetcher is null)
             {
-                _prefetcher = new OfferPrefetcher(_manifest, _source, _logger);
+                var prefetcher = new OfferPrefetcher(_manifest, _source, _logger);
                 var reported = false;
-                _prefetcher.Progress += (done, total) =>
+                prefetcher.Progress += (done, total) =>
                 {
                     if (!reported)
                     {
@@ -229,12 +255,23 @@ internal sealed class VirtualFileDataObject : ComTypes.IDataObject
                     DownloadProgress?.Invoke(_manifest, done, total);
                     TransferReports.Report(new FileTransferProgress(_manifest.OfferId, Describe(), done, total, false, false));
                 };
-                _prefetcher.Finished += ok =>
+                prefetcher.Finished += ok =>
                 {
                     reported = false;
                     DownloadFinished?.Invoke(_manifest, ok);
                     TransferReports.Report(new FileTransferProgress(_manifest.OfferId, Describe(), ok ? 1 : 0, 1, true, ok));
                 };
+
+                _prefetcher = prefetcher;
+                if (_retired)
+                {
+                    prefetcher.Retire();
+                }
+
+                if (_disposed)
+                {
+                    prefetcher.Dispose();
+                }
             }
 
             return _prefetcher;
@@ -254,30 +291,47 @@ internal sealed class VirtualFileDataObject : ComTypes.IDataObject
 
             DownloadStarted?.Invoke(_manifest);
             TransferReports.Report(new FileTransferProgress(_manifest.OfferId, Describe(), 0, _manifest.TotalSize, false, false));
+            IReadOnlyList<string> downloaded;
             try
             {
                 // Off the thread Explorer called in on: that thread is the one that draws its windows, and a
                 // download run on it froze them — the indicator included, which is why nothing seemed to happen.
-                _downloaded = Task.Run(() => OfferDownloader.DownloadAsync(
+                //
+                // Explorer gives no way to cancel this, so it goes by the source: when the connection closes or the
+                // service stops, the download stops with it instead of being left to run into its next read.
+                downloaded = Task.Run(() => OfferDownloader.DownloadAsync(
                     _manifest, _source,
                     (done, total) =>
                     {
                         DownloadProgress?.Invoke(_manifest, done, total);
                         TransferReports.Report(new FileTransferProgress(_manifest.OfferId, Describe(), done, total, false, false));
                     },
-                    CancellationToken.None)).GetAwaiter().GetResult();
-                _logger.LogInformation("Downloaded {Count} clipboard item(s) from {Source}", _downloaded.Count, _manifest.SourceName);
-                DownloadFinished?.Invoke(_manifest, true);
-                TransferReports.Report(new FileTransferProgress(_manifest.OfferId, Describe(), _manifest.TotalSize, _manifest.TotalSize, true, true));
-                return _downloaded;
+                    _source.Closed)).GetAwaiter().GetResult();
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (Exception ex)
             {
-                _logger.LogWarning("Pasting files from {Source} failed: {Message}", _manifest.SourceName, ex.Message);
+                // Every failure, not only the expected ones: the indicator hides only when it is told the transfer
+                // is over, and Explorer gets a plain failure either way.
+                var why = ex is OperationCanceledException ? "The connection to the other device closed." : ex.Message;
+                if (ex is IOException or UnauthorizedAccessException or OperationCanceledException)
+                {
+                    _logger.LogWarning("Pasting files from {Source} failed: {Message}", _manifest.SourceName, why);
+                }
+                else
+                {
+                    _logger.LogError(ex, "Pasting files from {Source} failed", _manifest.SourceName);
+                }
+
                 DownloadFinished?.Invoke(_manifest, false);
                 TransferReports.Report(new FileTransferProgress(_manifest.OfferId, Describe(), 0, _manifest.TotalSize, true, false));
-                throw new COMException(ex.Message, E_FAIL);
+                throw new COMException(why, E_FAIL);
             }
+
+            _downloaded = downloaded;
+            _logger.LogInformation("Downloaded {Count} clipboard item(s) from {Source}", downloaded.Count, _manifest.SourceName);
+            DownloadFinished?.Invoke(_manifest, true);
+            TransferReports.Report(new FileTransferProgress(_manifest.OfferId, Describe(), _manifest.TotalSize, _manifest.TotalSize, true, true));
+            return downloaded;
         }
     }
 

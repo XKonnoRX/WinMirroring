@@ -1,9 +1,16 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace WinMirroring.Core.Settings;
+
+/// <summary>
+/// A settings file that could not be read: where it was put so that nothing writes over it (null if even that
+/// failed, and it is still where it was), and what was wrong with it.
+/// </summary>
+public sealed record UnreadableSettings(string? KeptAs, string Reason);
 
 /// <summary>Loads and atomically saves <see cref="AppSettings"/> as settings.json inside the data directory.</summary>
 public sealed class SettingsStore : IDisposable
@@ -129,25 +136,87 @@ public sealed class SettingsStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// What the last <see cref="Load"/> found in place of settings it could read, or null when it read them or
+    /// there was no file at all. Here so that whoever asked for the settings can say so out loud: this class has
+    /// no log of its own, and a device that quietly comes up as a new one is the thing to be avoided.
+    /// </summary>
+    public UnreadableSettings? Unreadable { get; private set; }
+
+    /// <summary>
+    /// Reads the settings, or starts with fresh ones when there is no file — or when the file cannot be read as
+    /// settings, which is the case that needs care. That file is the device: its id, the certificate it is known
+    /// by, everything it is paired with. Fresh settings in its place are a new device, and the first save writes
+    /// them over the old one for good.
+    ///
+    /// So the unreadable file is moved out of the way first, under a name with the time in it, and
+    /// <see cref="Unreadable"/> says where it went. It used to be copied to one fixed name instead, which the next
+    /// bad file replaced, and nothing anywhere said that it had happened. A file cut short by a power failure can
+    /// usually be mended by hand; one that has been written over cannot.
+    /// </summary>
     public AppSettings Load()
     {
         lock (_gate)
         {
+            Unreadable = null;
             if (!File.Exists(FilePath))
             {
                 return new AppSettings();
             }
 
+            string why;
             try
             {
                 var json = File.ReadAllText(FilePath);
-                return JsonSerializer.Deserialize<AppSettings>(json, Options) ?? new AppSettings();
+                if (JsonSerializer.Deserialize<AppSettings>(json, Options) is { } settings)
+                {
+                    return settings;
+                }
+
+                // The one word "null" is good JSON and no settings at all.
+                why = "the file holds no settings";
             }
-            catch (JsonException)
+            catch (JsonException ex)
             {
-                // Keep the unreadable file for inspection and start fresh.
-                File.Copy(FilePath, FilePath + ".corrupt", overwrite: true);
-                return new AppSettings();
+                why = ex.Message;
+            }
+
+            Unreadable = new UnreadableSettings(SetAside(DateTime.Now), why);
+            return new AppSettings();
+        }
+    }
+
+    /// <summary>
+    /// Moves the settings file out of the way of the next save and returns where it is now, or null when it could
+    /// be neither moved nor copied — which leaves nothing more to try, and is said rather than hidden.
+    /// </summary>
+    private string? SetAside(DateTime now)
+    {
+        var name = $"{FilePath}.corrupt-{now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture)}";
+        var kept = name;
+        for (var again = 2; File.Exists(kept); again++)
+        {
+            // Twice within a second: the earlier one is not to be written over either.
+            kept = $"{name}-{again}";
+        }
+
+        try
+        {
+            File.Move(FilePath, kept);
+            return kept;
+        }
+        catch (Exception moving) when (moving is IOException or UnauthorizedAccessException)
+        {
+            // Something else has the file open in a way that will not let it be renamed. It was read a moment
+            // ago, so it can very likely be copied.
+            try
+            {
+                File.Copy(FilePath, kept);
+                return kept;
+            }
+            catch (Exception copying) when (copying is IOException or UnauthorizedAccessException)
+            {
+                return null;
             }
         }
     }

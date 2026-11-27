@@ -30,8 +30,18 @@ internal sealed class RemoteShell : IHostedShell
     private readonly Process _process;
     private readonly string _marker;
     private readonly ILogger _logger;
+    /// <summary>
+    /// How long a shell that ended by itself is waited on for the last of what it printed. Its output is read on
+    /// threads of its own and can still be arriving after the process is gone; it does not arrive for ever only
+    /// because something the shell started may have kept the pipe open, and that is not waited out.
+    /// </summary>
+    private static readonly TimeSpan LastWordsOnExit = TimeSpan.FromSeconds(2);
+
     private readonly object _writeGate = new();
-    private bool _disposed;
+    private volatile bool _disposed;
+
+    /// <summary>Commands handed over whose end has not been reported yet.</summary>
+    private int _unfinished;
 
     private RemoteShell(Process process, string marker, ILogger logger)
     {
@@ -119,11 +129,19 @@ internal sealed class RemoteShell : IHostedShell
         // one console runs many commands: without this, a command that ran "cmd /c exit 7" made every cmdlet after
         // it report 7 as well, right up to the next program. The success is cleared to nothing at all, which is
         // what it still is if the command never got far enough to answer.
-        return Write(
+        // Counted before it is written: the shell can answer faster than this method returns.
+        Interlocked.Increment(ref _unfinished);
+        if (Write(
             "$global:LASTEXITCODE = 0; $global:WinMirroringOk = $null"
             + Environment.NewLine
             + $"Invoke-Expression ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{payload}')))"
-            + Environment.NewLine + MarkerCommand());
+            + Environment.NewLine + MarkerCommand()))
+        {
+            return true;
+        }
+
+        Interlocked.Decrement(ref _unfinished);
+        return false;
     }
 
     /// <summary>
@@ -159,7 +177,7 @@ internal sealed class RemoteShell : IHostedShell
     {
         _process.OutputDataReceived += (_, e) => OnLine(e.Data, ShellStreamKind.Output);
         _process.ErrorDataReceived += (_, e) => OnLine(e.Data, ShellStreamKind.Error);
-        _process.Exited += (_, _) => Ended?.Invoke();
+        _process.Exited += (_, _) => OnExited();
         _process.EnableRaisingEvents = true;
         _process.BeginOutputReadLine();
         _process.BeginErrorReadLine();
@@ -209,11 +227,59 @@ internal sealed class RemoteShell : IHostedShell
 
             // A program's own code when it gave one, and otherwise one if the command failed as PowerShell: a
             // script that would not even parse used to come back as a success, because nothing had exited.
+            Interlocked.Decrement(ref _unfinished);
             Done?.Invoke(code != 0 ? code : worked ? 0 : 1, Directory);
             return;
         }
 
         Output?.Invoke(kind, line);
+    }
+
+    /// <summary>
+    /// The shell's process is gone. When it went by itself with a command still unanswered, that command is what
+    /// ended it — <c>exit 3</c> in a script, most often — and the code the shell exited with is that command's
+    /// answer: it is reported as one before the console is reported over.
+    ///
+    /// It used not to be. A command that ends the shell never reaches the line that prints the marker, so nothing
+    /// said it had finished; the console simply closed, and whoever ran the command was told the device had
+    /// refused, with no code and no reason. A script that ends with <c>exit</c> and a number is as ordinary as
+    /// scripts get, and the number is the whole of what it has to say.
+    ///
+    /// Not when the shell was ended from here: then nobody is waiting on a command, and a code would only be read
+    /// as the answer to one.
+    /// </summary>
+    private void OnExited()
+    {
+        if (!_disposed)
+        {
+            int? code = null;
+            try
+            {
+                // Until the last of its output has been read and handed on — the code must come after the words —
+                // but only so long: see LastWordsOnExit.
+                using var patience = new CancellationTokenSource(LastWordsOnExit);
+                _process.WaitForExitAsync(patience.Token).GetAwaiter().GetResult();
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException)
+            {
+            }
+
+            try
+            {
+                code = _process.ExitCode;
+            }
+            catch (InvalidOperationException)
+            {
+                // Disposed in the meantime, which is being ended from here after all.
+            }
+
+            if (code is { } exit && !_disposed && Interlocked.Exchange(ref _unfinished, 0) > 0)
+            {
+                Done?.Invoke(exit, Directory);
+            }
+        }
+
+        Ended?.Invoke();
     }
 
     private bool Write(string text)

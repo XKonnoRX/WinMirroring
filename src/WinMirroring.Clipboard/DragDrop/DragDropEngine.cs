@@ -112,7 +112,19 @@ public sealed class DragDropEngine
                 }
 
                 var dataObject = new VirtualFileDataObject(payload.Manifest, source, offerDropFiles, payload.SourceId, _logger);
-                var hr = DoDragDrop(dataObject, dropSource, DROPEFFECT_COPY, out var effect);
+                int hr;
+                int effect;
+                try
+                {
+                    hr = DoDragDrop(dataObject, dropSource, DROPEFFECT_COPY, out effect);
+                }
+                finally
+                {
+                    // The drag is over, the copying it led to perhaps not: whoever the files were dropped on may
+                    // read on for as long as it likes. Nobody new will ask, though, so nothing waits for that.
+                    dataObject.Retire();
+                }
+
                 _logger.LogInformation("Drag of files from {Source} ended: 0x{Hr:X8}, effect {Effect}", payload.Manifest.SourceName, hr, effect);
                 completion.TrySetResult(hr == DRAGDROP_S_DROP ? effect : DROPEFFECT_NONE);
             }

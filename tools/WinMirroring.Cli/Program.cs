@@ -53,7 +53,9 @@ if (options.IsExec)
     execCommand = await Exec.CommandTextAsync(options, shutdown.Token).ConfigureAwait(false);
     if (execCommand is null)
     {
-        return Exec.CouldNotReach;
+        // Nothing to run — an unreadable file or an empty command — and it has been said. A mistake in the call,
+        // not a device out of reach: nothing was even looked for yet.
+        return Exec.BadUsage;
     }
 
     if (await WinMirroring.Shell.Local.LocalShellClient.TryConnectAsync(shutdown.Token).ConfigureAwait(false) is { } app)

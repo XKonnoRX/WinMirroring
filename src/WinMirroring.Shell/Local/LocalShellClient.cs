@@ -74,6 +74,8 @@ public sealed class LocalShellClient : IAsyncDisposable
 
         await _pipe.FlushAsync(ct).ConfigureAwait(false);
 
+        // A line too long for one message arrives as several, and is handed on as the one line it is.
+        var lines = new OutputAssembly();
         while (true)
         {
             Frame? frame;
@@ -96,8 +98,12 @@ public sealed class LocalShellClient : IAsyncDisposable
 
             switch (type)
             {
-                case ShellMessageType.Output when ShellCodec.TryDecodeOutput(message.Payload, out var stream, out var text):
-                    output(stream, text);
+                case ShellMessageType.Output when ShellCodec.TryDecodeOutput(message.Payload, out var stream, out var text, out var goesOn):
+                    if (lines.Add(stream, text, goesOn, out var line))
+                    {
+                        output(stream, line);
+                    }
+
                     break;
 
                 case ShellMessageType.Done when ShellCodec.TryDecodeDone(message.Payload, out var code, out _):

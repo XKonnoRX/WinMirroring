@@ -201,6 +201,12 @@ public sealed partial class MainViewModel
 
     partial void OnClipboardMaxInlineChanged(int value)
     {
+        if (Math.Clamp(value, 1, 1024) is var kept && kept != value)
+        {
+            ClipboardMaxInline = kept; // out of range: the nearest value that is in range, which the page then shows
+            return;
+        }
+
         if (value is >= 1 and <= 1024)
         {
             SaveClipboard(s => s.MaxInlineMegabytes = value);
@@ -209,6 +215,12 @@ public sealed partial class MainViewModel
 
     partial void OnClipboardDirectPasteChanged(int value)
     {
+        if (Math.Clamp(value, 0, 4096) is var kept && kept != value)
+        {
+            ClipboardDirectPaste = kept; // out of range: the nearest value that is in range, which the page then shows
+            return;
+        }
+
         if (value is >= 0 and <= 4096)
         {
             SaveClipboard(s => s.MaxDirectPasteMegabytes = value);
@@ -232,6 +244,12 @@ public sealed partial class MainViewModel
 
     partial void OnAudioBitrateChanged(int value)
     {
+        if (Math.Clamp(value, 32, 510) is var kept && kept != value)
+        {
+            AudioBitrate = kept; // out of range: the nearest value that is in range, which the page then shows
+            return;
+        }
+
         if (value is >= 32 and <= 510)
         {
             SaveAudio(s => s.BitrateKbps = value);
@@ -240,6 +258,12 @@ public sealed partial class MainViewModel
 
     partial void OnAudioBufferChanged(int value)
     {
+        if (Math.Clamp(value, 10, 500) is var kept && kept != value)
+        {
+            AudioBuffer = kept; // out of range: the nearest value that is in range, which the page then shows
+            return;
+        }
+
         if (value is >= 10 and <= 500)
         {
             SaveAudio(s => s.BufferMs = value);

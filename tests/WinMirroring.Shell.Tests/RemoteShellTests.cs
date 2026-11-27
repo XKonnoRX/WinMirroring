@@ -149,6 +149,47 @@ public class RemoteShellTests : IAsyncLifetime
                 + "so it was not being watched as it ran");
     }
 
+    /// <summary>
+    /// A command that ends the shell itself still has an answer: the code the shell exited with. It never reaches
+    /// the line that says a command is over, so it used to have none — the console just closed, and whoever ran
+    /// <c>exit 3</c> was told the device had refused. What it printed first still comes first.
+    /// </summary>
+    [Fact]
+    public async Task ACommandThatEndsTheShellBringsBackTheCodeItEndedWith()
+    {
+        var ended = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        List<string>? saidBeforeTheCode = null;
+        _shell.Done += (_, _) => saidBeforeTheCode ??= Lines();
+        _shell.Ended += () => ended.TrySetResult();
+
+        Assert.True(_shell.Run("Write-Output 'last words'; exit 3"));
+        await ended.Task.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+
+        var only = Assert.Single(_done);
+        Assert.Equal(3, only.Code);
+        Assert.NotNull(saidBeforeTheCode);
+        Assert.Contains("last words", saidBeforeTheCode);
+    }
+
+    /// <summary>
+    /// A shell ended from here is another matter: nobody is waiting on its command any more, and a code turning up
+    /// would be read as the answer to one.
+    /// </summary>
+    [Fact]
+    public async Task AShellEndedFromHereReportsNoCommandAsFinished()
+    {
+        Assert.True(_shell.Run("Start-Sleep -Seconds 30"));
+
+        // Comes back once the shell is gone: asked to leave, given its moment, then ended outright.
+        _shell.Cancel();
+        await Task.Delay(500, TestContext.Current.CancellationToken);
+
+        lock (_done)
+        {
+            Assert.Empty(_done);
+        }
+    }
+
     private void Run(string command)
     {
         var want = _done.Count + 1;

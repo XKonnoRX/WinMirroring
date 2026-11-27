@@ -14,7 +14,7 @@
 
 **Как устроено.** `src/WinMirroring.Core/MirroringNode.cs`.
 - `NodeOptions`: `DataDirectory` (по умолчанию `SettingsStore.DefaultDataDirectory` = `%LocalAppData%\WinMirroring`), `IncludeLoopback` (привязка и к loopback — тесты, CLI), `DeviceName`, `DiscoveryPort`, `TransportPort`, `ManualAddresses`. Непустые значения опций записываются в настройки и сохраняются (ручные адреса добавляются, если их ещё нет).
-- Конструктор: `SettingsStore.Load()` → `InterfacePin.Enabled = Settings.PinConnectionsToInterface` → `DeviceIdentityStore.LoadOrCreate` → `PowerMode` → `PeerDirectory` (сопряжённые устройства сразу заносятся как `Offline`) → `PeerSessionManager` → `PeerIntroductions.Start()` → `NetworkSelection.Resolve`.
+- Конструктор: `SettingsStore.Load()` (если файл настроек не прочитался — запись уровня Error в журнал с причиной и именем, под которым файл сохранён, см. «Хранилище настроек») → `InterfacePin.Enabled = Settings.PinConnectionsToInterface` → `DeviceIdentityStore.LoadOrCreate` → `PowerMode` → `PeerDirectory` (сопряжённые устройства сразу заносятся как `Offline`) → `PeerSessionManager` → `PeerIntroductions.Start()` → `NetworkSelection.Resolve`.
 - Наружу: `SettingsStore`, `Settings`, `Identity`, `Power`, `Peers`, `Sessions`, `Introductions`, `Network`, `IsRunning`, `ListeningEndPoints`, `MediaPort` (0, если UDP-сокет не поднялся), событие `MediaPacketReceived`, методы `SendMedia`, `PrioritizeMedia`/`ReleaseMediaPriority`, `SaveSettings`, `Rename`, `StartAsync`, `RestartNetworkAsync`, `StopAsync`, `PairAsync`, `UnpairAsync`, `IsSourceAllowed`, `DisposeAsync` (повторный вызов безвреден).
 - `StartNetwork()` создаёт `PeerListener` (TCP, `Settings.TransportPort`), `DiscoveryService` (UDP, `Settings.DiscoveryPort`) и `MediaSocket` (UDP на номере транспортного порта). `StopAsync` дополнительно закрывает все сессии с причиной `shutdown`; `RestartNetworkAsync` сессии не трогает и заодно переносит `Settings.DeviceName` в `Identity.Name`.
 - Все операции с сетью сериализованы `SemaphoreSlim _networkGate`.
@@ -51,17 +51,18 @@
 **Как устроено.** `src/WinMirroring.Core/Settings/SettingsStore.cs`.
 - JSON: camelCase, с отступами, комментарии и висячие запятые при чтении допускаются, null пишется (`DefaultIgnoreCondition.Never`). Конвертеров перечислений нет, поэтому `PowerSaving` и `VideoCodec` хранятся **числами**.
 - `Save`: запись в `settings.json.tmp`, затем `File.Move(overwrite: true)`, под `lock`.
-- `Load`: нет файла — новые `AppSettings`; `JsonException` — файл копируется в `settings.json.corrupt`, возвращаются настройки по умолчанию.
+- `Load`: нет файла — новые `AppSettings`. Файл, который не читается как настройки (`JsonException`: обрезан, пуст, забит нулями; либо JSON-литерал `null`), **переносится** в `settings.json.corrupt-ГГГГММДД-ЧЧммсс` (при совпадении имени добавляется `-2`, `-3`…; если перенести нельзя — копируется под этим именем), возвращаются настройки по умолчанию. Что произошло, говорит свойство `Unreadable` (`UnreadableSettings(KeptAs, Reason)`; `KeptAs == null` — файл не удалось ни перенести, ни скопировать); при успешном чтении и при отсутствии файла оно `null`. Своего журнала у хранилища нет: запись уровня Error делает `MirroringNode`.
 - Занятость: именованный мьютекс `Local\WinMirroring-data-<первые 32 hex SHA-256 от полного пути в нижнем регистре>`. Экземпляр держит его всё время жизни (`SharedWithAnotherNode` = не удалось взять); статический `IsInUseByAnotherNode(dir)` берёт и сразу отпускает. `AbandonedMutexException` считается «свободно, теперь наше»; любая другая ошибка — «свободно».
 
 **Ограничения и запасные пути.**
 - Проверка рекомендательная: `SettingsStore` работает и в занятом каталоге. Отказывается работать только `wm-cli` (`tools/WinMirroring.Cli/Program.cs`, код возврата `Exec.DirectoryInUse`), у которого каталог по умолчанию — `<DefaultDataDirectory>\cli`.
 - Мьютекс принадлежит потоку, который его взял: вопрос с того же потока даёт «свободно»; `ReleaseMutex` из `Dispose` на другом потоке бросает исключение, которое глотается, после чего дескриптор просто закрывается. Комментарий в коде требует создавать узел на потоке, живущем столько же, сколько узел.
 - `SharedWithAnotherNode` в `src/` и `tools/` никем не читается.
-- Испорченный `settings.json` означает новое устройство: новый id и новый сертификат, сопряжения теряются (старый файл остаётся рядом как `.corrupt`).
+- Испорченный `settings.json` по-прежнему означает новое устройство: новый id и новый сертификат, сопряжений нет. Но старый файл не затирается: он лежит рядом под именем с отметкой времени, прежний сертификат остаётся в `CurrentUser\My`, и после починки файла вручную и возврата его на место устройство снова прежнее. Автоматического восстановления нет, уведомления пользователю тоже — только запись в журнале.
+- `Save` не сбрасывает данные на диск перед переименованием (`File.WriteAllText` + `File.Move`): при отключении питания сразу после сохранения целостность файла не гарантирована.
 - `AppSettings` не потокобезопасен: `PairedPeers` меняется из потоков сессий, а `Save` защищает замком только запись файла.
 
-**Тесты.** `DataDirectoryTests` (`ADirectoryAnotherNodeHasIsSaidToBeInUseUntilThatNodeLetsGo`, `HoldingOneDirectorySaysNothingAboutAnother`, `ASharedDirectoryStillLoadsAndSaves`), `ButtonBarSettingsTests` (загрузка/сохранение).
+**Тесты.** `DataDirectoryTests` (`ADirectoryAnotherNodeHasIsSaidToBeInUseUntilThatNodeLetsGo`, `HoldingOneDirectorySaysNothingAboutAnother`, `ASharedDirectoryStillLoadsAndSaves`), `UnreadableSettingsTests` (`AFileThatCannotBeReadIsMovedOutOfTheWayAndNothingIsWrittenOverIt`, `ASecondUnreadableFileDoesNotTakeThePlaceOfTheFirst`, `WhateverIsNotSettingsIsKeptAllTheSame`, `SettingsThatCanBeReadAndNoSettingsAtAllAreNeitherOfThemUnreadable`), `NodeIntegrationTests.ANodeWhoseSettingsCannotBeReadSaysSoAndKeepsTheFile`, `ButtonBarSettingsTests` (загрузка/сохранение).
 
 ### Выбор сетевых интерфейсов
 
@@ -104,7 +105,7 @@
 - Устройства с разной версией протокола не видят маяков друг друга вообще.
 - На loopback нет ни broadcast, ни multicast — узлы на одной машине находятся только зондами по ручным адресам, и порты обнаружения у них должны различаться.
 - Сокет приёма привязан к `0.0.0.0`, а не к выбранным адресам; отбор идёт по адресу источника.
-- В `PeerDirectory` нет периодического устаревания: `ProtocolConstants.PeerExpiry` (8 с) используется только в момент закрытия сессии и разрыва сопряжения. Устройство, переставшее слать маяки без сессии, остаётся в состоянии `Discovered`.
+- Устройство без сессии, от которого `ProtocolConstants.PeerExpiry` (8 с) не было маяков, переходит из `Discovered` в `Offline` («не в сети»): каталог просматривается раз в 2 с (см. «Каталог устройств»). Из списка оно при этом не удаляется — ни сопряжённое, ни чужое; чужие устройства, однажды увиденные в сети, остаются в каталоге как `Offline` до конца процесса.
 - Маяк не аутентифицирован: отпечаток из него лишь подсказка, проверка идёт в TLS и рукопожатии.
 - В классе остался неиспользуемый метод `WaitNextTickAsync`.
 
@@ -164,13 +165,13 @@
 **Как устроено.** `src/WinMirroring.Core/Transport/FrameCodec.cs`, `ChannelId.cs`.
 - Кадр: 4 байта длины (big-endian) + 1 байт канала + данные. `HeaderSize` = 5, предел `ProtocolConstants.MaxFrameSize` = 16 МБ.
 - Два старших бита длины: `0x8000_0000` — «часть сообщения», `0x4000_0000` — «последняя часть». Данные части начинаются с 2-байтового id сообщения.
-- `PeerConnection.SendAsync`: до `MaxUnsplitPayload` = 32 КБ — один кадр; больше — части по 32 КБ, замок записи (`SemaphoreSlim`) отпускается между частями, после каждой `Flush`.
+- `PeerConnection.SendAsync`: до `MaxUnsplitPayload` = 32 КБ — один кадр; больше — части по 32 КБ, замок записи (`SemaphoreSlim`) отпускается между частями, после каждой `Flush`. Сообщение длиннее `MaxFrameSize` (16 МБ) не отправляется вовсе: `MessageTooLargeException` (`Transport/MessageTooLargeException.cs`, наследник `InvalidOperationException`, свойства `Channel` и `Length`) бросается до записи первой части. Ровно 16 МБ проходит.
 - `FrameCodec.Reader` (один на соединение) собирает части по ключу (канал, id); не больше 32 незавершённых сообщений, собранное сообщение не больше 16 МБ, иначе `InvalidDataException` (сессия закрывается). Чистый конец потока до заголовка даёт `null`.
 - Каналы `ChannelId`: `Control`=0, `Input`=1, `Clipboard`=2, `File`=3, `Audio`=4, `Screen`=5, `Shell`=6.
 
-**Ограничения и запасные пути.** Отправитель не проверяет суммарный размер сообщения, уходящего частями: больше 16 МБ оборвёт сессию на стороне получателя (буфер обмена проверяет предел сам). `ChannelId.Audio` объявлен, но нигде в `src/` и `tools/` не используется — звук идёт по UDP.
+**Ограничения и запасные пути.** Слишком длинное сообщение отвергает отправитель; получатель по-прежнему рвёт сессию, если части сложились больше чем в 16 МБ (так поступит устройство любой версии с отправителем старой версии, который предел не проверяет). `MessageTooLargeException` — это `InvalidOperationException`, потому что именно его все вызывающие `PeerSession.SendAsync` уже ловят как «не отправлено» (закрытая сессия, канал ещё не открыт); сообщение при этом просто пропадает, а что с этим делать, решает вызывающий (буфер обмена проверяет предел сам и сообщает пользователю; поток экрана завершится с причиной `connection: …`). `ChannelId.Audio` объявлен, но нигде в `src/` и `tools/` не используется — звук идёт по UDP.
 
-**Тесты.** `CodecTests.FrameRoundTripsAndEndsCleanly`, `FrameRejectsOversizedLength`, `MessagesInPartsSurviveBeingInterleaved`.
+**Тесты.** `CodecTests.FrameRoundTripsAndEndsCleanly`, `FrameRejectsOversizedLength`, `MessagesInPartsSurviveBeingInterleaved`; `NodeIntegrationTests.AMessageTooLongForTheOtherSideIsRefusedBeforeItIsSentAndTheSessionLives`.
 
 ### Привязка соединения к интерфейсу (`InterfacePin`)
 
@@ -193,7 +194,7 @@
 2. Ответчик проверяет версию и читаемость сертификата, шлёт свой `hello` с вызовом (32 случайных байта).
 3. Инициатор проверяет версию, наличие вызова и то, что сертификат из `hello` совпадает с TLS-сертификатом; подписывает `"WinMirroring-auth-v1" ‖ вызов ‖ отпечаток сервера ‖ отпечаток клиента` и шлёт `auth` (подпись, увиденный отпечаток сервера, «я вас закрепил»).
 4. Ответчик сверяет увиденный клиентом отпечаток со своим (так обнаруживается посредник в TLS), проверяет подпись и шлёт `auth-result(ok, paired)`.
-5. `HandshakeResult.PairedOnBothSides` = «да» с обеих сторон; «сопряжён» значит запись в `PairedPeers` с тем же отпечатком **и** тем же id (`PeerSessionManager.IsPaired`).
+5. `HandshakeResult.PairedOnBothSides` = «да» с обеих сторон; «сопряжён» значит запись в `PairedPeers` с тем же отпечатком **и** тем же id (`PeerSessionManager.IsPaired`). `HandshakeResult.PairedHere` — собственный ответ этой стороны, каким он был в момент рукопожатия (в сессии — `PeerSession.SaidPairedInHandshake`); по проводу ничего нового не передаётся.
 
 Причины отказа в `auth-result.reason`: `unsupported-version`, `bad-certificate`, `server-fingerprint-mismatch`, `bad-signature`. Ошибки — `HandshakeException`.
 
@@ -209,8 +210,8 @@
 
 **Как устроено.** `src/WinMirroring.Core/Peers/PeerSession.cs`.
 - Состояния `SessionState`: `Unpaired`, `Pairing`, `Ready`, `Closed`. Начальное — `Ready` или `Unpaired` по итогу рукопожатия. События `StateChanged`, `Closed(session, error)`, `WaitForCloseAsync()`.
-- Свойства: `PeerId`, `PeerName`, `PeerFingerprint`, `PeerCertificate`, порты пира, `IsInitiator`, `InitiatorId`, `RemoteEndPoint`, `PeerTransportEndPoint`/`PeerDiscoveryEndPoint` (адрес соединения + порт из `hello`), `LastRoundTrip`, `LastReceivedTicks`, `ConfirmationCode`.
-- Отправка: `SendAsync(channel, payload)` — любой канал, кроме `Control`, требует `Ready` (иначе `InvalidOperationException`); `SendControlAsync(message)`.
+- Свойства: `PeerId`, `PeerName`, `PeerFingerprint`, `PeerCertificate`, порты пира, `IsInitiator`, `InitiatorId`, `RemoteEndPoint`, `PeerTransportEndPoint`/`PeerDiscoveryEndPoint` (адрес соединения + порт из `hello`), `LastRoundTrip`, `LastReceivedTicks`, `ConfirmationCode`, `SaidPairedInHandshake` (что эта сторона ответила в рукопожатии на «сопряжены ли вы»).
+- Отправка: `SendAsync(channel, payload)` — любой канал, кроме `Control`, требует `Ready` (иначе `InvalidOperationException`); сообщение больше 16 МБ — `MessageTooLargeException`, сессия остаётся; `SendControlAsync(message)`.
 - Приём: `RegisterHandler(channel, ChannelHandler)` / `UnregisterHandler` — один обработчик на канал; кадр не-`Control` канала без обработчика или не в `Ready` отбрасывается (debug-журнал). Исключение обработчика пишется в журнал и сессию не роняет.
 - `Control`: `ping`, `pong`, `bye`, `pair-*` сессия обрабатывает сама; всё остальное уходит подписчикам `ControlMessageReceived`. Нечитаемое или неизвестное сообщение молча пропускается.
 - «Вступительные заявления»: `LayoutMessage`, `InputMonitorsMessage`, `DeviceCapabilitiesMessage`, `DeviceInfoMessage`, `PeerVouchMessage` хранятся 30 с (`OpeningStatementLife`), не больше 32, и переигрываются каждому новому подписчику `ControlMessageReceived` — пир начинает говорить в момент `Ready`, раньше, чем функции успевают подписаться.
@@ -246,19 +247,21 @@
 - `RegisterSessionAsync`: при двух одновременных сессиях остаётся та, которую открыло устройство с меньшим id (`IsCanonical`), другая закрывается с причиной `duplicate`. Заполняется `PeerDirectory`, при `Ready` запоминается адрес и поднимается `SessionReady`.
 - События: `SessionReady`, `SessionClosed`, `PairedPeersChanged`, `UnpairedByPeer(name)`. Прочее: `Sessions`, `TryGetSession`, `IsPaired`, `RememberedDiscoveryEndPoints`, `IsRememberedAddress`, `PairAsync`, `Trust`, `UnpairAsync`, `CloseAllAsync`.
 
-**Ограничения и запасные пути.** Переподключение запускается только приходом маяка (широковещательного или ответа на зонд); собственного таймера повторов нет. При закрытии сессии устройство становится `Discovered`, если маяк был не старше `PeerExpiry` (8 с), иначе `Offline`.
+- Таймер `_silentPeers` (раз в `PeerExpiry / 4` = 2 с, живёт от конструктора до `DisposeAsync`) вызывает `PeerDirectory.ExpireUnseen(now, PeerExpiry)`: устройство в состоянии `Discovered`, от которого 8 с нет маяков, становится `Offline`. Исключения подписчиков `PeerDirectory.Changed` при этом ловятся и пишутся в журнал (вызов идёт с потока таймера).
 
-**Тесты.** `NodeIntegrationTests.TwoNodesDiscoverPairAndReconnect`.
+**Ограничения и запасные пути.** Переподключение запускается только приходом маяка (широковещательного или ответа на зонд); собственного таймера повторов нет. При закрытии сессии устройство становится `Discovered`, если маяк был не старше `PeerExpiry` (8 с), иначе `Offline`; оставшись `Discovered` без новых маяков, оно станет `Offline` при ближайшем просмотре. Устройство на батарее шлёт маяк раз в 4 с, так что двух потерянных подряд маяков достаточно, чтобы оно на время показалось «не в сети». `_waitingSince` (начало ожидания для `InitiatorFallbackDelay`) при этом не сбрасывается.
+
+**Тесты.** `NodeIntegrationTests.TwoNodesDiscoverPairAndReconnect`, `ADeviceThatStopsAnnouncingItselfIsNoLongerShownAsOnTheNetwork`.
 
 ### Каталог устройств (`PeerDirectory`, `PeerInfo`)
 
 **Что делает.** Потокобезопасный список всего, что интерфейс показывает об устройствах: имя, отпечаток, сопряжено ли, состояние, адреса, когда видели в последний раз, последняя ошибка.
 
-**Как устроено.** `src/WinMirroring.Core/Peers/PeerDirectory.cs`, `PeerInfo.cs`. `Update(id, mutate)` меняет запись под замком и поднимает `Changed` с копией; `Snapshot()` и `TryGet` отдают копии. Состояния `PeerState`: `Offline`, `Discovered`, `Connecting`, `Connected` (сессия без взаимного сопряжения), `Pairing`, `Ready`. `HasSession` = `Connected | Pairing | Ready`.
+**Как устроено.** `src/WinMirroring.Core/Peers/PeerDirectory.cs`, `PeerInfo.cs`. `Update(id, mutate)` меняет запись под замком и поднимает `Changed` с копией; `Snapshot()` и `TryGet` отдают копии. Состояния `PeerState`: `Offline`, `Discovered`, `Connecting`, `Connected` (сессия без взаимного сопряжения), `Pairing`, `Ready`. `HasSession` = `Connected | Pairing | Ready`. `ExpireUnseen(now, after)` (internal, вызывает менеджер сессий по таймеру) переводит в `Offline` каждую запись в состоянии `Discovered`, у которой `LastSeen` пуст или старше `after`, и поднимает `Changed` по одному разу на устройство; остальные состояния (`Connecting` и все с сессией) по маякам не судятся, остальные поля записи (имя, адреса, `IsPaired`) не меняются.
 
-**Ограничения и запасные пути.** `Remove(id)` существует, но в `src/` и `tools/` не вызывается: записи живут до конца процесса.
+**Ограничения и запасные пути.** Из каталога ничего не удаляется: `Remove(id)` существует, но в `src/` и `tools/` не вызывается, записи живут до конца процесса — замолчавшее устройство остаётся в списке как `Offline`. Удаление чужих (несопряжённых) устройств сознательно не сделано в ядре: приложение обрабатывает `Changed` только как добавление/обновление (`MainViewModel.Upsert`), а страница устройств (`HubUi`) сохраняет общую раскладку из тех устройств, что есть в списке, — устройство, пропавшее из каталога, при следующем сохранении выпало бы из раскладки у всех.
 
-**Тесты.** Косвенно `NodeIntegrationTests`.
+**Тесты.** `PeerDirectoryTests` (`ADeviceThatHasStoppedAnnouncingItselfIsNoLongerOnTheNetwork`, `APairedDeviceThatGoesQuietStaysListedAndStaysPaired`, `OnlyADeviceListedAsAnnouncingItselfIsJudgedByItsBeacons`, `ADeviceNeverHeardFromIsNotOnTheNetworkEither`); сквозной — `NodeIntegrationTests.ADeviceThatStopsAnnouncingItselfIsNoLongerShownAsOnTheNetwork`.
 
 ### Сопряжение подтверждением
 
@@ -284,11 +287,18 @@
 
 **Что делает.** Разрыв сопряжения на одном устройстве доходит до второго: оно тоже забывает первое и сообщает об этом пользователю, даже если в момент разрыва было выключено.
 
-**Как устроено.** `PeerSessionManager.UnpairAsync` удаляет запись, сохраняет настройки, закрывает сессию с причиной `unpaired`. Отдельного сообщения нет: `ForgetIfTheyHaveForgottenUs` срабатывает, когда сессия оказалась `Unpaired`, а у нас запись о сопряжении есть (тот же отпечаток и id) — значит «нет» в рукопожатии сказала другая сторона. Запись удаляется, поднимаются `PairedPeersChanged` и `UnpairedByPeer(name)` (приложение показывает уведомление).
+**Как устроено.** `PeerSessionManager.UnpairAsync` удаляет запись, сохраняет настройки, закрывает сессию с причиной `unpaired`. Отдельного сообщения нет: `ForgetIfTheyHaveForgottenUs` смотрит на сессию, оказавшуюся `Unpaired`, при том что у нас запись о сопряжении есть (тот же отпечаток и id), и решает по правилу `WhatUnpairedMeans(pairedHereNow, saidPairedInHandshake, awaitingTheirTrust)`:
 
-**Ограничения и запасные пути.** Устройство может заставить забыть только себя. Отказ в сопряжении не считается разрывом.
+| Запись есть сейчас | Мы ответили «да» в рукопожатии | `AwaitingTheirTrust` | Вывод (`UnpairedMeans`) | Что делается |
+|---|---|---|---|---|
+| нет | — | — | `Nothing` | ничего: два чужих устройства |
+| да | нет | — | `AskAgain` | запись появилась уже после рукопожатия этой сессии; сессия закрывается с причиной `trusted`, чтобы переподключение спросило обе стороны заново |
+| да | да | да | `NotTheirsYet` | устройству доверились по слову третьего, и оно ещё ни разу не ответило «да»; запись сохраняется, сессия остаётся `Unpaired` |
+| да | да | нет | `Forgotten` | «нет» сказала другая сторона, и раньше она нас знала: запись удаляется, поднимаются `PairedPeersChanged` и `UnpairedByPeer(name)` (приложение показывает уведомление) |
 
-**Тесты.** `NodeIntegrationTests.ForgettingADeviceReachesTheDeviceThatWasForgotten`, `APairingThatWasRefusedIsNotTakenForOneThatWasBroken`.
+**Ограничения и запасные пути.** Устройство может заставить забыть только себя. Отказ в сопряжении не считается разрывом. Запись с `AwaitingTheirTrust` «нас забыли» не удаляет никогда — пока хотя бы одна сессия с этим устройством не станет `Ready`; если другая сторона успела довериться и снова разорвать сопряжение, не побывав с нами в `Ready`, односторонняя запись останется до ручного удаления.
+
+**Тесты.** `NodeIntegrationTests.ForgettingADeviceReachesTheDeviceThatWasForgotten`, `APairingThatWasRefusedIsNotTakenForOneThatWasBroken`, `ANoInTheHandshakeOnlyMeansForgottenWhenTheyOnceKnewUs` (таблица правила), `ADeviceTrustedOnAnothersWordHasNotForgottenUsJustBecauseItHasNotHeardYet`.
 
 ### Знакомство по цепочке (`PeerIntroductions`)
 
@@ -297,14 +307,17 @@
 **Как устроено.** `src/WinMirroring.Core/Peers/PeerIntroductions.cs`.
 - При `SessionReady` каждая сторона шлёт `vouch` со списком своих сопряжённых (кроме адресата): id, имя, отпечаток, порты, последние адреса. Сообщение без `IsReply` получает ответный список; при изменении списка сопряжённых всем готовым сессиям уходит обновление с `IsReply = true`.
 - Принимается только от взаимно сопряжённого пира в `Ready` (`IsTrusted`). Новый список пира заменяет прежний; уже сопряжённые и собственная запись отбрасываются. При закрытии сессии всё, что известно через неё, удаляется. `Snapshot()`, `TryGet`, событие `Changed`.
-- `TrustAsync(peerId)`: `PeerSessionManager.Trust` закрепляет отпечаток (запись в `PairedPeers`, адреса; открытая неготовая сессия с этим устройством закрывается с причиной `trusted`, чтобы переподключение пришло уже `Ready`), затем посреднику уходит `vouch-relay(ToPeerId, собственная запись)`.
-- Посредник пересылает `vouch-relay` дальше только по правилу `MayPassOn`: отправитель и адресат оба сопряжены с ним, адресат — не сам отправитель, а запись — собственная запись отправителя (id и отпечаток совпадают с сессией). Адресат, получив реле от сопряжённого пира, доверяет записанному устройству.
+- `TrustAsync(peerId)`: `PeerSessionManager.Trust(…, awaitingTheirs: true)` закрепляет отпечаток (запись в `PairedPeers`, адреса; открытая неготовая сессия с этим устройством закрывается с причиной `trusted`, чтобы переподключение пришло уже `Ready`), затем посреднику уходит `vouch-relay(ToPeerId, собственная запись)`. Новая запись помечается `PairedPeer.AwaitingTheirTrust = true`: дальняя сторона о нас ещё не знает. Пометка снимается первой же сессией `Ready` с этим устройством (и обычным сопряжением подтверждением); уже существующая запись с тем же отпечатком от повторного доверия ждущей не становится.
+- Посредник пересылает `vouch-relay` дальше только по правилу `MayPassOn`: отправитель и адресат оба сопряжены с ним, адресат — не сам отправитель, а запись — собственная запись отправителя (id и отпечаток совпадают с сессией). Адресат, получив реле от сопряжённого пира, доверяет записанному устройству (`Trust(…, awaitingTheirs: false)`: отправитель реле доверился первым, так что сопряжение уже взаимное).
 
 **Сообщения.** `vouch`, `vouch-relay`.
 
-**Ограничения и запасные пути.** Обратное доверие дойдёт, только если у посредника в этот момент есть готовая сессия с дальним устройством; иначе доверие остаётся односторонним, и при первом же прямом соединении у доверившей стороны сработает «нас забыли» — запись удалится. То же случится, если прямое соединение установится раньше, чем дойдёт реле (следствие из кода; тестом покрыт только благополучный порядок).
+**Ограничения и запасные пути.**
+- Обратное доверие дойдёт, только если у посредника в этот момент есть готовая сессия с дальним устройством; `vouch-relay` отправляется один раз и не повторяется. Иначе доверие остаётся односторонним: запись у доверившей стороны сохраняется (`AwaitingTheirTrust`), прямая сессия с дальним устройством приходит `Unpaired` и такой остаётся. Раньше в этом месте срабатывало «нас забыли»: только что созданная запись удалялась, а пользователь получал уведомление о разрыве сопряжения. Выйти из одностороннего состояния можно обычным сопряжением подтверждением или доверием со стороны дальнего устройства (ему нас тоже представляет посредник).
+- Если прямое соединение установилось раньше, чем дошло реле, ничего не теряется: дальняя сторона, получив реле, закрывает неготовую сессию (`trusted`), и переподключение приходит `Ready`. Если реле пришло посреди рукопожатия (запись появилась после того, как сторона уже ответила «нет»), сессия закрывается по правилу `AskAgain` — с тем же итогом.
+- Устройство старой версии на любом из концов ведёт себя по-старому: у него «нас забыли» может сработать преждевременно. Формат сообщений не менялся.
 
-**Тесты.** `NodeIntegrationTests.ADeviceTrustedByBothEndsIntroducesThemToEachOther`, `ADeviceMayOnlyEverPassOnItsOwnRecord`.
+**Тесты.** `NodeIntegrationTests.ADeviceTrustedByBothEndsIntroducesThemToEachOther`, `ADeviceMayOnlyEverPassOnItsOwnRecord`, `ADeviceTrustedOnAnothersWordHasNotForgottenUsJustBecauseItHasNotHeardYet` (прямое соединение раньше реле, затем реле, затем обычный разрыв), `ANoInTheHandshakeOnlyMeansForgottenWhenTheyOnceKnewUs`.
 
 ### UDP-путь для медиа (`MediaSocket`)
 
@@ -312,7 +325,7 @@
 
 **Как устроено.** `src/WinMirroring.Core/Media/MediaSocket.cs`. Привязка к `0.0.0.0` на номере транспортного порта (UDP 47621 по умолчанию), буферы приёма и отправки по 1 МБ, `SIO_UDP_CONNRESET` выключен. `PacketReceived(IPEndPoint from, ReadOnlySpan<byte>)` вызывается из цикла приёма (обработчик должен быть быстрым и не хранить span). `Send` — синхронный `SendTo`, ошибки только в debug-журнал. Наружу через `MirroringNode.MediaPacketReceived`, `SendMedia`, `MediaPort`; подписаны `AudioService` и `ScreenStreamingService`.
 
-**Ограничения и запасные пути.** Нет фильтра по подсетям и нет привязки к выбранным адресам. Пересоздаётся при перезапуске сети. Комментарий «audio now, screen later» устарел.
+**Ограничения и запасные пути.** Нет фильтра по подсетям и нет привязки к выбранным адресам. Пересоздаётся при перезапуске сети. Сокет один на узел, поэтому звук и видео к одному устройству для Windows — один поток (см. «Приоритет медиа»).
 
 **Тесты.** Нет (ни в проекте ядра, ни в других тестовых проектах `MediaSocket` напрямую не упоминается).
 
@@ -330,11 +343,14 @@
 
 ### Приоритет медиа (`MediaPriority`)
 
-**Что делает.** Просит Windows отправлять медиа-датаграммы к данному устройству раньше остального трафика, что важно на Wi-Fi.
+**Что делает.** Просит Windows отправлять медиа-датаграммы к данному устройству — все, и звук, и видео экрана — раньше остального трафика этого устройства, что важно на Wi-Fi. Звук впереди видео это **не** ставит.
 
-**Как устроено.** `src/WinMirroring.Core/Media/MediaPriority.cs` (internal, владеет им `MediaSocket`). qWAVE: `QOSCreateHandle`, `QOSAddSocketToFlow` с типом `QOSTrafficTypeVoice` (4) и флагом non-adaptive, плюс попытка DSCP 46 (`QOSSetFlow`), которая проходит только с правами администратора. Счётчик пользователей на адрес; `Remove` снимает поток, когда пользователей не осталось. Вызывают `AudioSender` и `VideoLink` через `MirroringNode.PrioritizeMedia`/`ReleaseMediaPriority`.
+**Как устроено.** `src/WinMirroring.Core/Media/MediaPriority.cs` (internal, владеет им `MediaSocket`). qWAVE: `QOSCreateHandle`, `QOSAddSocketToFlow` с типом `QOSTrafficTypeVoice` (4) и флагом non-adaptive, плюс попытка DSCP 46 (`QOSSetFlow`), которая проходит только с правами администратора. Поток задаётся парой (сокет, адрес с портом). Счётчик пользователей на адрес: второй запрос на тот же адрес нового потока не создаёт, а только увеличивает счётчик; `Remove` снимает поток, когда пользователей не осталось. Вызывают `AudioSender` и `VideoLink` через `MirroringNode.PrioritizeMedia`/`ReleaseMediaPriority`, оба с `session.PeerTransportEndPoint`.
 
-**Ограничения и запасные пути.** Полностью «по возможности»: нет `qwave.dll`, служба выключена или отказ — тихо ничего не происходит. Поток задаётся парой (сокет, адрес), а звук и видео идут с одного сокета на один адрес, так что голосовой класс получают оба; комментарий класса при этом говорит только о звуке «впереди потока экрана».
+**Ограничения и запасные пути.**
+- Полностью «по возможности»: нет `qwave.dll`, служба выключена или отказ — тихо ничего не происходит.
+- Медиа-сокет у узла один, звук и видео уходят с него на один и тот же адрес и порт, поэтому это один поток с одним классом: голосовой класс получают оба, кто бы его ни запросил, и между собой они идут в порядке записи в сокет. Звук оказывается впереди картинки, только пока картинка идёт по TCP-соединению сессии (JPEG-плитки; видео, пока UDP-путь `VideoLink` не подтверждён или отдыхает), и впереди прочего трафика машины. Поставить звук впереди видео при одном сокете средствами qWAVE нельзя — понадобился бы отдельный сокет для одного из двух, а это изменение отправки и приёма медиа, а не этого класса. Комментарии в коде приведены в соответствие.
+- Многомегабитное видео тем самым идёт в голосовом классе Wi-Fi — так вышло, а не было выбрано; правильный ли это класс для видео, в коде не решается.
 
 **Тесты.** Нет.
 
@@ -377,12 +393,12 @@
 | `Version` | 4 | 2: движение мыши с метками времени и keepalive; 3: сопряжение подтверждением; 4: большие сообщения частями и запасной кадр в звуковых пакетах |
 | `DefaultDiscoveryPort` | 47620 | UDP, обнаружение |
 | `DefaultTransportPort` | 47621 | TCP (сессии) и UDP (медиа) |
-| `MaxFrameSize` | 16 МБ | предел кадра и собранного сообщения |
+| `MaxFrameSize` | 16 МБ | предел кадра и собранного сообщения; отправитель отказывается слать больше |
 | `TlsTargetHost` | `winmirroring` | SNI и SAN сертификата |
 | `BeaconMagic` | `WMIR` | начало маяка |
 | `MulticastGroup` | 239.255.47.62 | группа обнаружения |
 | `BeaconInterval` / `BeaconOnBattery` | 2 с / 4 с | период маяка |
-| `PeerExpiry` | 8 с | «видели недавно» |
+| `PeerExpiry` | 8 с | «видели недавно»: столько без маяков — и устройство без сессии считается не в сети |
 | `HeartbeatInterval` / `HeartbeatOnBattery` | 5 с / 10 с | период пульса |
 | `IdleTimeout` | 20 с | тишина, после которой сессия закрывается |
 | `HandshakeTimeout` | 15 с | TLS и прикладное рукопожатие (каждое) |
@@ -479,6 +495,7 @@
 | `Name` | `""` | имя (обновляется при каждой готовой сессии) |
 | `Fingerprint` | `""` | закреплённый отпечаток сертификата |
 | `PairedAt` | — | время сопряжения |
+| `AwaitingTheirTrust` | `false` | устройству доверились по слову третьего (`PeerIntroductions.TrustAsync`), и оно ещё ни разу не подтвердило сопряжение со своей стороны; пока так, его «не сопряжены» в рукопожатии не считается разрывом. В файле от прежней версии свойства нет — читается как `false`; прежняя версия, читая новый файл, свойство пропускает |
 | `TransportPort` | 47621 | порт сессий пира |
 | `DiscoveryPort` | 47620 | порт обнаружения пира |
 | `LastKnownAddresses` | `[]` | до 5 последних IPv4, новые первыми |
@@ -592,8 +609,10 @@
 | `TailscalePeerTests` | разбор `tailscale status --json`, выбор машин | нет |
 | `PowerModeTests` | режим экономии, частота кадров, интервалы | нет |
 | `DataDirectoryTests` | занятость каталога данных | нет |
+| `UnreadableSettingsTests` | нечитаемый файл настроек убирается в сторону и не затирается | нет |
+| `PeerDirectoryTests` | замолчавшее устройство без сессии становится `Offline` и остаётся в списке | нет |
 | `ButtonBarSettingsTests`, `ButtonPresetProgramTests` | панель кнопок | нет |
-| `NodeIntegrationTests` | два-три настоящих узла на loopback: обнаружение зондом, сопряжение, переподключение, отказ, удержанные сообщения, «нас забыли», цепочка доверия, переименование, двойной `Dispose`, смена сети | нет |
+| `NodeIntegrationTests` | два-три настоящих узла на loopback: обнаружение зондом, сопряжение, переподключение, отказ, удержанные сообщения, «нас забыли», цепочка доверия (в том числе прямое соединение раньше реле), замолчавшее устройство, сообщение больше предела, нечитаемые настройки, переименование, двойной `Dispose`, смена сети | нет |
 
 Без собственных тестов в ядре: `MediaCipher`, `MediaSocket`, `MediaPriority`, `FirewallRules`, `PipePeer`, `DeviceIdentityStore`, `NetworkInterfaceCatalog`, `PeerHandshake` (последние три — только косвенно через интеграционные тесты).
 

@@ -14,7 +14,10 @@ public static class ProtocolConstants
     public const int DefaultDiscoveryPort = 47620;
     public const int DefaultTransportPort = 47621;
 
-    /// <summary>Upper bound for a single frame; the file channel chunks above this on its own.</summary>
+    /// <summary>
+    /// Upper bound for a single frame, and for a whole message that travels in parts: the receiver puts no more
+    /// than this back together, so the sender refuses anything longer. The file channel chunks above this on its own.
+    /// </summary>
     public const int MaxFrameSize = 16 * 1024 * 1024;
 
     /// <summary>Host name used for TLS SNI; peers are identified by certificate fingerprint, not by name.</summary>

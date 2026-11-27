@@ -253,6 +253,12 @@ public sealed partial class MainViewModel : ObservableObject
 
     partial void OnMaxSmoothingDelayChanged(int value)
     {
+        if (_initialized && Math.Clamp(value, 0, 200) is var kept && kept != value)
+        {
+            MaxSmoothingDelay = kept; // out of range: the nearest value that is in range, which the page then shows
+            return;
+        }
+
         if (!_initialized || value is < 0 or > 200)
         {
             return;
@@ -436,6 +442,12 @@ public sealed partial class MainViewModel : ObservableObject
 
     partial void OnEdgeResistanceChanged(int value)
     {
+        if (_initialized && Math.Clamp(value, 1, 500) is var kept && kept != value)
+        {
+            EdgeResistance = kept; // out of range: the nearest value that is in range, which the page then shows
+            return;
+        }
+
         if (!_initialized || value is < 1 or > 500)
         {
             return;

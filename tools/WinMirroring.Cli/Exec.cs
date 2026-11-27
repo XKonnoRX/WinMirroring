@@ -14,7 +14,8 @@ namespace WinMirroring.Cli;
 /// build on. So nothing of ours is allowed onto standard output, and the code that comes back is the command's and
 /// not a verdict on whether the connection worked. The codes that are ours are above anything a command uses:
 /// 64 for a device that could not be reached, 65 for one that said no, 66 for a settings directory that belongs to
-/// another device.
+/// another device, 67 for a console that ended without giving the command's code. The one exception is 1 for a
+/// call that names nothing to run, as for any other mistake on the command line.
 ///
 /// There are two ways to the device and the work of both is the same code (<see cref="RemoteCommand"/>). Through
 /// the app running on this machine, which is the usual one and the reason this tool is not a device: the app has
@@ -26,6 +27,10 @@ internal static class Exec
     public const int CouldNotReach = ShellExit.CouldNotReach;
     public const int Refused = ShellExit.Refused;
     public const int DirectoryInUse = 66;
+    public const int ConsoleEnded = ShellExit.ConsoleEnded;
+
+    /// <summary>The tool was called wrongly — the same code an unknown argument ends with.</summary>
+    public const int BadUsage = 1;
 
     /// <summary>Through the app on this machine: it runs the command under the identity devices already trust.</summary>
     public static async Task<int> RunThroughAppAsync(
@@ -94,23 +99,42 @@ internal static class Exec
         }
     }
 
-    /// <summary>The command itself, or what the file holds — a whole script, of any length.</summary>
+    /// <summary>
+    /// The command itself, or what the file holds — a whole script, of any length. Null, with the reason already
+    /// said, when there is nothing to run: the file could not be read, or what was given is empty.
+    ///
+    /// Both are mistakes in how this tool was called and end as one (<see cref="BadUsage"/>), before any device is
+    /// looked for. They used not to: a file that was not there came back as 64, which says the device could not be
+    /// reached and sends whoever reads it off to wake a tablet; and an empty command was sent all the way to the
+    /// device, where a console refuses to run nothing and says nothing either, so the tool waited for an answer
+    /// until somebody stopped it.
+    /// </summary>
     public static async Task<string?> CommandTextAsync(CliOptions options, CancellationToken ct)
     {
-        if (options.CommandFile is not { Length: > 0 } path)
+        var path = options.CommandFile is { Length: > 0 } file ? file : null;
+        var command = options.Command;
+        if (path is not null)
         {
-            return options.Command;
+            try
+            {
+                command = await File.ReadAllTextAsync(path, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                Console.Error.WriteLine($"wm-cli: {path} could not be read: {ex.Message}");
+                return null;
+            }
         }
 
-        try
+        if (string.IsNullOrWhiteSpace(command))
         {
-            return await File.ReadAllTextAsync(path, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
-        {
-            Console.Error.WriteLine($"wm-cli: {path} could not be read: {ex.Message}");
+            Console.Error.WriteLine(path is not null
+                ? $"wm-cli: {path} is empty: there is nothing to run."
+                : "wm-cli: the command is empty: there is nothing to run.");
             return null;
         }
+
+        return command;
     }
 
     private static void Write(ShellStream stream, string text, TextWriter stdout)

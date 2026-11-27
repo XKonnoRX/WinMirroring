@@ -266,8 +266,8 @@ internal sealed class ElevatedHelper : IElevatedHost
                         console.OnOpened(directory);
                         break;
 
-                    case ShellMessageType.Output when ShellCodec.TryDecodeOutput(frame.Payload, out var stream, out var text):
-                        console.OnOutput(stream == ShellStream.Error ? ShellStreamKind.Error : ShellStreamKind.Output, text);
+                    case ShellMessageType.Output when ShellCodec.TryDecodeOutput(frame.Payload, out var stream, out var text, out var goesOn):
+                        console.OnOutput(stream, text, goesOn);
                         break;
 
                     case ShellMessageType.Done when ShellCodec.TryDecodeDone(frame.Payload, out var code, out var directory):
@@ -321,6 +321,7 @@ internal sealed class ElevatedHelper : IElevatedHost
         private readonly ElevatedHelper _helper;
         private readonly uint _id;
         private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly OutputAssembly _lines = new();
         private int _closing;
         private int _finished;
 
@@ -371,7 +372,17 @@ internal sealed class ElevatedHelper : IElevatedHost
             _ready.TrySetResult();
         }
 
-        internal void OnOutput(ShellStreamKind kind, string text) => Output?.Invoke(kind, text);
+        /// <summary>
+        /// A line too long for one message comes down the pipe as several. It is put back together here, so that
+        /// what this console raises is a line — as it is for a shell this app started itself.
+        /// </summary>
+        internal void OnOutput(ShellStream stream, string text, bool goesOn)
+        {
+            if (_lines.Add(stream, text, goesOn, out var line))
+            {
+                Output?.Invoke(stream == ShellStream.Error ? ShellStreamKind.Error : ShellStreamKind.Output, line);
+            }
+        }
 
         internal void OnDone(int code, string directory)
         {

@@ -7,6 +7,7 @@ using WinMirroring.Core;
 using WinMirroring.Core.Identity;
 using WinMirroring.Core.Network;
 using WinMirroring.Core.Pairing;
+using WinMirroring.Core.Peers;
 
 namespace WinMirroring.Clipboard.Tests;
 
@@ -110,6 +111,76 @@ public sealed class SendFilesIntegrationTests : IAsyncLifetime
 
         Assert.False(result.Ok);
         Assert.Equal("это устройство не принимает файлы напрямую", result.Error);
+    }
+
+    [Fact]
+    public async Task AFailureNobodyExpectedIsToldToTheSenderAllTheSame()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (_, b, syncA, syncB) = await ConnectAsync(ct);
+
+        var file = Path.Combine(_directories[0], "note.txt");
+        await File.WriteAllTextAsync(file, "hello", ct);
+
+        // A folder that cannot be made, and not for a reason of the kind a transfer usually fails for: the name is
+        // not a name at all, which is an ArgumentException rather than anything to do with reading or writing.
+        var impossible = Path.Combine(_directories[1], "no\0where");
+        var progress = new List<FileTransferProgress>();
+        syncB.TransferProgress += p =>
+        {
+            lock (progress)
+            {
+                progress.Add(p);
+            }
+        };
+        var taken = new TaskCompletionSource<IReadOnlyList<string>?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        syncB.FilesOffered += (session, request) => _ = Task.Run(async () =>
+        {
+            try
+            {
+                taken.TrySetResult(await syncB.AcceptFilesAsync(session, request, impossible, ct));
+            }
+            catch (Exception ex)
+            {
+                taken.TrySetException(ex);
+            }
+        });
+
+        // Well inside the quarter of an hour the sender would otherwise have waited.
+        var result = await syncA.SendFilesAsync(b.Identity.Id, [file], SendFilesPurpose.Open, null, ct).WaitAsync(TimeSpan.FromSeconds(30), ct);
+
+        Assert.False(result.Ok);
+        Assert.False(string.IsNullOrEmpty(result.Error));
+        Assert.Null(await taken.Task.WaitAsync(TimeSpan.FromSeconds(30), ct));
+        lock (progress)
+        {
+            Assert.Contains(progress, p => p is { Finished: true, Ok: false });
+        }
+    }
+
+    [Fact]
+    public async Task ASenderIsToldAtOnceWhenTheConnectionGoesBeforeTheAnswer()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (_, b, syncA, syncB) = await ConnectAsync(ct);
+
+        var file = Path.Combine(_directories[0], "note.txt");
+        await File.WriteAllTextAsync(file, "hello", ct);
+
+        // The user there is asked and takes their time; meanwhile the connection is lost.
+        var offered = new TaskCompletionSource<(PeerSession Session, SendFilesRequest Request)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        syncB.FilesOffered += (session, request) => offered.TrySetResult((session, request));
+
+        var sending = syncA.SendFilesAsync(b.Identity.Id, [file], SendFilesPurpose.Open, null, ct);
+        var (sessionOnB, request) = await offered.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        await sessionOnB.CloseAsync("test: the connection is lost");
+
+        var result = await sending.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        Assert.False(result.Ok);
+        Assert.Equal("связь с устройством прервалась", result.Error);
+
+        // And when the user there says yes after all, nothing is taken and nothing is thrown.
+        Assert.Null(await syncB.AcceptFilesAsync(sessionOnB, request, Path.Combine(_directories[1], "too-late"), ct));
     }
 
     [Fact]

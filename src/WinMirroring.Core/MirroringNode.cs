@@ -76,6 +76,25 @@ public sealed class MirroringNode : IAsyncDisposable
 
         SettingsStore = new SettingsStore(options.DataDirectory);
         Settings = SettingsStore.Load();
+        if (SettingsStore.Unreadable is { } unreadable)
+        {
+            // The loudest thing in the log, because of what follows from it: with no settings this device is a
+            // new one, and every device it was paired with will be looking for a certificate nobody presents.
+            // The old file is out of the way of the save below, so putting it back, mended, undoes all of it.
+            if (unreadable.KeptAs is { } kept)
+            {
+                _logger.LogError(
+                    "The settings in {File} could not be read ({Reason}). The file is kept as {Kept}; this device starts as a new one, with a new id and certificate and no paired devices, until that file is mended and put back",
+                    SettingsStore.FilePath, unreadable.Reason, kept);
+            }
+            else
+            {
+                _logger.LogError(
+                    "The settings in {File} could not be read ({Reason}), and the file could not be moved or copied out of the way: it will be written over. This device starts as a new one, with a new id and certificate and no paired devices",
+                    SettingsStore.FilePath, unreadable.Reason);
+            }
+        }
+
         Transport.InterfacePin.Enabled = Settings.PinConnectionsToInterface;
 
         var changed = false;
@@ -180,10 +199,14 @@ public sealed class MirroringNode : IAsyncDisposable
         return true;
     }
 
-    /// <summary>Asks for media going to this peer to travel ahead of bulk traffic such as a screen stream.</summary>
+    /// <summary>
+    /// Asks for the media datagrams going to this peer to travel ahead of this device's ordinary traffic. That is
+    /// all of them, whoever asks: sound and a screen stream's video leave by the one media socket for the one
+    /// address, and so cannot be told apart or put in any order between themselves.
+    /// </summary>
     public void PrioritizeMedia(IPEndPoint peer) => _media?.Prioritize(peer);
 
-    /// <summary>Gives that priority up again.</summary>
+    /// <summary>Gives that priority up again; it lasts until everyone who asked for it has.</summary>
     public void ReleaseMediaPriority(IPEndPoint peer) => _media?.ReleasePriority(peer);
 
     private void OnMediaPacket(IPEndPoint from, ReadOnlySpan<byte> packet) => MediaPacketReceived?.Invoke(from, packet);

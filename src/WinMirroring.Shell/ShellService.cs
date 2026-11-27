@@ -27,7 +27,7 @@ public sealed class ShellService : IAsyncDisposable
     private readonly ILogger<ShellService> _logger;
 
     /// <summary>Consoles other devices have opened here, by the device that opened each one.</summary>
-    private readonly ConcurrentDictionary<(string PeerId, uint Id), IHostedShell> _hosted = new();
+    private readonly ConcurrentDictionary<(string PeerId, uint Id), Hosted> _hosted = new();
 
     /// <summary>Devices whose consoles the person here has already agreed to, until this app restarts.</summary>
     private readonly ConcurrentDictionary<string, byte> _allowed = new(StringComparer.Ordinal);
@@ -155,9 +155,9 @@ public sealed class ShellService : IAsyncDisposable
         _attached.TryRemove(session.PeerId, out _);
         foreach (var key in _hosted.Keys.Where(k => k.PeerId == session.PeerId).ToList())
         {
-            if (_hosted.TryRemove(key, out var shell))
+            if (_hosted.TryRemove(key, out var hosted))
             {
-                shell.Dispose();
+                hosted.Shell.Dispose();
             }
         }
 
@@ -248,13 +248,13 @@ public sealed class ShellService : IAsyncDisposable
                             session.PeerName,
                             id,
                             Describe(command));
-                        running.Run(command);
+                        running.Shell.Run(command);
                         break;
 
                     case CommandPiece.TooLong:
                         _logger.LogWarning("{Peer} sent a command longer than this will put back together", session.PeerName);
-                        _ = session.SendAsync(ChannelId.Shell, ShellCodec.EncodeOutput(id, ShellStream.Error, "Команда слишком длинная."), ct);
-                        _ = session.SendAsync(ChannelId.Shell, ShellCodec.EncodeDone(id, 1, running.Directory), ct);
+                        _ = session.SendAsync(ChannelId.Shell, ShellCodec.EncodeOutput(id, ShellStream.Error, CommandAssembly.TooLongText), ct);
+                        _ = session.SendAsync(ChannelId.Shell, ShellCodec.EncodeDone(id, 1, running.Shell.Directory), ct);
                         break;
                 }
 
@@ -263,14 +263,14 @@ public sealed class ShellService : IAsyncDisposable
             case ShellMessageType.Cancel when _hosted.TryRemove(key, out var cancelled):
                 _logger.LogInformation("{Peer} stopped console {Console}", session.PeerName, id);
                 _arriving.TryRemove(key, out _);
-                cancelled.Dispose();
+                cancelled.Shell.Dispose();
                 _ = session.SendAsync(ChannelId.Shell, ShellCodec.Encode(ShellMessageType.Close, id), ct);
                 break;
 
             case ShellMessageType.Close when _hosted.TryRemove(key, out var closing):
                 _logger.LogInformation("{Peer} closed console {Console}", session.PeerName, id);
                 _arriving.TryRemove(key, out _);
-                closing.Dispose();
+                closing.Shell.Dispose();
                 Told(session, "Консоль закрыта", $"{session.PeerName} больше не выполняет здесь команды.");
                 break;
 
@@ -333,15 +333,9 @@ public sealed class ShellService : IAsyncDisposable
 
     private async Task OpenHereAsync(PeerSession session, uint id, bool elevated, CancellationToken gaveUp)
     {
-        if (!_node.Settings.Shell.AllowCommands)
+        if (TurnedOff(elevated) is { } off)
         {
-            await RefuseAsync(session, id, "выполнение команд выключено на этом устройстве").ConfigureAwait(false);
-            return;
-        }
-
-        if (elevated && !_node.Settings.Shell.AllowElevatedCommands)
-        {
-            await RefuseAsync(session, id, "команды с правами администратора выключены на этом устройстве").ConfigureAwait(false);
+            await RefuseAsync(session, id, off).ConfigureAwait(false);
             return;
         }
 
@@ -383,6 +377,17 @@ public sealed class ShellService : IAsyncDisposable
             }
 
             agreedBefore[session.PeerId] = 1;
+
+            // A question can sit on the screen for an hour, and the setting can be switched off under it. A yes
+            // to something that is no longer allowed opens nothing and is not kept — looked at after the yes was
+            // written down and not before, so that it cannot be written down just behind the switching-off that
+            // forgets every yes (see ApplySettings), and outlive it.
+            if (TurnedOff(elevated) is { } offMeanwhile)
+            {
+                agreedBefore.TryRemove(session.PeerId, out _);
+                await RefuseAsync(session, id, offMeanwhile).ConfigureAwait(false);
+                return;
+            }
         }
 
         // The answer arrived; whoever wanted it may not have. Nothing is started for a device that has stopped
@@ -407,22 +412,31 @@ public sealed class ShellService : IAsyncDisposable
             await RefuseAsync(
                 session,
                 id,
-                elevated ? "права администратора здесь не подтвердили" : "не удалось запустить PowerShell").ConfigureAwait(false);
+                TurnedOff(elevated)
+                    ?? (elevated ? "права администратора здесь не подтвердили" : "не удалось запустить PowerShell")).ConfigureAwait(false);
             return;
         }
 
-        shell.Output += (kind, text) => Send(session, ShellCodec.EncodeOutput(id, kind == ShellStreamKind.Error ? ShellStream.Error : ShellStream.Output, text));
+        shell.Output += (kind, text) =>
+        {
+            // As many messages as the line takes, each started from here in order: a line too long for one used to
+            // be cut to its front. Not awaited one by one — the next line would then overtake the rest of this one.
+            foreach (var piece in ShellCodec.EncodeOutputLine(id, kind == ShellStreamKind.Error ? ShellStream.Error : ShellStream.Output, text))
+            {
+                Send(session, piece);
+            }
+        };
         shell.Done += (code, directory) => Send(session, ShellCodec.EncodeDone(id, code, directory));
         shell.Ended += () =>
         {
             if (_hosted.TryRemove((session.PeerId, id), out var ended))
             {
-                ended.Dispose();
+                ended.Shell.Dispose();
                 Send(session, ShellCodec.Encode(ShellMessageType.Close, id));
             }
         };
 
-        _hosted[(session.PeerId, id)] = shell;
+        _hosted[(session.PeerId, id)] = new Hosted(shell, elevated);
 
         // Asked once more, now that this is the thing holding the console. Before this line a give-up stopped the
         // shell being started; after it, a give-up arrives as an ordinary close and closes it. In between — the
@@ -430,7 +444,22 @@ public sealed class ShellService : IAsyncDisposable
         // give-up landing exactly there would have left it running with nobody waiting on it.
         if (GaveUp(session, id, gaveUp) && _hosted.TryRemove((session.PeerId, id), out var unwanted))
         {
-            unwanted.Dispose();
+            unwanted.Shell.Dispose();
+            return;
+        }
+
+        // And the setting, for the same reason and at the same place: switching it off closes the consoles that
+        // can be found (see ApplySettings), and until the line above this one could not be. Switched off before
+        // that line, it is seen here; after it, the console is found there.
+        if (TurnedOff(elevated) is { } offNow)
+        {
+            // Not found means the switching-off got to it first, and has already said so to the device.
+            if (_hosted.TryRemove((session.PeerId, id), out var forbidden))
+            {
+                forbidden.Shell.Dispose();
+                await RefuseAsync(session, id, offNow).ConfigureAwait(false);
+            }
+
             return;
         }
 
@@ -443,6 +472,14 @@ public sealed class ShellService : IAsyncDisposable
         catch (TimeoutException)
         {
             _logger.LogDebug("The console for {Peer} did not report where it is; opening it anyway", session.PeerName);
+        }
+
+        // Closed while it was settling — the setting switched off under it, most likely — and whoever closed it
+        // has told the device so. Announcing it open after that would be a notice here about a console that is
+        // not there.
+        if (!_hosted.TryGetValue((session.PeerId, id), out var still) || !ReferenceEquals(still.Shell, shell))
+        {
+            return;
         }
 
         Send(session, ShellCodec.Encode(ShellMessageType.Opened, id, shell.Directory));
@@ -477,6 +514,13 @@ public sealed class ShellService : IAsyncDisposable
 
         try
         {
+            // Switched off while this waited its turn — the turn can be behind another device's Windows prompt,
+            // which is minutes. Nothing is started, and nobody is prompted, for what is no longer allowed.
+            if (TurnedOff(elevated: true) is not null)
+            {
+                return null;
+            }
+
             if (_helper is { IsAlive: false } gone)
             {
                 _logger.LogInformation("The elevated helper is no longer running; the next administrator console needs the prompt again");
@@ -501,6 +545,135 @@ public sealed class ShellService : IAsyncDisposable
             }
 
             return _helper?.Open();
+        }
+        finally
+        {
+            try
+            {
+                _helperGate.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// Why a console of this kind may not be open here as the settings now stand, in words for the device that
+    /// asked — or null when it may. An administrator console needs both settings: with commands off altogether
+    /// there is no kind of console left.
+    /// </summary>
+    private string? TurnedOff(bool elevated)
+    {
+        var settings = _node.Settings.Shell;
+        if (!settings.AllowCommands)
+        {
+            return "выполнение команд выключено на этом устройстве";
+        }
+
+        return elevated && !settings.AllowElevatedCommands
+            ? "команды с правами администратора выключены на этом устройстве"
+            : null;
+    }
+
+    /// <summary>
+    /// Re-reads the settings that say whether other devices may run commands here, and ends what they no longer
+    /// allow. Called by whoever changes them, after changing them.
+    ///
+    /// The settings used to be looked at only when a console was opened, so switching commands off was a promise
+    /// about the next console and said nothing to the ones already open: a device that had one kept it, and kept
+    /// running things here, for as long as it liked. And a yes once given was remembered until the app restarted
+    /// whatever the switch said in between — off and on again, and that device was back in without a question.
+    /// Whoever switches this off means now, and means everybody.
+    ///
+    /// So, with commands off: every console here is closed and every yes forgotten. With only administrator
+    /// commands off: the same for administrator consoles and their yes, and the helper that holds administrator
+    /// rights is ended too, since there is nothing left for it to be running for — the next administrator console,
+    /// if this is ever switched back on, is asked about here and by Windows again.
+    ///
+    /// The device whose console is closed is told why, in the words it was refused with in the first place: the
+    /// refusal it would have had, had it asked a moment later.
+    /// </summary>
+    public void ApplySettings()
+    {
+        var ordinaryOff = TurnedOff(elevated: false);
+        var elevatedOff = TurnedOff(elevated: true);
+        if (elevatedOff is null)
+        {
+            return;
+        }
+
+        if (ordinaryOff is not null)
+        {
+            _allowed.Clear();
+        }
+
+        _allowedElevated.Clear();
+
+        var closed = new List<IHostedShell>();
+        foreach (var entry in _hosted)
+        {
+            if ((ordinaryOff ?? (entry.Value.Elevated ? elevatedOff : null)) is not { } reason || !_hosted.TryRemove(entry))
+            {
+                continue;
+            }
+
+            _arriving.TryRemove(entry.Key, out _);
+            closed.Add(entry.Value.Shell);
+            if (_node.Sessions.TryGetSession(entry.Key.PeerId, out var session))
+            {
+                _logger.LogInformation("Closed console {Console} of {Peer}: {Reason}", entry.Key.Id, session.PeerName, reason);
+                Send(session, ShellCodec.Encode(ShellMessageType.Refused, entry.Key.Id, reason));
+                Told(session, "Консоль закрыта", $"{session.PeerName} больше не выполняет здесь команды.");
+            }
+        }
+
+        // Off this thread: it is whoever flipped the switch, most likely a window, and ending a shell that is in
+        // the middle of something waits out its grace period — per console.
+        if (closed.Count > 0)
+        {
+            _ = Task.Run(() =>
+            {
+                foreach (var shell in closed)
+                {
+                    shell.Dispose();
+                }
+            });
+        }
+
+        _ = EndElevatedHostAsync();
+    }
+
+    /// <summary>
+    /// Ends the helper that holds administrator rights, once administrator commands are no longer allowed. Behind
+    /// the same gate that starts it, so that a helper being started at this very moment — a Windows prompt may be
+    /// on the screen for it — is ended when it arrives rather than missed.
+    /// </summary>
+    private async Task EndElevatedHostAsync()
+    {
+        if (_disposed != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await _helperGate.WaitAsync().ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        try
+        {
+            // Looked at again here: switched back on while this waited, and the helper stays.
+            if (TurnedOff(elevated: true) is not null && _helper is { } helper)
+            {
+                _logger.LogInformation("Administrator commands are no longer allowed here; the elevated helper is ended");
+                _helper = null;
+                helper.Dispose();
+            }
         }
         finally
         {
@@ -566,6 +739,12 @@ public sealed class ShellService : IAsyncDisposable
 
     private void Told(PeerSession session, string title, string text) => Notify?.Invoke(title, text);
 
+    /// <summary>
+    /// One console open here: its shell, and whether it is an administrator one — which is what decides whether
+    /// switching administrator commands off closes it.
+    /// </summary>
+    private sealed record Hosted(IHostedShell Shell, bool Elevated);
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -575,9 +754,9 @@ public sealed class ShellService : IAsyncDisposable
 
         _node.Sessions.SessionReady -= OnSessionReady;
         _node.Sessions.SessionClosed -= OnSessionClosed;
-        foreach (var shell in _hosted.Values)
+        foreach (var hosted in _hosted.Values)
         {
-            shell.Dispose();
+            hosted.Shell.Dispose();
         }
 
         _hosted.Clear();

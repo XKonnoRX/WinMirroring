@@ -284,6 +284,256 @@ public sealed class ShellIntegrationTests : IAsyncLifetime
         Assert.Contains(run.Lines, line => line.Contains("конец длинного скрипта", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// A script too long to be put back together runs no part of itself, and says so once. Past the limit, what
+    /// had arrived used to be thrown away and the rest collected as though a new command had begun — so the last
+    /// message ran the tail of the script on its own, in a console that was still open to take it.
+    /// </summary>
+    [Fact]
+    public async Task AScriptTooLongToPutBackTogetherRunsNoPartOfItself()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, _) = await ConnectAsync(allowThere: true, agreeThere: true, ct);
+
+        var padding = new System.Text.StringBuilder();
+        while (padding.Length <= CommandAssembly.Longest + 50_000)
+        {
+            padding.Append("# a line that is only here for its length\n");
+        }
+
+        var console = shellA.Open(b.Identity.Id)!;
+        var run = Watch(console);
+        await run.Opened.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+
+        Assert.True(console.Run(padding + "Write-Output 'хвост слишком длинного скрипта'"));
+        Assert.Equal(1, await run.Done.Task.WaitAsync(TimeSpan.FromSeconds(60), ct));
+
+        // The console is still there and still a console: the next command is its own, and by the time it has
+        // answered, anything the tail was going to print would have been printed.
+        var next = Watch(console);
+        Assert.True(console.Run("Write-Output 'следующая команда'"));
+        Assert.Equal(0, await next.Done.Task.WaitAsync(TimeSpan.FromSeconds(30), ct));
+
+        // In words that can be read — the same ones the elevated helper answers with, from the same place.
+        var said = Said(run);
+        Assert.Contains("Команда слишком длинная.", said);
+        Assert.Contains("следующая команда", said);
+        Assert.DoesNotContain(said, line => line.Contains("хвост", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A line of output longer than one message comes back as the one line it is — across both hops, device to
+    /// app and app to tool. It used to arrive as its first few thousand characters and nothing else.
+    /// </summary>
+    [Fact]
+    public async Task ALineOfOutputTooLongForOneMessageComesBackWhole()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, _) = await ConnectAsync(allowThere: true, agreeThere: true, ct);
+
+        var pipe = $"WinMirroring-tests-{Guid.NewGuid():N}";
+        await using var server = new Local.LocalShellServer(a, shellA, NullLogger<Local.LocalShellServer>.Instance, pipe);
+        server.Start();
+
+        var lines = new List<string>();
+        var reasons = new List<string>();
+        await using var tool = await ConnectToolAsync(pipe, ct);
+        var code = await tool.RunAsync(
+            b.Identity.Id,
+            "[Console]::Out.WriteLine(('я' * 20000) + ' и конец строки')",
+            (_, text) => Collect(lines, text),
+            reasons.Add,
+            ct);
+
+        Assert.Equal(0, code);
+        Assert.Empty(reasons);
+        Assert.Contains(new string('я', 20_000) + " и конец строки", lines);
+    }
+
+    /// <summary>
+    /// A command that ends the shell itself comes back with the code it ended it with. <c>exit 3</c> at the end of
+    /// a script is as ordinary as scripts get, and it used to come back as a refusal by the device, with no reason.
+    /// </summary>
+    [Fact]
+    public async Task ACommandThatEndsTheShellComesBackWithItsExitCode()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, shellB) = await ConnectAsync(allowThere: true, agreeThere: true, ct);
+
+        var pipe = $"WinMirroring-tests-{Guid.NewGuid():N}";
+        await using var server = new Local.LocalShellServer(a, shellA, NullLogger<Local.LocalShellServer>.Instance, pipe);
+        server.Start();
+
+        var lines = new List<string>();
+        var reasons = new List<string>();
+        await using var tool = await ConnectToolAsync(pipe, ct);
+        var code = await tool.RunAsync(
+            b.Identity.Id,
+            "Write-Output 'перед выходом'; exit 3",
+            (_, text) => Collect(lines, text),
+            reasons.Add,
+            ct);
+
+        Assert.Equal(3, code);
+        Assert.Empty(reasons);
+        Assert.Contains("перед выходом", lines);
+        await WaitUntilAsync(() => !shellB.HasConsolesHere, ct, "the console that ended itself is gone from the device");
+    }
+
+    /// <summary>
+    /// And where no code comes at all — a device on a build that does not send one, standing in here as a console
+    /// that just ends — it is not called a refusal. Nobody said no; what is known is said, under a code of its own.
+    /// </summary>
+    [Fact]
+    public async Task AConsoleThatEndsWithoutACodeIsNotARefusal()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, shellB) = await ConnectAsync(allowThere: true, agreeThere: true, ct, allowElevatedThere: true);
+        shellB.StartElevatedHost = _ => Task.FromResult<WinMirroring.Shell.Elevated.IElevatedHost?>(new OneHelper(() => new ShellThatEndsWithoutACode()));
+
+        var pipe = $"WinMirroring-tests-{Guid.NewGuid():N}";
+        await using var server = new Local.LocalShellServer(a, shellA, NullLogger<Local.LocalShellServer>.Instance, pipe);
+        server.Start();
+
+        var reasons = new List<string>();
+        await using var tool = await ConnectToolAsync(pipe, ct);
+        var code = await tool.RunAsync(b.Identity.Id, "exit 3", (_, _) => { }, reasons.Add, ct, elevated: true);
+
+        Assert.Equal(ShellExit.ConsoleEnded, code);
+        Assert.NotEqual(ShellExit.Refused, code);
+        Assert.Contains(reasons, reason => reason.Contains("не сообщив код", StringComparison.Ordinal));
+        Assert.DoesNotContain(reasons, reason => reason.Contains("отказал", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Switching commands off closes the consoles already open and forgets every yes. The setting used to be
+    /// looked at only when a console was opened: a device that had one kept it for as long as it liked, and a
+    /// device agreed to once was back in without a question the moment the switch was turned on again.
+    /// </summary>
+    [Fact]
+    public async Task SwitchingCommandsOffClosesOpenConsolesAndForgetsTheYes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, shellB) = await ConnectAsync(allowThere: true, agreeThere: true, ct);
+
+        var console = shellA.Open(b.Identity.Id)!;
+        var run = Watch(console);
+        await run.Opened.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+        Assert.True(console.Run("Start-Sleep -Seconds 30"));
+        Assert.Equal(1, shellB.ConsolesHere);
+
+        b.Settings.Shell.AllowCommands = false;
+        shellB.ApplySettings();
+
+        // Gone at once on the device, and the device that had it is told why.
+        Assert.Equal(0, shellB.ConsolesHere);
+        var reason = await run.Refused.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+        Assert.Contains("выключено", reason, StringComparison.Ordinal);
+        Assert.False(console.Run("Write-Output 'уже некуда'"));
+
+        // Back on: the same device is a device to be asked about again.
+        b.Settings.Shell.AllowCommands = true;
+        shellB.ApplySettings();
+        Assert.Equal(1, Volatile.Read(ref _asked));
+
+        var again = shellA.Open(b.Identity.Id)!;
+        await Watch(again).Opened.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+        Assert.Equal(2, Volatile.Read(ref _asked));
+    }
+
+    /// <summary>
+    /// Switching only administrator commands off ends the administrator consoles, their yes and the helper that
+    /// holds the rights — and leaves an ordinary console alone, since that permission still stands.
+    /// </summary>
+    [Fact]
+    public async Task SwitchingAdministratorCommandsOffEndsOnlyAdministratorConsoles()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (a, b, shellA, shellB) = await ConnectAsync(allowThere: true, agreeThere: true, ct, allowElevatedThere: true);
+
+        var helpers = new List<OneHelper>();
+        shellB.StartElevatedHost = _ =>
+        {
+            var helper = new OneHelper();
+            lock (helpers)
+            {
+                helpers.Add(helper);
+            }
+
+            return Task.FromResult<WinMirroring.Shell.Elevated.IElevatedHost?>(helper);
+        };
+
+        var ordinary = shellA.Open(b.Identity.Id)!;
+        var ordinaryRun = Watch(ordinary);
+        await ordinaryRun.Opened.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+
+        var administrator = shellA.Open(b.Identity.Id, elevated: true)!;
+        var administratorRun = Watch(administrator);
+        await administratorRun.Opened.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+        Assert.Equal(2, shellB.ConsolesHere);
+        Assert.Equal(2, Volatile.Read(ref _asked));
+
+        b.Settings.Shell.AllowElevatedCommands = false;
+        shellB.ApplySettings();
+
+        Assert.Equal(1, shellB.ConsolesHere);
+        var reason = await administratorRun.Refused.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+        Assert.Contains("администратора", reason, StringComparison.Ordinal);
+        await WaitUntilAsync(() => !helpers[0].IsAlive, ct, "the helper that held administrator rights is ended");
+
+        // The ordinary console was never this setting's to close.
+        Assert.True(ordinary.Run("Write-Output 'обычная на месте'"));
+        Assert.Equal(0, await ordinaryRun.Done.Task.WaitAsync(TimeSpan.FromSeconds(30), ct));
+        Assert.False(ordinaryRun.Refused.Task.IsCompleted);
+
+        // Back on: asked about again here, and a helper started again — which, for real, is Windows asking again.
+        b.Settings.Shell.AllowElevatedCommands = true;
+        shellB.ApplySettings();
+        var again = shellA.Open(b.Identity.Id, elevated: true)!;
+        await Watch(again).Opened.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+        Assert.Equal(3, Volatile.Read(ref _asked));
+        Assert.Equal(2, helpers.Count);
+    }
+
+    /// <summary>
+    /// A question can sit on a screen for an hour, and the setting can be switched off under it. A yes that comes
+    /// after that opens nothing and is not kept.
+    /// </summary>
+    [Fact]
+    public async Task AYesGivenAfterCommandsWereSwitchedOffOpensNothing()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (a, b, shellA, shellB) = await ConnectAsync(allowThere: true, agreeThere: true, ct, dialogThere: answer.Task);
+
+        var console = shellA.Open(b.Identity.Id)!;
+        var run = Watch(console);
+        await WaitUntilAsync(() => Volatile.Read(ref _asked) == 1, ct, "the device is asking about the console");
+
+        b.Settings.Shell.AllowCommands = false;
+        shellB.ApplySettings();
+        answer.TrySetResult(true);
+
+        var reason = await run.Refused.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+        Assert.Contains("выключено", reason, StringComparison.Ordinal);
+        Assert.False(shellB.HasConsolesHere);
+
+        // And that yes was to something no longer allowed, so it is not the answer to the next asking either.
+        b.Settings.Shell.AllowCommands = true;
+        shellB.ApplySettings();
+        var again = shellA.Open(b.Identity.Id)!;
+        await Watch(again).Opened.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+        Assert.Equal(2, Volatile.Read(ref _asked));
+    }
+
+    private static List<string> Said(Run run)
+    {
+        lock (run.Lines)
+        {
+            return [.. run.Lines];
+        }
+    }
+
     private static void Collect(List<string> lines, string text)
     {
         lock (lines)
@@ -627,7 +877,7 @@ public sealed class ShellIntegrationTests : IAsyncLifetime
     /// An elevated helper with no prompt in front of it. What it is here for is the counting: how many times one
     /// was started, and how many consoles came out of the one that was.
     /// </summary>
-    private sealed class OneHelper : WinMirroring.Shell.Elevated.IElevatedHost
+    private sealed class OneHelper(Func<IHostedShell>? console = null) : WinMirroring.Shell.Elevated.IElevatedHost
     {
         private int _consoles;
         private int _disposed;
@@ -639,10 +889,49 @@ public sealed class ShellIntegrationTests : IAsyncLifetime
         public IHostedShell? Open()
         {
             Interlocked.Increment(ref _consoles);
-            return new PretendShell();
+            return console?.Invoke() ?? new PretendShell();
         }
 
         public void Dispose() => Volatile.Write(ref _disposed, 1);
+    }
+
+    /// <summary>
+    /// A console whose shell is ended by the command it is given and says nothing first — which is all a device on
+    /// a build older than the exit code being reported ever did for <c>exit 3</c>.
+    /// </summary>
+    private sealed class ShellThatEndsWithoutACode : IHostedShell
+    {
+        public event Action<ShellStreamKind, string>? Output
+        {
+            add { }
+            remove { }
+        }
+
+        public event Action<int, string>? Done
+        {
+            add { }
+            remove { }
+        }
+
+        public event Action? Ended;
+
+        public Task Ready => Task.CompletedTask;
+
+        public string Directory => @"C:\Windows\System32";
+
+        public bool Run(string command)
+        {
+            Ended?.Invoke();
+            return true;
+        }
+
+        public void Cancel()
+        {
+        }
+
+        public void Dispose()
+        {
+        }
     }
 
     /// <summary>A console that answers, so that what is being counted is the asking and not PowerShell.</summary>

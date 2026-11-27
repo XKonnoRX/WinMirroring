@@ -79,6 +79,7 @@ public sealed class PeerSession : IAsyncDisposable
         PeerCertificate = handshake.PeerCertificate;
         PeerTransportPort = handshake.PeerTransportPort;
         PeerDiscoveryPort = handshake.PeerDiscoveryPort;
+        SaidPairedInHandshake = handshake.PairedHere;
         State = handshake.PairedOnBothSides ? SessionState.Ready : SessionState.Unpaired;
     }
 
@@ -107,6 +108,12 @@ public sealed class PeerSession : IAsyncDisposable
     public string InitiatorId => IsInitiator ? _identity.Id : PeerId;
 
     public SessionState State { get; private set; }
+
+    /// <summary>
+    /// Whether this device answered yes when this session's handshake asked if it has the peer paired. It is the
+    /// answer as it was given, which is not always what the list of pairings says a moment later.
+    /// </summary>
+    public bool SaidPairedInHandshake { get; }
 
     public TimeSpan? LastRoundTrip { get; private set; }
 

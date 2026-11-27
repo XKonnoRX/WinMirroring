@@ -15,6 +15,7 @@ namespace WinMirroring.Shell;
 public sealed class RemoteConsole
 {
     private readonly ILogger _logger;
+    private readonly OutputAssembly _lines = new();
     private int _finished;
 
     internal RemoteConsole(PeerSession session, uint id, ILogger logger)
@@ -56,6 +57,7 @@ public sealed class RemoteConsole
     /// </summary>
     public event Action<string>? Lost;
 
+    /// <summary>One line of what the command printed, whole however many messages it took to carry.</summary>
     public event Action<ShellStream, string>? Output;
 
     /// <summary>A command finished: its exit code and where the console is now.</summary>
@@ -116,8 +118,13 @@ public sealed class RemoteConsole
                 Asking?.Invoke(question);
                 break;
 
-            case ShellMessageType.Output when ShellCodec.TryDecodeOutput(message, out var stream, out var text):
-                Output?.Invoke(stream, text);
+            // A line too long for one message comes as several and is shown as the one line it is.
+            case ShellMessageType.Output when ShellCodec.TryDecodeOutput(message, out var stream, out var text, out var goesOn):
+                if (_lines.Add(stream, text, goesOn, out var line))
+                {
+                    Output?.Invoke(stream, line);
+                }
+
                 break;
 
             case ShellMessageType.Done when ShellCodec.TryDecodeDone(message, out var code, out var directory):

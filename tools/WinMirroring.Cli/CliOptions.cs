@@ -135,8 +135,11 @@ internal sealed class CliOptions
 
             In this mode only what the command prints goes to standard output; everything of ours goes to
             standard error, and wm-cli exits with the command's own exit code — or 64 when the device could not be
-            reached or stopped answering (asleep, gone), and 65 when it was reached and said no. Waiting on a
-            person at that device is said so on standard error rather than left as silence. So it composes:
+            reached or stopped answering (asleep, gone), 65 when it was reached and said no, and 67 when its
+            console ended without giving the command's code. A command that ends the shell itself (exit 3) comes
+            back as that code. A command file that cannot be read, or nothing to run at all, is exit code 1.
+            Waiting on a person at that device is said so on standard error rather than left as silence. So it
+            composes:
 
               wm-cli --exec tablet -c "Get-Service W32Time | Select-Object -Expand Status"
               wm-cli --exec tablet --command-file .\collect-logs.ps1 > logs.txt

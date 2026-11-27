@@ -318,11 +318,12 @@ public partial class App : Application
     private void StartUpdateChecks(MirroringNode node)
     {
         _updater = _services!.GetRequiredService<GithubUpdater>();
-        if (!node.Settings.AutoUpdate)
-        {
-            return;
-        }
+        _updateNode = node;
+        var updater = _updater;
+        _ = Task.Run(updater.CleanUpLeftovers);
 
+        // The timer runs whether or not updating by itself is switched on, and the switch is read at every tick:
+        // it used to be read once, here, so that turning it on or off did nothing until the program was restarted.
         // One check shortly after launch (the app is idle then, so an update installs at once), then every few hours.
         _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, async () =>
         {
@@ -352,9 +353,14 @@ public partial class App : Application
         }
     }
 
+    private MirroringNode? _updateNode;
+
+    /// <summary>How often a downloaded update that is waiting for the device to be free looks whether it is.</summary>
+    private static readonly TimeSpan PendingUpdateLooksEvery = TimeSpan.FromMinutes(1);
+
     private async Task RunUpdateFlowAsync(bool manual)
     {
-        if (_updater is null || _updating || _exiting)
+        if (_updater is null || _updating || _exiting || (!manual && _updateNode?.Settings.AutoUpdate == false))
         {
             return;
         }
@@ -362,11 +368,17 @@ public partial class App : Application
         _updating = true;
         try
         {
-            // A previously downloaded update that was waiting for the app to become idle: install it now.
-            if (_pendingUpdateZip is { } pending && File.Exists(pending) && (manual || IsIdleForUpdate()))
+            // A previously downloaded update that was waiting for the app to become idle: install it now — or,
+            // while the device is still busy, leave it and look again in a minute. (It used to look only at the
+            // next check, six hours on, and a tick that found the device busy fetched the whole archive again.)
+            if (_pendingUpdateZip is { } pending && File.Exists(pending))
             {
-                Installing(_pendingUpdateTag ?? "обновление");
-                _updater.Apply(pending);
+                if (!manual && !IsIdleForUpdate())
+                {
+                    return;
+                }
+
+                Install(pending, _pendingUpdateTag ?? "обновление");
                 return;
             }
 
@@ -415,18 +427,38 @@ public partial class App : Application
             {
                 _pendingUpdateZip = zip;
                 _pendingUpdateTag = update.Tag;
+                if (_updateTimer is { } timer)
+                {
+                    timer.Interval = PendingUpdateLooksEvery;
+                }
+
                 ShowProgress($"Обновление {update.Tag}", "Обновление готово", "Установится, когда устройство освободится", 1, 1, finished: true, ok: true);
                 ShowNotification("WinMirroring: обновление", $"Версия {update.Tag} готова — установится, когда устройство освободится или при следующем запуске.");
                 return;
             }
 
-            Installing(update.Tag);
-            _updater.Apply(zip);
+            Install(zip, update.Tag);
         }
         finally
         {
             _updating = false;
         }
+    }
+
+    /// <summary>Hands the archive to the update script, and says so if that could not even be started.</summary>
+    private void Install(string zip, string tag)
+    {
+        Installing(tag);
+        if (_updater?.Apply(zip) == true)
+        {
+            return;
+        }
+
+        // Nothing will restart the program now: the indicator must not go on saying that it is being installed.
+        _pendingUpdateZip = null;
+        ScheduleNextUpdateCheck(failed: true);
+        ShowProgress($"Обновление {tag}", "Обновление не установлено", "Не удалось запустить update.ps1", 0, 0, finished: true, ok: false);
+        ShowNotification("WinMirroring: обновление", $"Не удалось установить {tag}: рядом с программой нет update.ps1 или его не удалось запустить. Подробности в журнале.");
     }
 
     private bool IsIdleForUpdate()

@@ -8,7 +8,11 @@ using Microsoft.Extensions.Logging;
 namespace WinMirroring.App.Services;
 
 /// <summary>A release newer than the running app, with the download URL of its Windows build.</summary>
-public sealed record AvailableUpdate(Version Version, string Tag, string ZipUrl);
+/// <param name="Sha256">
+/// What GitHub says the archive's SHA-256 is, in hex, where it said (its API does; the fallback that reads the
+/// release page's redirect does not). The download is held to it.
+/// </param>
+public sealed record AvailableUpdate(Version Version, string Tag, string ZipUrl, string? Sha256 = null);
 
 /// <summary>
 /// How far the download has got. <see cref="Total"/> is zero when the server did not say how big the file is,
@@ -118,7 +122,8 @@ public sealed class GithubUpdater
                         if (asset.TryGetProperty("name", out var name) && name.GetString() == AssetName
                             && asset.TryGetProperty("browser_download_url", out var url) && url.GetString() is { Length: > 0 } zip)
                         {
-                            return new UpdateCheckResult(UpdateCheckStatus.Available, new AvailableUpdate(version, tag!, zip));
+                            var digest = asset.TryGetProperty("digest", out var said) && said.ValueKind == JsonValueKind.String ? said.GetString() : null;
+                            return new UpdateCheckResult(UpdateCheckStatus.Available, new AvailableUpdate(version, tag!, zip, Sha256Of(digest)));
                         }
                     }
                 }
@@ -231,6 +236,21 @@ public sealed class GithubUpdater
                     }
                 }
 
+                // Seventy megabytes over whatever the link is: a file that is not what was published is fetched
+                // again rather than handed to the script that replaces the program with it.
+                if (update.Sha256 is { } expected && !await MatchesAsync(path, expected, ct).ConfigureAwait(false))
+                {
+                    _logger.LogWarning("The downloaded update does not match the checksum GitHub gives for it (attempt {Attempt}/{Total})", attempt, attempts);
+                    File.Delete(path);
+                    if (attempt < attempts)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(3 * attempt), ct).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    return null;
+                }
+
                 return path;
             }
             catch (Exception ex) when (ex is HttpRequestException or IOException && attempt < attempts)
@@ -249,6 +269,71 @@ public sealed class GithubUpdater
     }
 
     private static bool IsTransient(int status) => status is 408 or 425 or 429 or 500 or 502 or 503 or 504;
+
+    /// <summary>The hex of a digest GitHub gives as "sha256:…", or null when it gives none or another kind.</summary>
+    internal static string? Sha256Of(string? digest)
+    {
+        const string prefix = "sha256:";
+        if (digest is null || !digest.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var hex = digest[prefix.Length..].Trim();
+        return hex.Length == 64 && hex.All(Uri.IsHexDigit) ? hex : null;
+    }
+
+    private static async Task<bool> MatchesAsync(string path, string sha256, CancellationToken ct)
+    {
+        await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, useAsync: true);
+        var hash = await System.Security.Cryptography.SHA256.HashDataAsync(file, ct).ConfigureAwait(false);
+        return string.Equals(Convert.ToHexString(hash), sha256, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Removes what earlier updates left in the temporary folder: the archives downloaded or received, and the
+    /// folders they were unpacked into. Nothing ever did, at seventy megabytes a version. Only what is older than
+    /// a day, so that an update in progress is never touched.
+    /// </summary>
+    public void CleanUpLeftovers()
+    {
+        try
+        {
+            var temp = Path.GetTempPath();
+            var old = DateTime.UtcNow.AddDays(-1);
+            foreach (var file in Directory.EnumerateFiles(temp, "WinMirroring-*.zip"))
+            {
+                try
+                {
+                    if (File.GetLastWriteTimeUtc(file) < old)
+                    {
+                        File.Delete(file);
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                }
+            }
+
+            foreach (var folder in Directory.EnumerateDirectories(temp, "WinMirroring-update-*"))
+            {
+                try
+                {
+                    if (Directory.GetLastWriteTimeUtc(folder) < old)
+                    {
+                        Directory.Delete(folder, recursive: true);
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogDebug("Could not look for old update files: {Message}", ex.Message);
+        }
+    }
 
     /// <summary>Hands the downloaded zip to update.ps1, which closes the app, swaps the build and restarts it.</summary>
     public bool Apply(string zipPath)

@@ -6,18 +6,27 @@ using Microsoft.Extensions.Logging;
 namespace WinMirroring.Core.Media;
 
 /// <summary>
-/// Asks Windows to send this device's sound ahead of everything else it is sending, through the system's own
-/// quality-of-service service (qWAVE).
+/// Asks Windows to send what the media socket sends to a peer ahead of this device's ordinary traffic, through the
+/// system's own quality-of-service service (qWAVE).
 ///
 /// This matters most on Wi-Fi, and for a reason that has nothing to do with bandwidth. Wireless traffic is sorted
-/// into four classes, and a station's bulk class — where a screen stream at several megabits a second lives — can
-/// hold the air for long stretches at a time. A sound packet behind it waits, and fifty of them a second each
-/// waiting a few tens of milliseconds is exactly the uneven arrival that empties a playout buffer. Marking the
-/// media socket as voice traffic puts it in the class that goes first, both in Windows' own send queues and in the
-/// wireless adapter.
+/// into four classes, and a station's bulk class — where everything on the session's TCP connection lives, a
+/// screen stream that travels there included, and whatever else the machine is up or downloading — can hold the
+/// air for long stretches at a time. A sound packet behind it waits, and fifty of them a second each waiting a
+/// few tens of milliseconds is exactly the uneven arrival that empties a playout buffer. Marking the media socket
+/// as voice traffic puts it in the class that goes first, both in Windows' own send queues and in the wireless
+/// adapter.
+///
+/// What this does not do is put sound ahead of the screen's video, though it was written as if it did. To qWAVE a
+/// flow is a socket and a destination, and a node has one media socket: the sound and the video datagrams of a
+/// screen stream (VideoLink) leave it for the same address and port, so they are one flow with one class. Both ask
+/// for it, and are counted, so the marking lasts for as long as either is sending; but whichever asked, both
+/// travel as voice, and between themselves they go out in the order they were written. Sound is ahead of the
+/// screen only while the screen is on the TCP connection. Putting it ahead of video sent from here would take a
+/// socket of its own for one of the two, which is a change to how media is sent and received, not to this class.
 ///
 /// Entirely best-effort: on a machine where the service is off, or where marking is not permitted, every call here
-/// quietly does nothing and the sound simply travels as it did before.
+/// quietly does nothing and the media simply travels as it did before.
 /// </summary>
 internal sealed class MediaPriority : IDisposable
 {
@@ -41,7 +50,10 @@ internal sealed class MediaPriority : IDisposable
         _logger = logger;
     }
 
-    /// <summary>Marks what this socket sends to <paramref name="peer"/> as voice traffic.</summary>
+    /// <summary>
+    /// Marks what this socket sends to <paramref name="peer"/> as voice traffic — all of it, sound and video
+    /// alike. Counted, so each call is to be matched by one <see cref="Remove"/>.
+    /// </summary>
     public void Add(IPEndPoint peer)
     {
         ArgumentNullException.ThrowIfNull(peer);
@@ -53,7 +65,7 @@ internal sealed class MediaPriority : IDisposable
         {
             // No quality-of-service library on this machine at all. Nothing here is worth failing a stream over.
             _unavailable = true;
-            _logger.LogDebug("Sound cannot be prioritised on this machine: {Message}", ex.Message);
+            _logger.LogDebug("Media cannot be prioritised on this machine: {Message}", ex.Message);
         }
     }
 
@@ -75,7 +87,7 @@ internal sealed class MediaPriority : IDisposable
             var flowId = 0u;
             if (!QOSAddSocketToFlow(_handle, _socket.Handle, Serialize(peer), QosTrafficTypeVoice, QosNonAdaptiveFlow, ref flowId))
             {
-                _logger.LogDebug("Sound to {Peer} could not be given priority (error {Error})", peer, Marshal.GetLastWin32Error());
+                _logger.LogDebug("Media to {Peer} could not be given priority (error {Error})", peer, Marshal.GetLastWin32Error());
                 return;
             }
 
@@ -86,7 +98,7 @@ internal sealed class MediaPriority : IDisposable
             QOSSetFlow(_handle, flowId, QosSetOutgoingDscpValue, sizeof(uint), ref dscp, 0, nint.Zero);
 
             _flows[peer] = new Flow { Id = flowId, Users = 1 };
-            _logger.LogInformation("Sound to {Peer} goes out as voice traffic", peer);
+            _logger.LogInformation("Media to {Peer}, sound and screen video alike, goes out as voice traffic", peer);
         }
     }
 
@@ -127,7 +139,7 @@ internal sealed class MediaPriority : IDisposable
 
         _unavailable = true;
         _logger.LogDebug(
-            "Windows quality of service is not available (error {Error}); sound will not be prioritised",
+            "Windows quality of service is not available (error {Error}); media will not be prioritised",
             Marshal.GetLastWin32Error());
         return false;
     }

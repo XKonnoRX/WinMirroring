@@ -174,9 +174,17 @@ public sealed class PeerConnection : IAsyncDisposable
     /// lock released between them: a key frame or half a megabyte of tiles must not keep a key press, a frame
     /// acknowledgement or the heartbeat waiting behind it (which, with a 20-second idle timeout, could end the
     /// session over nothing more than a slow link).
+    ///
+    /// A message over the protocol limit is refused whole, with a <see cref="MessageTooLargeException"/>, before
+    /// its first part is written: the other side would add the parts up, find them too many and drop the session.
     /// </summary>
     public async ValueTask SendAsync(ChannelId channel, ReadOnlyMemory<byte> payload, CancellationToken ct)
     {
+        if (payload.Length > ProtocolConstants.MaxFrameSize)
+        {
+            throw new MessageTooLargeException(channel, payload.Length);
+        }
+
         if (payload.Length <= FrameCodec.MaxUnsplitPayload)
         {
             await _writeLock.WaitAsync(ct).ConfigureAwait(false);

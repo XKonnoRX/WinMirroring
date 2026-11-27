@@ -110,6 +110,7 @@ internal static class OfferDownloader
         var lastReport = Environment.TickCount64;
 
         int current = -1;
+        long arrived = 0;
         MemoryStream? small = null;
         FileStream? large = null;
 
@@ -126,6 +127,7 @@ internal static class OfferDownloader
                 if (index != current)
                 {
                     current = index;
+                    arrived = 0;
                     small?.Dispose();
                     small = null;
                     if (large is not null)
@@ -136,6 +138,25 @@ internal static class OfferDownloader
                 }
 
                 var entry = manifest.Entries[index];
+                if (record.Kind == BundleRecordKind.Data)
+                {
+                    // Everything here goes by the size the offer announced: the progress, the memory a small file is
+                    // gathered in, the room on the disk. A device that sends more is stopped at the first byte too
+                    // many — not at the file's end record, which it need never send while this fills up.
+                    arrived += record.Data.Length;
+                    if (arrived > entry.Size)
+                    {
+                        if (large is not null)
+                        {
+                            await large.DisposeAsync().ConfigureAwait(false);
+                            large = null;
+                            File.Delete(targets[index] + ".part");
+                        }
+
+                        throw new IOException($"The other device sent more of «{entry.Path}» than it announced.");
+                    }
+                }
+
                 switch (record.Kind)
                 {
                     case BundleRecordKind.Data when needed[index]:
