@@ -140,6 +140,18 @@ internal sealed class SendWindow : IDisposable
         }
     }
 
+    /// <summary>The number of the oldest frame still unanswered, or null while none is.</summary>
+    public uint? OldestFrame
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _inFlight.Count == 0 ? null : _inFlight[0].FrameNo;
+            }
+        }
+    }
+
     /// <summary>Takes a slot for a frame nobody numbered: they are then answered in the order they went out.</summary>
     public Task TakeAsync(CancellationToken ct)
     {

@@ -29,10 +29,37 @@ internal sealed class VideoReassembly
     /// </summary>
     public delegate void PictureHandler(uint frameNo, int width, int height, bool keyframe, ReadOnlySpan<byte> picture, byte tag);
 
+    // ---- asking for pieces again --------------------------------------------------------------------------
+    //
+    // Giving a picture up at once was right while there was nothing else to do about a missing piece. Where the
+    // source will send pieces again (see ViewerReplies), there is: the round trip on a local network is a few
+    // milliseconds, so a piece asked for is here long before the picture would have been missed. So a picture
+    // found incomplete is asked about first and waited for a little longer, and only then given up.
+
+    /// <summary>With pieces on request, a picture is given up once this many later ones have begun to arrive...</summary>
+    internal const uint LeadWhenAsking = 4;
+
+    /// <summary>...or this long after a later one first turned up.</summary>
+    internal static readonly TimeSpan RepairWait = TimeSpan.FromMilliseconds(40);
+
+    /// <summary>A request that has brought nothing in this long is made once more, and that is all.</summary>
+    internal static readonly TimeSpan AskTwiceAfter = TimeSpan.FromMilliseconds(12);
+
+    /// <summary>A picture that has had no new piece for this long is not merely still arriving.</summary>
+    internal static readonly TimeSpan QuietBeforeAsking = TimeSpan.FromMilliseconds(5);
+
+    /// <summary>A picture with nothing after it, asked about and still in pieces after this long, is given up too.</summary>
+    internal static readonly TimeSpan AloneFor = TimeSpan.FromMilliseconds(80);
+
     private readonly PictureHandler _deliver;
     private readonly Action<uint> _giveUp;
     private readonly Func<long> _now;
+    private readonly Action<uint, IReadOnlyList<int>>? _askAgain;
     private readonly Dictionary<uint, Picture> _pictures = [];
+
+    /// <summary>How many times each picture has been asked about, and when last.</summary>
+    private readonly Dictionary<uint, (int Times, long At)> _asked = [];
+    private long _asks;
 
     private uint _next;
     private uint _newest;
@@ -56,12 +83,21 @@ internal sealed class VideoReassembly
     /// and a test that has to actually let them pass is a test that fails whenever the machine is busy — which is
     /// what it did, about one run in three under the load of the whole suite.
     /// </summary>
-    public VideoReassembly(PictureHandler deliver, Action<uint> giveUp, Func<long>? now = null)
+    /// <remarks>
+    /// <paramref name="askAgain"/>, where the source will answer it, is told which pieces of a picture are missing
+    /// (none named: all of it) so that it can ask for them; with it, a picture is waited for a little longer
+    /// before it is given up. Without it everything is as it was.
+    /// </remarks>
+    public VideoReassembly(PictureHandler deliver, Action<uint> giveUp, Func<long>? now = null, Action<uint, IReadOnlyList<int>>? askAgain = null)
     {
         _deliver = deliver;
         _giveUp = giveUp;
         _now = now ?? (() => Environment.TickCount64);
+        _askAgain = askAgain;
     }
+
+    /// <summary>Requests made for pieces to be sent again.</summary>
+    public long Asked => _asks;
 
     /// <summary>Pictures handed over whole, of which this many had a lost piece rebuilt from the parity.</summary>
     public long Delivered => _delivered;
@@ -105,6 +141,7 @@ internal sealed class VideoReassembly
         }
 
         var picture = Taken(header);
+        picture.LastAt = _now();
         if (header.IsParity)
         {
             picture.Parities[header.Block] ??= new byte[VideoDatagram.PayloadSize];
@@ -118,7 +155,47 @@ internal sealed class VideoReassembly
         }
 
         Repair(picture, header.Block);
+
+        // The last datagram of a picture is the parity of its last block. When that is here and the picture is
+        // still not whole, what is missing is not on its way: it is asked for now, not when the next picture
+        // happens to arrive.
+        if (!picture.Complete && header.Count > 1 && header.IsParity && header.Block == VideoDatagram.Blocks(header.Count) - 1)
+        {
+            Ask(header.FrameNo, picture, picture.LastAt);
+        }
+
         Flush();
+    }
+
+    /// <summary>Asks for what is missing of a picture — all of it when none of it has arrived — twice at most.</summary>
+    private void Ask(uint frameNo, Picture? picture, long now)
+    {
+        if (_askAgain is null)
+        {
+            return;
+        }
+
+        _asked.TryGetValue(frameNo, out var state);
+        if (state.Times >= 2 || (state.Times == 1 && now - state.At < AskTwiceAfter.TotalMilliseconds))
+        {
+            return;
+        }
+
+        _asked[frameNo] = (state.Times + 1, now);
+        var missing = new List<int>();
+        if (picture is not null)
+        {
+            for (var i = 0; i < picture.Count; i++)
+            {
+                if (!picture.Have[i])
+                {
+                    missing.Add(i);
+                }
+            }
+        }
+
+        _asks++;
+        _askAgain(frameNo, missing);
     }
 
     /// <summary>
@@ -200,9 +277,25 @@ internal sealed class VideoReassembly
                 continue;
             }
 
-            var overdue = _newest > _next
-                && (_newest - _next >= Lead
-                    || (_overdueSince is { } since && _now() - since >= Reorder.TotalMilliseconds));
+            if (_newest <= _next)
+            {
+                return; // nothing later has turned up, so nothing says this one is late
+            }
+
+            bool overdue;
+            var now = _now();
+            if (_askAgain is null)
+            {
+                overdue = _newest - _next >= Lead || (_overdueSince is { } since && now - since >= Reorder.TotalMilliseconds);
+            }
+            else
+            {
+                // A later picture is here and this one is not whole: ask for what is missing (the first time this
+                // is seen, and once more if that brought nothing), and give it the time an answer takes.
+                Ask(_next, picture, now);
+                overdue = _newest - _next >= LeadWhenAsking || (_overdueSince is { } since && now - since >= RepairWait.TotalMilliseconds);
+            }
+
             if (!overdue)
             {
                 return;
@@ -218,6 +311,7 @@ internal sealed class VideoReassembly
     private void Advance()
     {
         _pictures.Remove(_next);
+        _asked.Remove(_next);
         _next++;
 
         // The wait for this one starts now, however long the one before it took.
@@ -243,6 +337,11 @@ internal sealed class VideoReassembly
             _pictures.Remove(stale);
         }
 
+        foreach (var stale in _asked.Keys.Where(number => number <= frameNo).ToList())
+        {
+            _asked.Remove(stale);
+        }
+
         _next = frameNo + 1;
         _overdueSince = _newest > _next ? _now() : null;
         Flush();
@@ -253,7 +352,35 @@ internal sealed class VideoReassembly
     /// is enough while pictures keep coming — but a picture lost just as the screen stops changing would otherwise
     /// hold the one after it, the one that shows what the screen settled on, until the screen moved again.
     /// </summary>
-    public void Tick() => Flush();
+    public void Tick()
+    {
+        if (_askAgain is not null && _pictures.Count > 0)
+        {
+            var now = _now();
+            foreach (var (frameNo, picture) in _pictures.ToList())
+            {
+                if (!picture.Complete && now - picture.LastAt >= QuietBeforeAsking.TotalMilliseconds)
+                {
+                    Ask(frameNo, picture, now);
+                }
+            }
+
+            // Alone, in pieces, asked about and still not whole: nothing later will come to say it is late, so
+            // the clock says it. Giving it up is what has the source send a fresh picture.
+            if (_newest <= _next
+                && _pictures.TryGetValue(_next, out var first)
+                && !first.Complete
+                && now - first.FirstAt >= AloneFor.TotalMilliseconds)
+            {
+                _lost++;
+                var number = _next;
+                Advance();
+                _giveUp(number);
+            }
+        }
+
+        Flush();
+    }
 
     /// <summary>
     /// The picture this datagram belongs to, made if it is the first piece of it to arrive. A datagram that
@@ -281,6 +408,7 @@ internal sealed class VideoReassembly
             Height = header.Height,
             Keyframe = header.Keyframe,
             Tag = header.Tag,
+            FirstAt = _now(),
         };
 
         _pictures[header.FrameNo] = picture;
@@ -301,6 +429,10 @@ internal sealed class VideoReassembly
         public int Height;
         public bool Keyframe;
         public byte Tag;
+
+        /// <summary>When its first piece arrived, and its latest.</summary>
+        public long FirstAt;
+        public long LastAt;
 
         public bool Complete => Received == Count;
     }

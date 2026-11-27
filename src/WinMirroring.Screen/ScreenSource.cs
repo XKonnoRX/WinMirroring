@@ -123,6 +123,10 @@ internal sealed class ScreenSource : IAsyncDisposable
     /// </summary>
     private const double TailLossAfterMs = 100;
 
+    /// <summary>...and how long before the same picture is simply sent a second time, which is tried first.</summary>
+    private const double TailResendAfterMs = 30;
+    private uint _tailResent;
+
     private readonly ScreenSettings _settings;
     private readonly ILogger _logger;
     private readonly InputInjector _injector = new();
@@ -291,7 +295,8 @@ internal sealed class ScreenSource : IAsyncDisposable
         Codec,
         _monitor?.DeviceName ?? string.Empty,
         _link?.Key ?? string.Empty,
-        CropTags: true);
+        CropTags: true,
+        MediaReplies: _link is not null);
 
     /// <summary>Viewer side runs a copy of the window: carry out a command on this device's real window.</summary>
     public void OnWindowCommand(WindowCommand command)
@@ -397,6 +402,28 @@ internal sealed class ScreenSource : IAsyncDisposable
     {
         _window.OnAck(frameNo, viewerMs, paintMs);
         _link?.Acknowledged();
+    }
+
+    /// <summary>
+    /// A datagram from the viewer: acknowledgements, which are acted on exactly as the ones that come on the
+    /// connection are (the same one arriving both ways is counted once), or a request for pieces of a picture,
+    /// which the link answers itself.
+    /// </summary>
+    public void OnMediaPacket(ReadOnlySpan<byte> packet)
+    {
+        if (_link is not { } link)
+        {
+            return;
+        }
+
+        var acks = new List<ViewerReplies.Ack>(ViewerReplies.AcksPerDatagram);
+        if (link.Receive(packet, acks))
+        {
+            foreach (var ack in acks)
+            {
+                OnAck(ack.FrameNo, ack.ViewerMs, ack.PaintMs);
+            }
+        }
     }
 
     /// <summary>The viewer is receiving this stream's UDP probes: its pictures move off the connection.</summary>
@@ -851,10 +878,23 @@ internal sealed class ScreenSource : IAsyncDisposable
                 // Nothing new on the screen and a picture still unanswered: on UDP that is what a lost last picture
                 // looks like from here (see TailLossAfterMs). A whole one goes after it — and again, no more often
                 // than whole pictures are ever sent, until one is answered.
-                if (!fresh && seen != 0 && _link is { Carries: true }
-                    && _window.OldestAgeMs > Math.Max(TailLossAfterMs, _window.DelayMs * 3))
+                if (!fresh && seen != 0 && _link is { Carries: true } carrying)
                 {
-                    OnRefreshRequested();
+                    var waited = _window.OldestAgeMs;
+                    if (waited > Math.Max(TailLossAfterMs, _window.DelayMs * 3))
+                    {
+                        OnRefreshRequested();
+                    }
+                    else if (waited > Math.Max(TailResendAfterMs, _window.DelayMs * 2)
+                        && _window.OldestFrame is { } unanswered
+                        && unanswered != _tailResent)
+                    {
+                        // Sooner than that, and cheaper: the same picture again. If it was the picture that was
+                        // lost this puts it right without a whole one; if it was only its acknowledgement, the
+                        // viewer has it already and the copy changes nothing.
+                        _tailResent = unanswered;
+                        carrying.Resend(unanswered, []);
+                    }
                 }
 
                 // Here rather than further down, so that the measurements and the stream's own line in the log keep
@@ -1286,7 +1326,7 @@ internal sealed class ScreenSource : IAsyncDisposable
             return false;
         }
 
-        return link.TrySend(frameNo, width, height, keyframe, message.AsSpan(offset), ScreenCodec.VideoCropId(message));
+        return link.TrySend(frameNo, width, height, keyframe, message, offset, ScreenCodec.VideoCropId(message));
     }
 
     /// <summary>
@@ -1354,7 +1394,7 @@ internal sealed class ScreenSource : IAsyncDisposable
                 StreamId,
                 Session.PeerName,
                 Codec,
-                _link is { Carries: true } carrying ? $"UDP ({carrying.Datagrams} datagrams)" : "the connection",
+                _link is { Carries: true } carrying ? $"UDP ({carrying.Datagrams} datagrams, {carrying.Resent} sent again)" : "the connection",
                 frames / seconds,
                 bytes * 8 / 1000.0 / seconds,
                 _pacing.Share,

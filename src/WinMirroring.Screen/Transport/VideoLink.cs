@@ -83,6 +83,47 @@ internal sealed class VideoLink : IDisposable
     private readonly byte[] _datagram = new byte[VideoDatagram.SafeDatagramBytes];
     private readonly object _gate = new();
 
+    /// <summary>
+    /// Held around everything that seals and sends. It used to be enough that only the stream's send loop did
+    /// either; now a request for pieces arrives on the thread that receives, and is answered from there, at once.
+    /// </summary>
+    private readonly object _sendGate = new();
+
+    /// <summary>A second cipher on the same key, for opening what the viewer sends: a cipher serves one thread at a time.</summary>
+    private readonly MediaCipher _inbound;
+    private readonly byte[] _reply = new byte[ViewerReplies.MaxPayload + 16];
+    private readonly Action<byte[]>? _sink;
+
+    /// <summary>
+    /// The pictures sent lately, kept so that pieces of them can be sent again when the viewer says it is missing
+    /// some. Not for long and not many: a picture is only worth sending again while it is still the one the
+    /// viewer is waiting to show.
+    /// </summary>
+    private sealed class Kept
+    {
+        public uint FrameNo;
+        public int Width;
+        public int Height;
+        public bool Keyframe;
+        public byte Tag;
+        public byte[] Message = [];
+        public int Offset;
+        public int Length;
+        public long At;
+        public int Resends;
+    }
+
+    private readonly Queue<Kept> _kept = new();
+    private long _keptBytes;
+    private long _resent;
+
+    internal const int MostKept = 64;
+    internal const long MostKeptBytes = 8 << 20;
+    internal static readonly TimeSpan KeptFor = TimeSpan.FromMilliseconds(1500);
+
+    /// <summary>How many times pieces of one picture are sent again before requests for it are ignored.</summary>
+    internal const int MostResendsOfOne = 3;
+
     private ulong _sequence;
     private long _datagrams;
     private bool _disposed;
@@ -99,8 +140,10 @@ internal sealed class VideoLink : IDisposable
     private int _unanswered;
     private bool _everRested;
 
-    private VideoLink(MirroringNode? node, PeerSession? session, uint streamId, byte[] key, ILogger logger, Func<long>? now)
+    private VideoLink(MirroringNode? node, PeerSession? session, uint streamId, byte[] key, ILogger logger, Func<long>? now, Action<byte[]>? sink = null)
     {
+        _sink = sink;
+        _inbound = new MediaCipher(key);
         _node = node;
         _session = session;
         _streamId = streamId;
@@ -128,6 +171,9 @@ internal sealed class VideoLink : IDisposable
 
     public long Datagrams => Interlocked.Read(ref _datagrams);
 
+    /// <summary>Datagrams sent a second time because the viewer asked for them.</summary>
+    public long Resent => Interlocked.Read(ref _resent);
+
     /// <summary>Null when this node has no media socket at all; the stream then stays on the connection.</summary>
     public static VideoLink? TryCreate(MirroringNode node, PeerSession session, uint streamId, ILogger logger)
     {
@@ -142,8 +188,9 @@ internal sealed class VideoLink : IDisposable
     }
 
     /// <summary>A link that sends nowhere and reads the given clock: the decisions, without a network to make them on.</summary>
-    internal static VideoLink ForTest(ILogger logger, Func<long> now) =>
-        new(null, null, 1, MediaCipher.GenerateKey(), logger, now);
+    /// <remarks><paramref name="sink"/> is handed every datagram that would have gone out, sealed as it would have been.</remarks>
+    internal static VideoLink ForTest(ILogger logger, Func<long> now, Action<byte[]>? sink = null) =>
+        new(null, null, 1, MediaCipher.GenerateKey(), logger, now, sink);
 
     /// <summary>
     /// The viewer says it is receiving the probes: from here on the pictures go by UDP. True when that is news —
@@ -263,6 +310,17 @@ internal sealed class VideoLink : IDisposable
     /// </summary>
     public bool TrySend(uint frameNo, int width, int height, bool keyframe, ReadOnlySpan<byte> picture, byte tag = 0)
     {
+        var copy = picture.ToArray();
+        return TrySend(frameNo, width, height, keyframe, copy, 0, tag);
+    }
+
+    /// <summary>
+    /// The same, for a picture that is the tail of <paramref name="message"/> from <paramref name="offset"/> on.
+    /// The array is kept for a while (see <see cref="Kept"/>) and must not be written to afterwards.
+    /// </summary>
+    public bool TrySend(uint frameNo, int width, int height, bool keyframe, byte[] message, int offset, byte tag = 0)
+    {
+        var picture = message.AsSpan(offset);
         if (picture.Length == 0
             || picture.Length > VideoDatagram.MaxPictureBytes
             || VideoDatagram.Fragments(picture.Length) > VideoDatagram.MaxFragments)
@@ -311,24 +369,150 @@ internal sealed class VideoLink : IDisposable
             return false;
         }
 
-        var pieces = VideoDatagram.Pieces(picture.Length);
-        for (var piece = 0; piece < pieces; piece++)
+        lock (_sendGate)
         {
-            var length = VideoDatagram.Write(_plain, frameNo, width, height, keyframe, picture, piece, tag);
-            Send(FrameKind, _plain.AsSpan(0, length));
+            var pieces = VideoDatagram.Pieces(picture.Length);
+            for (var piece = 0; piece < pieces; piece++)
+            {
+                var length = VideoDatagram.Write(_plain, frameNo, width, height, keyframe, picture, piece, tag);
+                SendLocked(FrameKind, _plain.AsSpan(0, length));
+            }
+
+            Keep(new Kept
+            {
+                FrameNo = frameNo, Width = width, Height = height, Keyframe = keyframe, Tag = tag,
+                Message = message, Offset = offset, Length = picture.Length, At = now,
+            });
         }
 
         return true;
     }
 
+    private void Keep(Kept sent)
+    {
+        _kept.Enqueue(sent);
+        _keptBytes += sent.Length;
+        while (_kept.Count > 1
+            && (_kept.Count > MostKept || _keptBytes > MostKeptBytes || sent.At - _kept.Peek().At > KeptFor.TotalMilliseconds))
+        {
+            _keptBytes -= _kept.Dequeue().Length;
+        }
+    }
+
+    /// <summary>
+    /// Sends pieces of a picture again: the ones named, or the whole of it when none are. How many datagrams went
+    /// out — none when the picture is no longer kept, or has been asked for too often already, in which case the
+    /// viewer gives it up in its own time and asks for a fresh picture as it always did.
+    /// </summary>
+    public int Resend(uint frameNo, IReadOnlyList<int> pieces)
+    {
+        lock (_sendGate)
+        {
+            if (_disposed || _kept.FirstOrDefault(k => k.FrameNo == frameNo) is not { } kept || kept.Resends >= MostResendsOfOne)
+            {
+                return 0;
+            }
+
+            kept.Resends++;
+            var picture = kept.Message.AsSpan(kept.Offset, kept.Length);
+            var count = VideoDatagram.Fragments(kept.Length);
+            var sent = 0;
+            if (pieces.Count == 0)
+            {
+                var all = VideoDatagram.Pieces(kept.Length);
+                for (var piece = 0; piece < all; piece++)
+                {
+                    var length = VideoDatagram.Write(_plain, kept.FrameNo, kept.Width, kept.Height, kept.Keyframe, picture, piece, kept.Tag);
+                    SendLocked(FrameKind, _plain.AsSpan(0, length));
+                    sent++;
+                }
+            }
+            else
+            {
+                foreach (var piece in pieces)
+                {
+                    if (piece < 0 || piece >= count)
+                    {
+                        continue; // not a piece of this picture; a parity is never asked for
+                    }
+
+                    var length = VideoDatagram.Write(_plain, kept.FrameNo, kept.Width, kept.Height, kept.Keyframe, picture, piece, kept.Tag);
+                    SendLocked(FrameKind, _plain.AsSpan(0, length));
+                    sent++;
+                }
+            }
+
+            Interlocked.Add(ref _resent, sent);
+            return sent;
+        }
+    }
+
+    /// <summary>
+    /// A datagram from the viewer (see <see cref="ViewerReplies"/>): acknowledgements are added to
+    /// <paramref name="acks"/> for the caller to act on, and a request for pieces is answered here. False when it
+    /// is not the viewer's, or not for this stream, or not one of the two.
+    /// </summary>
+    public bool Receive(ReadOnlySpan<byte> packet, List<ViewerReplies.Ack> acks)
+    {
+        if (!MediaCipher.TryReadHeader(packet, out var kind, out _, out var sequence)
+            || sequence < ViewerReplies.ViewerSequenceBase
+            || kind is not (ViewerReplies.AckKind or ViewerReplies.ResendKind))
+        {
+            return false;
+        }
+
+        uint frameNo;
+        var pieces = new List<int>();
+        lock (_reply)
+        {
+            if (_disposed || !_inbound.TryOpen(packet, _reply, out var length))
+            {
+                return false;
+            }
+
+            if (kind == ViewerReplies.AckKind)
+            {
+                return ViewerReplies.TryReadAcks(_reply.AsSpan(0, length), acks);
+            }
+
+            if (!ViewerReplies.TryReadResend(_reply.AsSpan(0, length), out frameNo, pieces))
+            {
+                return false;
+            }
+        }
+
+        Resend(frameNo, pieces);
+        return true;
+    }
+
     private void Send(byte kind, ReadOnlySpan<byte> plaintext)
     {
-        if (_disposed || _node is null || _session is null)
+        lock (_sendGate)
+        {
+            SendLocked(kind, plaintext);
+        }
+    }
+
+    private void SendLocked(byte kind, ReadOnlySpan<byte> plaintext)
+    {
+        if (_disposed)
         {
             return;
         }
 
         var length = _cipher.Seal(kind, _streamId, _sequence++, plaintext, _datagram);
+        if (_sink is not null)
+        {
+            _sink(_datagram.AsSpan(0, length).ToArray());
+            Interlocked.Increment(ref _datagrams);
+            return;
+        }
+
+        if (_node is null || _session is null)
+        {
+            return;
+        }
+
         if (_node.SendMedia(_session.PeerTransportEndPoint, _datagram.AsSpan(0, length)))
         {
             Interlocked.Increment(ref _datagrams);
@@ -342,10 +526,19 @@ internal sealed class VideoLink : IDisposable
             return;
         }
 
-        _disposed = true;
+        lock (_sendGate)
+        {
+            _disposed = true;
+        }
+
         if (_node is not null && _session is not null)
         {
             _node.ReleaseMediaPriority(_session.PeerTransportEndPoint);
+        }
+
+        lock (_reply)
+        {
+            _inbound.Dispose();
         }
 
         _cipher.Dispose();

@@ -532,6 +532,111 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
         await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
     }
 
+    /// <summary>
+    /// A link that loses one datagram in twelve, which is a bad evening on Wi-Fi. A whole picture is fifty
+    /// datagrams or more, so nearly every one of them loses more than its parity can put back — and used to be
+    /// given up, a fresh one asked for, and that one lost in turn. Now the pieces are asked for again, and the
+    /// pictures arrive.
+    /// </summary>
+    [Fact(Explicit = true)]
+    public async Task PicturesGetThroughALinkThatLosesOneDatagramInTwelve()
+    {
+        if (!VideoCodecSupport.CanEncodeH264 || !VideoCodecSupport.CanDecodeH264)
+        {
+            Assert.Skip("No hardware H.264 encoder (or no decoder) on this machine.");
+        }
+
+        var ct = TestContext.Current.CancellationToken;
+        var discoveryA = FreeUdpPort();
+        var discoveryB = FreeUdpPort();
+        var a = CreateNode("LossA", discoveryA, $"127.0.0.1:{discoveryB}");
+        var b = CreateNode("LossB", discoveryB, $"127.0.0.1:{discoveryA}");
+        a.Settings.Screen.VideoCodec = Core.Settings.VideoCodec.Auto;
+        await a.StartAsync();
+        await b.StartAsync();
+
+        var log = Path.Combine(Path.GetTempPath(), "winmirroring-stream-loss.log");
+        File.WriteAllText(log, string.Empty);
+        await using var screenA = new ScreenStreamingService(a, new FileLogger<ScreenStreamingService>(log));
+        await using var screenB = new ScreenStreamingService(b, new FileLogger<ScreenStreamingService>(log));
+        screenA.Start();
+        screenB.Start();
+
+        await WaitUntilAsync(() => b.Peers.TryGet(a.Identity.Id, out var peer) && peer.TransportEndPoint is not null, ct);
+        Assert.True(await b.PairAsync(a.Identity.Id, ct));
+        await WaitUntilAsync(() => a.Sessions.TryGetSession(b.Identity.Id, out var s) && s.State == SessionState.Ready, ct);
+        await WaitUntilAsync(() => screenA.PeerVirtualDisplay(b.Identity.Id) is not null, ct);
+
+        var opened = new TaskCompletionSource<ScreenViewer>(TaskCreationOptions.RunContinuationsAsynchronously);
+        screenB.ViewerOpened += viewer => opened.TrySetResult(viewer);
+        Assert.True(await screenB.RequestScreenAsync(a.Identity.Id, 0));
+        var viewer = await opened.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+        Assert.True(viewer.Info.MediaReplies, "the source should say it listens for what the viewer says by datagram");
+
+        var names = new HashSet<byte>();
+        viewer.Attach(update =>
+        {
+            lock (names)
+            {
+                names.Add(update.CropId);
+            }
+
+            viewer.FramePresented();
+        });
+
+        bool Came(byte name)
+        {
+            lock (names)
+            {
+                return names.Contains(name);
+            }
+        }
+
+        // On UDP first, with nothing lost; then the weather turns.
+        await WaitUntilAsync(() => viewer.Datagrams.Delivered > 0, ct);
+        var random = new Random(5);
+        screenB.LoseMediaForTest = kind => kind == Transport.VideoLink.FrameKind && random.Next(12) == 0;
+
+        // Asking for the whole screen under a new name is a whole picture each time.
+        async Task<(long Delivered, long Lost, long Repaired)> WholePicturesAsync(byte from, byte to)
+        {
+            var before = viewer.Datagrams;
+            for (var name = from; name <= to; name++)
+            {
+                viewer.SetCrop(ViewParts.Whole, name);
+                var wanted = name;
+                await WaitUntilAsync(() => Came(wanted), ct);
+            }
+
+            var after = viewer.Datagrams;
+            return (after.Delivered - before.Delivered, after.Lost - before.Lost, after.Repaired - before.Repaired);
+        }
+
+        // First as it used to be: the source does not hear requests for pieces, so nothing is sent again.
+        screenA.LoseMediaForTest = kind => kind == Transport.ViewerReplies.ResendKind;
+        var deaf = await WholePicturesAsync(11, 30);
+
+        // Then as it is.
+        screenA.LoseMediaForTest = null;
+        var asked = viewer.PiecesAskedFor;
+        var heard = await WholePicturesAsync(41, 60);
+        screenB.LoseMediaForTest = null;
+
+        var summary =
+            $"one datagram in twelve lost. Unanswered: {deaf.Delivered} pictures arrived, {deaf.Lost} given up, {deaf.Repaired} put back by parity. "
+            + $"Answered: {heard.Delivered} arrived, {heard.Lost} given up, {heard.Repaired} put back by parity, {viewer.PiecesAskedFor - asked} requests.";
+        File.AppendAllText(log, summary + Environment.NewLine);
+        TestContext.Current.TestOutputHelper?.WriteLine(summary);
+
+        Assert.True(heard.Delivered >= 20, summary);
+        Assert.True(viewer.PiecesAskedFor > asked, summary);
+        Assert.True(heard.Lost * 10 <= heard.Delivered, summary);
+        Assert.True(heard.Lost * 3 <= Math.Max(deaf.Lost, 3), summary);
+
+        viewer.Close();
+        await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
+    }
+
     private static List<(int Width, int Height)> Seen(List<(int Width, int Height)> sizes)
     {
         lock (sizes)

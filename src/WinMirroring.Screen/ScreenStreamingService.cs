@@ -550,7 +550,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             return; // monitors are only shown when we asked for them
         }
 
-        var viewer = new ScreenViewer(session, info, _logger);
+        var viewer = new ScreenViewer(session, info, _logger, datagram => _node.SendMedia(session.PeerTransportEndPoint, datagram));
         viewer.Closed += (closed, reason) => _viewers.TryRemove(closed.StreamId, out _);
         _viewers[info.StreamId] = viewer;
         _logger.LogInformation("Showing {Title} from {Peer}", info.Title, session.PeerName);
@@ -646,13 +646,30 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
     /// </summary>
     private void OnMediaPacket(IPEndPoint from, ReadOnlySpan<byte> packet)
     {
-        if (MediaCipher.TryReadHeader(packet, out var kind, out var streamId, out _)
-            && kind is VideoLink.FrameKind or VideoLink.ProbeKind
-            && _viewers.TryGetValue(streamId, out var viewer))
+        if (!MediaCipher.TryReadHeader(packet, out var kind, out var streamId, out _) || LoseMediaForTest?.Invoke(kind) == true)
         {
-            viewer.OnMediaPacket(kind, packet);
+            return;
+        }
+
+        if (kind is VideoLink.FrameKind or VideoLink.ProbeKind)
+        {
+            if (_viewers.TryGetValue(streamId, out var viewer))
+            {
+                viewer.OnMediaPacket(kind, packet);
+            }
+        }
+        else if (kind is ViewerReplies.AckKind or ViewerReplies.ResendKind && _sources.TryGetValue(streamId, out var source))
+        {
+            // What a viewer says back by datagram (see ViewerReplies). Only the stream's own key opens it.
+            source.OnMediaPacket(packet);
         }
     }
+
+    /// <summary>
+    /// For tests: asked for each media datagram that arrives here, by its kind, and true loses it. A loopback
+    /// network loses nothing, and what this is for is finding out what happens when a network does.
+    /// </summary>
+    internal Func<byte, bool>? LoseMediaForTest { get; set; }
 
     private bool TryGetReady(string peerId, out PeerSession session) =>
         _node.Sessions.TryGetSession(peerId, out session) && session.State == SessionState.Ready;

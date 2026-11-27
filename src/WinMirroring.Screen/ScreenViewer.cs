@@ -87,11 +87,15 @@ public sealed class ScreenViewer : IAsyncDisposable
     private long _reportedDecoded;
     private long _reportedSkipped;
 
-    internal ScreenViewer(PeerSession session, ScreenStreamMessage info, ILogger logger)
+    /// <summary>Sends one sealed datagram to the source; false when it could not go.</summary>
+    internal delegate bool MediaSender(ReadOnlySpan<byte> datagram);
+
+    internal ScreenViewer(PeerSession session, ScreenStreamMessage info, ILogger logger, MediaSender? sendMedia = null)
     {
         Session = session;
         Info = info;
         _logger = logger;
+        _sendMedia = sendMedia;
 
         OpenMediaPath(info.MediaKey);
 
@@ -447,7 +451,7 @@ public sealed class ScreenViewer : IAsyncDisposable
     private static readonly TimeSpan AnswerProbesEvery = TimeSpan.FromMilliseconds(400);
 
     /// <summary>Half a frame at sixty a second: how closely the clock is watched while a picture is in pieces.</summary>
-    private static readonly TimeSpan TickWhileWaiting = TimeSpan.FromMilliseconds(8);
+    private static readonly TimeSpan TickWhileWaiting = TimeSpan.FromMilliseconds(4);
 
     /// <summary>And how often the same loop so much as wakes while no picture is waiting for anything.</summary>
     private static readonly TimeSpan TickWhileIdle = TimeSpan.FromMilliseconds(50);
@@ -503,7 +507,17 @@ public sealed class ScreenViewer : IAsyncDisposable
             {
                 _mediaCipher?.Dispose();
                 _mediaCipher = new MediaCipher(bytes);
-                _reassembly = new VideoReassembly(OnWholePicture, OnLostPicture);
+
+                // Where the source listens for them, missing pieces are asked for again before a picture is
+                // given up (see ViewerReplies); where it does not, nothing is asked and nothing waits.
+                var replies = Info.MediaReplies && _sendMedia is not null;
+                _reassembly = new VideoReassembly(OnWholePicture, OnLostPicture, null, replies ? AskAgain : null);
+                lock (_replyGate)
+                {
+                    _replyCipher?.Dispose();
+                    _replyCipher = replies ? new MediaCipher(bytes) : null;
+                }
+
                 _mediaPlain = new byte[VideoDatagram.SafeDatagramBytes];
                 _mediaKey = key;
                 _mediaTicks ??= Task.Run(TickMediaAsync);
@@ -566,6 +580,84 @@ public sealed class ScreenViewer : IAsyncDisposable
         }
     }
 
+    // ---- saying things back by datagram ---------------------------------------------------------------
+    //
+    // See ViewerReplies for what and why. Sealed with the key the source handed over, under sequence numbers the
+    // source never uses, and through a cipher of their own: the one that opens what arrives is busy on the thread
+    // that receives.
+
+    private readonly MediaSender? _sendMedia;
+    private readonly object _replyGate = new();
+    private readonly byte[] _replyPlain = new byte[ViewerReplies.MaxPayload];
+    private readonly byte[] _replyPacket = new byte[ViewerReplies.MaxPayload + MediaCipher.Overhead];
+    private readonly ViewerReplies.Ack[] _lastAcks = new ViewerReplies.Ack[ViewerReplies.AcksPerDatagram];
+    private MediaCipher? _replyCipher;
+    private ulong _replySequence;
+    private int _lastAckCount;
+    private long _asked;
+    private long _reportedAsked;
+
+    /// <summary>How many times this view has asked for pieces of a picture to be sent again.</summary>
+    internal long PiecesAskedFor => Interlocked.Read(ref _asked);
+
+    /// <summary>Whether the source's datagrams are arriving here, so that the way back is worth trying at all.</summary>
+    private bool RepliesGo => Volatile.Read(ref _udpReported) != 0;
+
+    /// <summary>Called with <see cref="_replyGate"/> held; the payload is in <see cref="_replyPlain"/>.</summary>
+    private void SendReplyLocked(byte kind, int length)
+    {
+        if (_replyCipher is not { } cipher || _sendMedia is not { } send)
+        {
+            return;
+        }
+
+        try
+        {
+            var size = cipher.Seal(kind, StreamId, ViewerReplies.ViewerSequenceBase + _replySequence++, _replyPlain.AsSpan(0, length), _replyPacket);
+            send(_replyPacket.AsSpan(0, size));
+        }
+        catch (Exception ex) when (ex is ObjectDisposedException or System.Net.Sockets.SocketException or InvalidOperationException)
+        {
+            // The connection carries the same acknowledgement, and a request that does not go is a picture given
+            // up a little later, as it always was.
+        }
+    }
+
+    /// <summary>Pieces of a picture are missing (none named: all of it): ask the source to send them again.</summary>
+    private void AskAgain(uint frameNo, IReadOnlyList<int> pieces)
+    {
+        Interlocked.Increment(ref _asked);
+        lock (_replyGate)
+        {
+            SendReplyLocked(ViewerReplies.ResendKind, ViewerReplies.WriteResend(_replyPlain, frameNo, pieces));
+        }
+    }
+
+    /// <summary>
+    /// The acknowledgement that is also on its way on the connection, sent by datagram as well — with the few
+    /// before it, so that one of these going missing costs nothing.
+    /// </summary>
+    private void AckByDatagram(uint frameNo, int held, int painted)
+    {
+        if (!RepliesGo)
+        {
+            return;
+        }
+
+        lock (_replyGate)
+        {
+            if (_replyCipher is null)
+            {
+                return;
+            }
+
+            Array.Copy(_lastAcks, 0, _lastAcks, 1, _lastAcks.Length - 1);
+            _lastAcks[0] = new ViewerReplies.Ack(frameNo, held, painted);
+            _lastAckCount = Math.Min(_lastAckCount + 1, _lastAcks.Length);
+            SendReplyLocked(ViewerReplies.AckKind, ViewerReplies.WriteAcks(_replyPlain, _lastAcks.AsSpan(0, _lastAckCount)));
+        }
+    }
+
     /// <summary>A picture is whole: into the decoder it goes, exactly as one off the connection would.</summary>
     private void OnWholePicture(uint frameNo, int width, int height, bool keyframe, ReadOnlySpan<byte> picture, byte tag) =>
         Enqueue(ScreenCodec.EncodeVideoFrame(StreamId, frameNo, width, height, keyframe, picture, tag));
@@ -577,6 +669,7 @@ public sealed class ScreenViewer : IAsyncDisposable
     /// </summary>
     private void OnLostPicture(uint frameNo)
     {
+        AckByDatagram(frameNo, 0, 0);
         _outbox.Writer.TryWrite(ScreenCodec.EncodeAck(StreamId, frameNo, 0));
         _outbox.Writer.TryWrite(ScreenCodec.EncodeRequest(ScreenMessageType.Refresh, StreamId));
     }
@@ -997,12 +1090,14 @@ public sealed class ScreenViewer : IAsyncDisposable
         var (delivered, repaired, lost) = Datagrams;
         var hurried = _hurried - _reportedHurried;
         var onCard = _onCard - _reportedOnCard;
+        var asked = Interlocked.Read(ref _asked);
         _logger.LogInformation(
             "View of {Peer} (stream {Stream}): {Rate:F1} frames/s decoded, {Shown:F1} shown, {Skipped} not shown "
             + "while the window was busy, {Hurried} decoded without being drawn to catch up, {OnCard} left on the "
             + "graphics card for the window; by UDP {Delivered} pictures of which {Repaired} had a lost datagram "
-            + "rebuilt, {Lost} given up on",
-            PeerName, StreamId, decoded / seconds, (decoded - skipped - hurried) / seconds, skipped, hurried, onCard, delivered, repaired, lost);
+            + "rebuilt, {Lost} given up on, {Asked} requests for pieces to be sent again",
+            PeerName, StreamId, decoded / seconds, (decoded - skipped - hurried) / seconds, skipped, hurried, onCard, delivered, repaired, lost, asked - _reportedAsked);
+        _reportedAsked = asked;
         _reportedHurried = _hurried;
         _reportedOnCard = _onCard;
         _reportedTicks = now;
@@ -1037,6 +1132,9 @@ public sealed class ScreenViewer : IAsyncDisposable
     {
         var held = (int)Math.Round(Stopwatch.GetElapsedTime(arrived).TotalMilliseconds);
         var painted = Volatile.Read(ref _paintMs);
+
+        // By datagram first: it is the one that does not wait behind anything.
+        AckByDatagram(frameNo, held, Math.Max(painted, 0));
         return Session.SendAsync(ChannelId.Screen, ScreenCodec.EncodeAck(StreamId, frameNo, held, Math.Max(painted, 0)), ct).AsTask();
     }
 
@@ -1086,6 +1184,12 @@ public sealed class ScreenViewer : IAsyncDisposable
         {
             _mediaCipher?.Dispose();
             _mediaCipher = null;
+            lock (_replyGate)
+            {
+                _replyCipher?.Dispose();
+                _replyCipher = null;
+            }
+
             _reassembly = null;
         }
 
