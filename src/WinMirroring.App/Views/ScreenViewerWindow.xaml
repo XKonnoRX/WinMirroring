@@ -115,6 +115,10 @@
              ScreenViewerWindow.Detail). It takes no input: everything is still pointed at the picture underneath. -->
         <Image x:Name="DetailImage" Visibility="Collapsed" IsHitTestVisible="False" Stretch="Fill"
                RenderOptions.BitmapScalingMode="Linear" />
+        <!-- A screen that has stopped moving, sent once more as one sharp picture and laid over the video until
+             the next video frame (ScreenViewerWindow.Still). It does not change, so the careful scaling is free. -->
+        <Image x:Name="StillImage" Visibility="Collapsed" IsHitTestVisible="False" Stretch="Fill"
+               RenderOptions.BitmapScalingMode="HighQuality" />
         <Rectangle x:Name="CropRectangle" Stroke="#3B82F6" StrokeThickness="2" Fill="#333B82F6" Visibility="Collapsed" />
         <!-- The other device's pointer, drawn here rather than sent inside the picture: it then moves at the rate
              the mouse moves instead of the rate frames arrive. -->

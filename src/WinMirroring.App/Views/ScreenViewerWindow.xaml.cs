@@ -102,6 +102,8 @@ public partial class ScreenViewerWindow : Window
             _bar.Changed += OnButtonBarChanged;
         }
 
+        _viewer.StillArrived += (_, still) => Dispatcher.BeginInvoke(DispatcherPriority.Input, () => ShowStill(still));
+
         // The buttons follow the program in front on the other device (see RebuildButtonBar).
         _viewer.ForegroundChanged += _ => Dispatcher.BeginInvoke(OnForegroundChanged);
 
@@ -422,6 +424,9 @@ public partial class ScreenViewerWindow : Window
     {
         try
         {
+            // Any video frame is newer than the sharp picture of a screen that was standing still.
+            HideStill();
+
             if (PartOf(update) is { } part)
             {
                 if (part.IsEmpty)

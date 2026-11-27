@@ -56,6 +56,12 @@ public enum ScreenMessageType : byte
 
     /// <summary>Viewer → source: a picture was lost for good; send a whole one rather than a difference.</summary>
     Refresh = 14,
+
+    /// <summary>
+    /// Source → viewer: one whole picture of a screen that has stopped moving, sharper than video can make it
+    /// (see StillCodec). Laid over the video until the next video frame.
+    /// </summary>
+    Still = 15,
 }
 
 /// <summary>What a <see cref="ScreenMessageType.Window"/> message asks the captured window to do.</summary>
@@ -165,6 +171,45 @@ public static class ScreenCodec
     private const int VideoHeader = 16;
 
     /// <summary>VideoFrame: u32 frame no, u16 width, u16 height, u8 flags (bit0 keyframe), then the H.264 bytes.</summary>
+    private const int StillHeader = 16;
+
+    /// <summary>
+    /// type(1) stream(4) after(4) width(2) height(2) crop(1) reserved(2), then the picture. <paramref name="afterFrameNo"/>
+    /// is the last video frame sent before this picture was taken: the viewer shows it only while that is still
+    /// the newest it has, so a still that arrives after the screen has moved on is not laid over what moved.
+    /// </summary>
+    public static byte[] EncodeStill(uint streamId, uint afterFrameNo, int width, int height, byte cropId, ReadOnlySpan<byte> picture)
+    {
+        var message = new byte[StillHeader + picture.Length];
+        var span = message.AsSpan();
+        span[0] = (byte)ScreenMessageType.Still;
+        BinaryPrimitives.WriteUInt32LittleEndian(span[1..], streamId);
+        BinaryPrimitives.WriteUInt32LittleEndian(span[5..], afterFrameNo);
+        BinaryPrimitives.WriteUInt16LittleEndian(span[9..], (ushort)width);
+        BinaryPrimitives.WriteUInt16LittleEndian(span[11..], (ushort)height);
+        span[13] = cropId;
+        picture.CopyTo(span[StillHeader..]);
+        return message;
+    }
+
+    public static bool TryDecodeStill(ReadOnlySpan<byte> message, out uint afterFrameNo, out int width, out int height, out byte cropId, out int offset)
+    {
+        afterFrameNo = 0;
+        width = height = 0;
+        cropId = 0;
+        offset = StillHeader;
+        if (message.Length <= StillHeader || message[0] != (byte)ScreenMessageType.Still)
+        {
+            return false;
+        }
+
+        afterFrameNo = BinaryPrimitives.ReadUInt32LittleEndian(message[5..]);
+        width = BinaryPrimitives.ReadUInt16LittleEndian(message[9..]);
+        height = BinaryPrimitives.ReadUInt16LittleEndian(message[11..]);
+        cropId = message[13];
+        return width > 0 && height > 0;
+    }
+
     /// <summary>Where in a video frame message the name of the part of the screen it shows is kept (see EncodeCrop).</summary>
     private const int VideoCropIdAt = 14;
 

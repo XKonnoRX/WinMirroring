@@ -410,6 +410,52 @@ public sealed class ScreenViewer : IAsyncDisposable
 
     public void Close() => _ = CloseAsync(notifySource: true, reason: null);
 
+    // ---- the sharp picture of a screen that has stopped ------------------------------------------------
+
+    /// <summary>One such picture, decoded: tightly packed BGRA, and which request for a part of the screen it is of.</summary>
+    public sealed record StillPicture(int Width, int Height, byte[] Bgra, byte CropId, uint AfterFrameNo);
+
+    private uint _lastFrameNo;
+    private long _stills;
+
+    /// <summary>The number of the newest video frame that has reached the decoder.</summary>
+    public uint LastFrameNo => Volatile.Read(ref _lastFrameNo);
+
+    /// <summary>How many sharp pictures have been shown here.</summary>
+    public long StillsShown => Interlocked.Read(ref _stills);
+
+    /// <summary>
+    /// A sharp picture of the screen as it stands, to lay over the video until the next video frame arrives. Raised
+    /// off the UI thread; whoever shows it should look at <see cref="LastFrameNo"/> once more as it does, since a
+    /// frame may have arrived in between.
+    /// </summary>
+    public event Action<ScreenViewer, StillPicture>? StillArrived;
+
+    internal void OnStill(byte[] message)
+    {
+        if (StillArrived is null
+            || !ScreenCodec.TryDecodeStill(message, out var after, out var width, out var height, out var cropId, out var offset)
+            || LastFrameNo > after)
+        {
+            return; // nobody to show it, or the screen has moved on since it was taken
+        }
+
+        // Off this thread: it is the one messages arrive on, and opening a picture this size takes a frame or two.
+        _ = Task.Run(() =>
+        {
+            if (Volatile.Read(ref _closed) != 0
+                || StillCodec.Decode(message.AsSpan(offset)) is not { } decoded
+                || decoded.Width != width || decoded.Height != height
+                || LastFrameNo > after)
+            {
+                return;
+            }
+
+            Interlocked.Increment(ref _stills);
+            StillArrived?.Invoke(this, new StillPicture(width, height, decoded.Bgra, cropId, after));
+        });
+    }
+
     /// <summary>The program in front on the source, by its process name, or empty until it has said.</summary>
     public string ForegroundProcess { get; private set; } = string.Empty;
 
@@ -1013,6 +1059,8 @@ public sealed class ScreenViewer : IAsyncDisposable
                 RequestTiles("на этом устройстве нет декодера H.264");
             }
         }
+
+        Volatile.Write(ref _lastFrameNo, frame.FrameNo);
 
         // Behind: a newer picture is already here. This one is decoded, because the next is read against it, but
         // not drawn (see MaxHurried). Never the first picture, and never across a change of size — those are the

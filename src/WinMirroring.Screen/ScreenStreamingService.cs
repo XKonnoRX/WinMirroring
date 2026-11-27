@@ -616,6 +616,17 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             return ValueTask.CompletedTask;
         }
 
+        // And the sharp picture of a screen that has stopped, which is laid over the video rather than decoded into it.
+        if (type == ScreenMessageType.Still)
+        {
+            if (_viewers.TryGetValue(streamId, out var viewer) && ReferenceEquals(viewer.Session, session))
+            {
+                viewer.OnStill(payload.ToArray());
+            }
+
+            return ValueTask.CompletedTask;
+        }
+
         // So does the pointer, but not through the frame queue: it travels on its own precisely so that it does not
         // wait for a frame to be decoded first.
         if (type is ScreenMessageType.Cursor or ScreenMessageType.CursorShape)

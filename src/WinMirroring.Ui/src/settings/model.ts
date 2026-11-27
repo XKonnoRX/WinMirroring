@@ -41,6 +41,7 @@ export type SettingsState = {
     swipeMonitors: boolean
     showStats: boolean
     dictationButton: boolean
+    sharpStill: boolean
     closeUnusedMinutes: number
     maxFps: number
     quality: number

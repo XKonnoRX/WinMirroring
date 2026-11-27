@@ -186,6 +186,7 @@ const sampleSettings = {
     swipeMonitors: true,
     showStats: false,
     dictationButton: true,
+    sharpStill: true,
     closeUnusedMinutes: 5,
     maxFps: 60,
     quality: 70,

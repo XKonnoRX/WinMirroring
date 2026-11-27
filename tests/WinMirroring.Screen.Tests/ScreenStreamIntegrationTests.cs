@@ -720,6 +720,100 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
         await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
     }
 
+    /// <summary>
+    /// A screen that stands still is sent once more as one sharp picture: the same size as the video and of the
+    /// same thing, so that it can be laid over it. Skipped on a desktop that never stands still for long enough.
+    /// </summary>
+    [Fact(Explicit = true)]
+    public async Task AScreenThatStandsStillIsFollowedByASharpPictureOfIt()
+    {
+        if (!VideoCodecSupport.CanEncodeH264 || !VideoCodecSupport.CanDecodeH264)
+        {
+            Assert.Skip("No hardware H.264 encoder (or no decoder) on this machine.");
+        }
+
+        var ct = TestContext.Current.CancellationToken;
+        var discoveryA = FreeUdpPort();
+        var discoveryB = FreeUdpPort();
+        var a = CreateNode("StillA", discoveryA, $"127.0.0.1:{discoveryB}");
+        var b = CreateNode("StillB", discoveryB, $"127.0.0.1:{discoveryA}");
+        a.Settings.Screen.VideoCodec = Core.Settings.VideoCodec.Auto;
+        await a.StartAsync();
+        await b.StartAsync();
+
+        var log = Path.Combine(Path.GetTempPath(), "winmirroring-stream-still.log");
+        File.WriteAllText(log, string.Empty);
+        await using var screenA = new ScreenStreamingService(a, new FileLogger<ScreenStreamingService>(log));
+        await using var screenB = new ScreenStreamingService(b, new FileLogger<ScreenStreamingService>(log));
+        screenA.Start();
+        screenB.Start();
+
+        await WaitUntilAsync(() => b.Peers.TryGet(a.Identity.Id, out var peer) && peer.TransportEndPoint is not null, ct);
+        Assert.True(await b.PairAsync(a.Identity.Id, ct));
+        await WaitUntilAsync(() => a.Sessions.TryGetSession(b.Identity.Id, out var s) && s.State == SessionState.Ready, ct);
+        await WaitUntilAsync(() => screenA.PeerVirtualDisplay(b.Identity.Id) is not null, ct);
+
+        var opened = new TaskCompletionSource<ScreenViewer>(TaskCreationOptions.RunContinuationsAsynchronously);
+        screenB.ViewerOpened += viewer => opened.TrySetResult(viewer);
+
+        Assert.True(await screenB.RequestScreenAsync(a.Identity.Id, 0));
+        var viewer = await opened.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        (int Width, int Height, byte[] Image)? video = null;
+        viewer.Attach(update =>
+        {
+            if (update.Image.Length > 0)
+            {
+                video = (update.Width, update.Height, (byte[])update.Image.Clone());
+            }
+
+            viewer.FramePresented();
+        });
+
+        ScreenViewer.StillPicture? still = null;
+        viewer.StillArrived += (_, picture) => still = picture;
+
+        // Whichever of this machine's monitors holds still: a desktop being worked on, or one with wallpaper that
+        // moves, never does, and a sharp picture is rightly never sent of it.
+        var monitors = DisplayCatalog.Monitors().Count;
+        for (var monitor = 0; monitor < monitors && still is null; monitor++)
+        {
+            if (monitor > 0)
+            {
+                video = null;
+                viewer.SwitchMonitor(monitor);
+                var wanted = monitor;
+                await WaitUntilAsync(() => viewer.Info.MonitorIndex == wanted, ct);
+            }
+
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+            while (still is null && DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(100, ct);
+            }
+        }
+
+        Assert.SkipWhen(still is null, "The screen never stood still for long enough to be sent as a sharp picture.");
+        Assert.NotNull(video);
+        Assert.Equal((video.Value.Width, video.Value.Height), (still!.Width, still.Height));
+        Assert.Equal(still.Width * still.Height * 4, still.Bgra.Length);
+        Assert.True(viewer.LastFrameNo <= still.AfterFrameNo, "the sharp picture was shown although a later video frame had arrived");
+
+        // Of the same thing as the video: the two differ by what video loses, which is little on average.
+        long error = 0;
+        for (var i = 0; i < still.Bgra.Length; i += 4)
+        {
+            error += Math.Abs(still.Bgra[i] - video.Value.Image[i]) + Math.Abs(still.Bgra[i + 1] - video.Value.Image[i + 1]) + Math.Abs(still.Bgra[i + 2] - video.Value.Image[i + 2]);
+        }
+
+        var mean = error / (still.Bgra.Length / 4 * 3.0);
+        File.AppendAllText(log, $"sharp picture {still.Width}x{still.Height} after frame {still.AfterFrameNo}; mean difference from the video {mean:F2}{Environment.NewLine}");
+        Assert.True(mean < 12, $"the sharp picture differs from the video it lies over by {mean:F1} a channel");
+
+        viewer.Close();
+        await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
+    }
+
     private static List<(int Width, int Height)> Seen(List<(int Width, int Height)> sizes)
     {
         lock (sizes)

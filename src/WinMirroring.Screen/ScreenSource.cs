@@ -873,6 +873,17 @@ internal sealed class ScreenSource : IAsyncDisposable
                 {
                     _lastFreshTicks = Environment.TickCount64;
                     _settled = false;
+                    _stillSent = false;
+                }
+                else if (_settled && !_stillSent && seen != 0 && _settings.SharpStill && _useVideo && !_videoFailed && !_pacing.HeldBack
+                    && Environment.TickCount64 - _lastFreshTicks >= StillAfter.TotalMilliseconds
+                    && Interlocked.Exchange(ref _stillRunning, 1) == 0)
+                {
+                    // Still for long enough that somebody is reading it: the sharp picture (see StillCodec).
+                    _stillSent = true;
+                    var stillOf = capture;
+                    var stillVersion = seen;
+                    _ = Task.Run(() => SendStillAsync(stillOf, stillVersion, ct), ct);
                 }
                 else if (!_settled && seen != 0 && Environment.TickCount64 - _lastFreshTicks >= SettleAfter.TotalMilliseconds)
                 {
@@ -1484,6 +1495,76 @@ internal sealed class ScreenSource : IAsyncDisposable
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
         {
             // The stream's own loops notice a connection that has gone; this is only telling.
+        }
+    }
+
+    // ---- a sharp picture of a screen that has stopped ---------------------------------------------------
+
+    /// <summary>
+    /// How long the screen has to have stood still before the sharp picture is sent. Longer than the pause between
+    /// two keystrokes: this is for the picture somebody is going to read, not for every gap in their typing.
+    /// </summary>
+    private static readonly TimeSpan StillAfter = TimeSpan.FromMilliseconds(600);
+
+    private bool _stillSent;
+    private int _stillRunning;
+    private byte[] _stillFrame = [];
+    private long _stills;
+
+    /// <summary>Takes what is on the screen now and sends it as one sharp picture, unless the screen moves first.</summary>
+    private async Task SendStillAsync(WgcCapture capture, long version, CancellationToken ct)
+    {
+        try
+        {
+            if (!capture.TryCopyLatest(ref _stillFrame, out var width, out var height, out var copied) || copied != version)
+            {
+                return; // it moved, or the capture has gone
+            }
+
+            RectangleF cropFraction;
+            byte cropId;
+            lock (_gate)
+            {
+                cropFraction = _crop;
+                cropId = _cropId;
+            }
+
+            // The same part at the same size as the video the viewer is showing, so the two lie exactly over each other.
+            var crop = ScreenCodec.ToPixels(cropFraction, width, height);
+            var videoCrop = new Rectangle(crop.X, crop.Y, Nv12Converter.Even(crop.Width), Nv12Converter.Even(crop.Height));
+            if (videoCrop.Width < 16 || videoCrop.Height < 16)
+            {
+                return;
+            }
+
+            var output = OutputSize(videoCrop, canScale: true);
+            var picture = new byte[output.Width * output.Height * 4];
+            BgraScaler.Scale(_stillFrame, width, videoCrop, picture, output.Width, output.Height);
+            var after = _frameNo;
+            var jpeg = StillCodec.Encode(picture, output.Width, output.Height);
+            if (!capture.TryLatestInfo(out _, out _, out var now) || now != version || _frameNo != after)
+            {
+                return; // moved while it was being made: the video is newer than this would be
+            }
+
+            await Session.SendAsync(ChannelId.Screen, ScreenCodec.EncodeStill(StreamId, after, output.Width, output.Height, cropId, jpeg), ct).ConfigureAwait(false);
+            if (Interlocked.Increment(ref _stills) == 1)
+            {
+                _logger.LogInformation(
+                    "{Title}: once the screen stands still it is sent to {Peer} again as one sharp picture ({Width}×{Height}, {Kilobytes} KB this time)",
+                    Title, Session.PeerName, output.Width, output.Height, jpeg.Length / 1024);
+            }
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or InvalidOperationException or ObjectDisposedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("The sharp picture of {Title} was not sent: {Message}", Title, ex.Message);
+        }
+        finally
+        {
+            Volatile.Write(ref _stillRunning, 0);
         }
     }
 

@@ -100,6 +100,7 @@ public partial class ScreenViewerWindow
     private void ViewMovedCore()
     {
         PlaceDetail();
+        PlaceStill();
         if (!PartsPossible && _askedPart == WholePicture)
         {
             return;
@@ -220,6 +221,7 @@ public partial class ScreenViewerWindow
     private void AskForWholeAnew()
     {
         _partTimer?.Stop();
+        HideStill();
 
         // Pictures of those parts may still be on their way. They are not forgotten — a picture under a name
         // nobody remembers would be taken for one of the whole and drawn as it — but marked as belonging nowhere.

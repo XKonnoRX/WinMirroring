@@ -117,6 +117,13 @@ public sealed class ScreenSettings
     /// typing and types what it hears on the other device.
     /// </summary>
     public bool DictationButton { get; set; } = true;
+
+    /// <summary>
+    /// Showing this device's screen: once it has stood still for a moment, send it once more as a single sharp
+    /// picture (full colour for every pixel, which video does not keep), for the viewer to lay over the video
+    /// until something moves. A few hundred kilobytes per pause; on unless switched off.
+    /// </summary>
+    public bool SharpStill { get; set; } = true;
 }
 
 /// <summary>

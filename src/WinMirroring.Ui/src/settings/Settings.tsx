@@ -217,6 +217,13 @@ export function Settings() {
                 checked={state.screen.hideSentWindow}
                 onChange={(v) => void set('screen.hideSentWindow', v)}
               />
+              <Toggle
+                label="Чёткий кадр, когда экран замер"
+                hint="Видео хранит цвет вчетверо грубее яркости, поэтому цветной текст в трансляции слегка размыт. Через полсекунды после того, как экран этого устройства перестал меняться, он досылается одним снимком с полным цветом, и там, где смотрят, снимок ложится поверх видео до следующего движения. Несколько сотен килобайт на каждую паузу."
+                disabled={!state.screen.allowViewing}
+                checked={state.screen.sharpStill}
+                onChange={(v) => void set('screen.sharpStill', v)}
+              />
             </Section>
 
             <Section title="Экран другого устройства">

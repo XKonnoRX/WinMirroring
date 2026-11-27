@@ -152,6 +152,7 @@ public sealed class SettingsUi
             swipeMonitors = _vm.ScreenSwipeMonitors,
             showStats = _vm.ScreenShowStats,
             dictationButton = _vm.ScreenDictationButton,
+            sharpStill = _vm.ScreenSharpStill,
             closeUnusedMinutes = _node.Settings.Screen.CloseUnusedViewMinutes,
             maxFps = _vm.ScreenMaxFps,
             quality = _vm.ScreenQuality,
@@ -299,6 +300,7 @@ public sealed class SettingsUi
             case "screen.swipeMonitors": _vm.ScreenSwipeMonitors = Flag(); break;
             case "screen.showStats": _vm.ScreenShowStats = Flag(); break;
             case "screen.dictationButton": _vm.ScreenDictationButton = Flag(); break;
+            case "screen.sharpStill": _vm.ScreenSharpStill = Flag(); break;
             case "screen.maxFps": _vm.ScreenMaxFps = Number(); break;
             case "screen.closeUnusedMinutes":
                 _node.Settings.Screen.CloseUnusedViewMinutes = Math.Clamp(Number(), 0, 600);
