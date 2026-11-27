@@ -391,7 +391,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
         {
             if (_viewers.TryRemove(viewer.StreamId, out _))
             {
-                _ = viewer.CloseAsync(notifySource: false, reason: "соединение закрыто");
+                _ = viewer.CloseAsync(notifySource: false, reason: "соединение закрыто", lostConnection: true);
             }
         }
 

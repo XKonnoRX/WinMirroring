@@ -20,7 +20,12 @@ public partial class App : IViewerControl
 
     private void OpenViewerWindow(ScreenViewer viewer)
     {
-        var window = new ScreenViewerWindow(viewer, _services!);
+        if (!TakeOverFromWaiting(viewer, out var waited))
+        {
+            return;
+        }
+
+        var window = new ScreenViewerWindow(viewer, _services!) { WaitToResume = WaitToResume };
         window.Activated += (_, _) =>
         {
             _activeView = viewer.StreamId;
@@ -35,6 +40,7 @@ public partial class App : IViewerControl
 
         window.Closed += (_, _) =>
         {
+            ForgetWaiting(window);
             _openViewers.Remove(window);
             _unusedSince.Remove(window);
             if (_activeView == viewer.StreamId)
@@ -53,6 +59,24 @@ public partial class App : IViewerControl
         KeepFloatingOnTop();
         UpdateKeepAwake();
         StartUnusedViewWatch();
+
+        if (waited is not null)
+        {
+            // This view is the one a window was waiting for: it carries on as that one was, and that one goes.
+            if (window.InputAllowed && window.InputOn != waited.InputOn)
+            {
+                window.SetInput(waited.InputOn);
+            }
+
+            var minimized = waited.Window.WindowState == System.Windows.WindowState.Minimized;
+            waited.Window.Close();
+            if (minimized)
+            {
+                window.MinimizeView(); // it was out of the way when it was lost, and comes back out of the way
+            }
+
+            Serilog.Log.Information("The view of {Peer} is back", viewer.PeerName);
+        }
     }
 
     /// <summary>When each minimised view stopped being looked at; a view in front is not in here at all.</summary>
@@ -147,7 +171,7 @@ public partial class App : IViewerControl
     private ScreenViewerWindow? FindView(uint streamId) => _openViewers.FirstOrDefault(v => v.Viewer.StreamId == streamId);
 
     private ScreenViewerWindow? FindScreenView(string peerId) =>
-        _openViewers.FirstOrDefault(v => v.Viewer.Info.Kind == "monitor" && v.Viewer.Session.PeerId == peerId);
+        _openViewers.FirstOrDefault(v => v.Viewer.Info.Kind == "monitor" && v.Viewer.Session.PeerId == peerId && !v.IsWaitingToResume);
 
     public bool IsScreenOpen(string peerId) => FindScreenView(peerId) is not null;
 

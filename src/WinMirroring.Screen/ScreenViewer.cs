@@ -519,12 +519,21 @@ public sealed class ScreenViewer : IAsyncDisposable
         }
     }
 
-    internal Task CloseAsync(bool notifySource, string? reason)
+    /// <summary>
+    /// Whether this view ended without anybody ending it — the connection went, or the source's own application
+    /// did — so that opening it again is what the person watching would want (see <see cref="ViewEndings"/>).
+    /// Set before <see cref="Closed"/> is raised.
+    /// </summary>
+    public bool CanResume { get; private set; }
+
+    internal Task CloseAsync(bool notifySource, string? reason, bool lostConnection = false)
     {
         if (Interlocked.Exchange(ref _closed, 1) != 0)
         {
             return Task.CompletedTask;
         }
+
+        CanResume = !notifySource && ViewEndings.CanResume(lostConnection, reason);
 
         _frames.Writer.TryComplete();
         _outbox.Writer.TryComplete();
@@ -582,7 +591,7 @@ public sealed class ScreenViewer : IAsyncDisposable
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
         {
-            await CloseAsync(notifySource: false, reason: "соединение потеряно").ConfigureAwait(false);
+            await CloseAsync(notifySource: false, reason: "соединение потеряно", lostConnection: true).ConfigureAwait(false);
         }
     }
 

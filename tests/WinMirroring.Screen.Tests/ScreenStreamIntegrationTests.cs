@@ -222,6 +222,99 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
         await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
     }
 
+    /// <summary>
+    /// A view that ends because the other device's application went away says so, and one that is closed here does
+    /// not: that is the whole of what decides whether it is opened again by itself. Then the same monitor can be
+    /// asked for again on the same session and a picture comes — which is what reopening does.
+    /// </summary>
+    [Fact(Explicit = true)]
+    public async Task AViewThatLostItsSourceSaysItCanBeOpenedAgainAndCanBe()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var discoveryA = FreeUdpPort();
+        var discoveryB = FreeUdpPort();
+        var a = CreateNode("ResumeA", discoveryA, $"127.0.0.1:{discoveryB}");
+        var b = CreateNode("ResumeB", discoveryB, $"127.0.0.1:{discoveryA}");
+        await a.StartAsync();
+        await b.StartAsync();
+
+        var log = Path.Combine(Path.GetTempPath(), "winmirroring-stream-resume.log");
+        File.WriteAllText(log, string.Empty);
+        var screenA = new ScreenStreamingService(a, new FileLogger<ScreenStreamingService>(log));
+        await using var screenB = new ScreenStreamingService(b, new FileLogger<ScreenStreamingService>(log));
+        screenA.Start();
+        screenB.Start();
+
+        await WaitUntilAsync(() => b.Peers.TryGet(a.Identity.Id, out var peer) && peer.TransportEndPoint is not null, ct);
+        Assert.True(await b.PairAsync(a.Identity.Id, ct));
+        await WaitUntilAsync(() => a.Sessions.TryGetSession(b.Identity.Id, out var s) && s.State == SessionState.Ready, ct);
+        await WaitUntilAsync(() => screenA.PeerVirtualDisplay(b.Identity.Id) is not null, ct);
+
+        var views = new List<ScreenViewer>();
+        screenB.ViewerOpened += viewer =>
+        {
+            lock (views)
+            {
+                views.Add(viewer);
+            }
+        };
+
+        ScreenViewer? Latest(int count)
+        {
+            lock (views)
+            {
+                return views.Count >= count ? views[count - 1] : null;
+            }
+        }
+
+        // Closed here: over, by somebody's choice.
+        Assert.True(await screenB.RequestScreenAsync(a.Identity.Id, 0));
+        await WaitUntilAsync(() => Latest(1) is not null, ct);
+        var first = Latest(1)!;
+        var firstEnded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        first.Closed += (_, _) => firstEnded.TrySetResult();
+        first.Close();
+        await firstEnded.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+        Assert.False(first.CanResume);
+        await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
+
+        // The source's application goes away under an open view: nobody chose that.
+        Assert.True(await screenB.RequestScreenAsync(a.Identity.Id, 0));
+        await WaitUntilAsync(() => Latest(2) is not null, ct);
+        var second = Latest(2)!;
+        var frames = 0;
+        second.Attach(_ =>
+        {
+            Interlocked.Increment(ref frames);
+            second.FramePresented();
+        });
+        await WaitUntilAsync(() => Volatile.Read(ref frames) > 0, ct);
+        var secondEnded = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        second.Closed += (_, reason) => secondEnded.TrySetResult(reason);
+        await screenA.DisposeAsync();
+        Assert.Equal("shutdown", await secondEnded.Task.WaitAsync(TimeSpan.FromSeconds(10), ct));
+        Assert.True(second.CanResume);
+
+        // It comes back (here, a new service on the same node, as an application started again would be), and the
+        // same monitor asked for again gives a picture.
+        await using var screenAgain = new ScreenStreamingService(a, new FileLogger<ScreenStreamingService>(log));
+        screenAgain.Start();
+        await WaitUntilAsync(() => screenAgain.PeerVirtualDisplay(b.Identity.Id) is not null, ct);
+        Assert.True(await screenB.RequestScreenAsync(a.Identity.Id, second.Info.MonitorIndex, second.Info.MonitorKey));
+        await WaitUntilAsync(() => Latest(3) is not null, ct);
+        var third = Latest(3)!;
+        var again = 0;
+        third.Attach(_ =>
+        {
+            Interlocked.Increment(ref again);
+            third.FramePresented();
+        });
+        await WaitUntilAsync(() => Volatile.Read(ref again) > 0, ct);
+
+        third.Close();
+        await WaitUntilAsync(() => screenAgain.Sources.Count == 0, ct);
+    }
+
     private static List<(int Width, int Height)> Seen(List<(int Width, int Height)> sizes)
     {
         lock (sizes)

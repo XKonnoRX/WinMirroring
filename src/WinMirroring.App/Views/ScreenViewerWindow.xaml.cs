@@ -1624,10 +1624,30 @@ public partial class ScreenViewerWindow : Window
         RefreshQuickPanel();
     }
 
+    /// <summary>
+    /// Asked when the stream ends without anybody having ended it: whether this window should stay and wait for
+    /// the view to be opened again (see App.Resume). Nobody to ask, or the answer no, and it closes as it always did.
+    /// </summary>
+    public Func<ScreenViewerWindow, bool>? WaitToResume { get; set; }
+
+    /// <summary>The stream behind this window has ended and the window is waiting for its replacement.</summary>
+    public bool IsWaitingToResume { get; private set; }
+
     private void OnRemoteClosed(string? reason)
     {
-        if (_closingFromRemote)
+        if (_closingFromRemote || IsWaitingToResume)
         {
+            return;
+        }
+
+        if (_viewer.CanResume && WaitToResume is { } wait && wait(this))
+        {
+            // The last picture stays, with a line over it that does not go away by itself: what is on the screen
+            // is no longer what is on the other device, and that has to be plain for as long as it is true.
+            IsWaitingToResume = true;
+            NoticeText.Text = "Соединение потеряно. Трансляция откроется снова, как только устройство ответит…";
+            NoticeBorder.Visibility = Visibility.Visible;
+            _noticeTimer.Stop();
             return;
         }
 
