@@ -90,6 +90,14 @@ public sealed class ScreenSettings
     public double KeyboardButtonX { get; set; } = 0.97;
 
     public double KeyboardButtonY { get; set; } = 0.62;
+
+    /// <summary>
+    /// Viewing another device: pictures decoded by the graphics card are drawn from it directly instead of being
+    /// read back into memory and uploaded again. On unless switched off — it is the faster path wherever it works,
+    /// and a view goes back to the old one by itself where it does not. The switch is for the case that cannot
+    /// detect itself: a driver that draws such a picture wrongly without saying so.
+    /// </summary>
+    public bool DirectPresent { get; set; } = true;
 }
 
 /// <summary>

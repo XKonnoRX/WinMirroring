@@ -284,8 +284,16 @@ internal sealed class H264VideoDecoder : IDisposable
     /// into pixels and bringing it into memory is the larger half of the work, and it is wasted on a picture that
     /// a newer one, already waiting, is about to replace.
     /// </summary>
-    public bool DecodeInto(byte[] accessUnit, ref byte[] bgra, out int width, out int height, bool read = true)
+    /// <remarks>
+    /// With <paramref name="onto"/> given and the card doing the work, the picture is left on the card in that
+    /// surface instead of being brought into <paramref name="bgra"/> (which is then not touched), and
+    /// <see cref="LastWasLeftOnCard"/> says so. When the processor is doing the decoding there is no card to leave
+    /// it on, and it goes into <paramref name="bgra"/> as ever.
+    /// </remarks>
+    public bool DecodeInto(byte[] accessUnit, ref byte[] bgra, out int width, out int height, bool read = true, GpuSurface? onto = null)
     {
+        _onto = onto;
+        LastWasLeftOnCard = false;
         width = _width;
         height = _height;
         if (_disposed || accessUnit.Length == 0)
@@ -381,8 +389,22 @@ internal sealed class H264VideoDecoder : IDisposable
         return false;
     }
 
+    /// <summary>Where the picture being decoded is to be left, for the length of one <see cref="DecodeInto"/>.</summary>
+    private GpuSurface? _onto;
+
+    /// <summary>The last picture <see cref="DecodeInto"/> produced is in the surface it was given, not in memory.</summary>
+    public bool LastWasLeftOnCard { get; private set; }
+
+    /// <summary>A surface for <see cref="DecodeInto"/> to leave pictures in, or null while the card is not decoding.</summary>
+    public GpuSurface? CreateSurface(int width, int height) => _disposed ? null : _gpu?.CreateSurface(width, height);
+
     private bool ReadFrame(IMFSample sample, ref byte[] bgra)
     {
+        if (_gpu is not null && _onto is { } surface)
+        {
+            return LastWasLeftOnCard = LeaveFrameOnGpu(sample, surface);
+        }
+
         var pixels = _width * _height * 4;
         if (bgra.Length != pixels)
         {
@@ -410,6 +432,28 @@ internal sealed class H264VideoDecoder : IDisposable
         // GetResource hands back a reference of its own, which is given back when the wrapper is disposed.
         using var texture = new ID3D11Texture2D(dxgi.GetResource(typeof(ID3D11Texture2D).GUID));
         if (_gpu!.TryRead(texture, (int)dxgi.SubresourceIndex, _width, _height, bgra))
+        {
+            _gpuFailures = 0;
+            return true;
+        }
+
+        _gpuFailures++;
+        return false;
+    }
+
+    private bool LeaveFrameOnGpu(IMFSample sample, GpuSurface surface)
+    {
+        using var buffer = sample.GetBufferByIndex(0);
+        using var dxgi = buffer.QueryInterfaceOrNull<IMFDXGIBuffer>();
+        if (dxgi is null)
+        {
+            _gpuFailures = GiveUpOnCardAfter;
+            _logger.LogWarning("The decoder produced a picture that is not on the graphics card after all");
+            return false;
+        }
+
+        using var texture = new ID3D11Texture2D(dxgi.GetResource(typeof(ID3D11Texture2D).GUID));
+        if (_gpu!.TryConvertOnto(texture, (int)dxgi.SubresourceIndex, surface))
         {
             _gpuFailures = 0;
             return true;

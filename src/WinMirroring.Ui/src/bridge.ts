@@ -182,6 +182,7 @@ const sampleSettings = {
     hideSentWindow: true,
     autoKeyboard: false,
     keyboardButton: true,
+    directPresent: true,
     closeUnusedMinutes: 5,
     maxFps: 60,
     quality: 70,

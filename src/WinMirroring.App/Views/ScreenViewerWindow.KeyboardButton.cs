@@ -146,7 +146,7 @@ public partial class ScreenViewerWindow
     /// <summary>Shown while this window can type into the other device; asked again whenever that may have changed.</summary>
     private void UpdateKeyboardHandle()
     {
-        var show = _node?.Settings.Screen.KeyboardButton != false && !_windowMode && ControlEnabled && _bitmap is not null;
+        var show = _node?.Settings.Screen.KeyboardButton != false && !_windowMode && ControlEnabled && HasPicture;
         KeyboardHandle.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         if (show)
         {

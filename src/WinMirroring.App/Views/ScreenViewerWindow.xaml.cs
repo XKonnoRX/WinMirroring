@@ -113,6 +113,7 @@ public partial class ScreenViewerWindow : Window
         // Input priority, not Render: Render sits above Input in WPF, so painting the stream used to overtake the
         // user's own taps and clicks in this window. A frame that waits its turn behind a tap is not a problem —
         // the viewer skips frames the window cannot keep up with.
+        InitializeSurfaces();
         _viewer.Attach(update => Dispatcher.BeginInvoke(DispatcherPriority.Input, () => Present(update)));
 
         ScreenImage.MouseMove += OnImageMouseMove;
@@ -292,7 +293,7 @@ public partial class ScreenViewerWindow : Window
 
     private bool ControlEnabled => ControlToggle.IsChecked == true && _viewer.Info.ControlAllowed && CropToggle.IsChecked != true;
 
-    private bool CanDropFiles => _dragDrop?.ViewerDragAvailable == true && ControlEnabled && _bitmap is not null && !_dragOutActive;
+    private bool CanDropFiles => _dragDrop?.ViewerDragAvailable == true && ControlEnabled && HasPicture && !_dragOutActive;
 
     private void UpdateInfo()
     {
@@ -396,8 +397,19 @@ public partial class ScreenViewerWindow : Window
         if (_scaledForMotion)
         {
             _scaledForMotion = false;
-            RenderOptions.SetBitmapScalingMode(ScreenImage, BitmapScalingMode.HighQuality);
-            RenderOptions.SetBitmapScalingMode(DetailImage, BitmapScalingMode.HighQuality);
+
+            // The careful scaling is worked out in memory, so a picture that is on the card would have to be
+            // brought back for it. Drawn from the card, a picture keeps the card's scaling; it is sent at very
+            // nearly the size it is shown at, which is where the two differ least.
+            if (_wholeSurface is null)
+            {
+                RenderOptions.SetBitmapScalingMode(ScreenImage, BitmapScalingMode.HighQuality);
+            }
+
+            if (_partSurface is null || !ReferenceEquals(DetailImage.Source, _partSurface))
+            {
+                RenderOptions.SetBitmapScalingMode(DetailImage, BitmapScalingMode.HighQuality);
+            }
         }
     }
 
@@ -432,6 +444,21 @@ public partial class ScreenViewerWindow : Window
 
             // A picture of the whole. Whatever part was drawn over it is older than this.
             HideDetail();
+
+            if (update.Surface is { } onCard)
+            {
+                // It is on the graphics card already and is drawn from there (see ScreenViewerWindow.Surfaces).
+                if (ShowWholeSurface(update, onCard))
+                {
+                    PlacePointer();
+                    _framesSinceTick++;
+                    ScaleForMotion();
+                }
+
+                return;
+            }
+
+            WholeArrivedInMemory();
 
             // By the bitmap's own size, not by whether the stream's size changed: coming back from a part, the
             // stream's size has changed and this bitmap's has not.
@@ -648,7 +675,7 @@ public partial class ScreenViewerWindow : Window
         outside = 0;
         var width = ScreenImage.ActualWidth;
         var height = ScreenImage.ActualHeight;
-        if (_bitmap is null || width <= 0 || height <= 0)
+        if (!HasPicture || width <= 0 || height <= 0)
         {
             return false;
         }

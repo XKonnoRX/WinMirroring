@@ -161,7 +161,7 @@ public partial class ScreenViewerWindow
     {
         var width = ScreenImage.ActualWidth;
         var height = ScreenImage.ActualHeight;
-        if (_bitmap is null || width <= 0 || height <= 0 || Surface.ActualWidth <= 0 || Surface.ActualHeight <= 0)
+        if (!HasPicture || width <= 0 || height <= 0 || Surface.ActualWidth <= 0 || Surface.ActualHeight <= 0)
         {
             return null;
         }
@@ -241,13 +241,25 @@ public partial class ScreenViewerWindow
 
     private void PresentDetail(FrameUpdate update, Rect part)
     {
-        if (_detail is null || _detail.PixelWidth != update.Width || _detail.PixelHeight != update.Height)
+        if (update.Surface is { } onCard)
         {
-            _detail = new WriteableBitmap(update.Width, update.Height, 96, 96, PixelFormats.Bgr32, null);
-            DetailImage.Source = _detail;
+            if (!ShowPartSurface(onCard))
+            {
+                return; // could not be drawn from the card; the next one arrives in memory
+            }
+        }
+        else
+        {
+            if (_detail is null || _detail.PixelWidth != update.Width || _detail.PixelHeight != update.Height
+                || !ReferenceEquals(DetailImage.Source, _detail))
+            {
+                _detail = new WriteableBitmap(update.Width, update.Height, 96, 96, PixelFormats.Bgr32, null);
+                DetailImage.Source = _detail;
+            }
+
+            _detail.WritePixels(new Int32Rect(0, 0, update.Width, update.Height), update.Image, update.Width * 4, 0);
         }
 
-        _detail.WritePixels(new Int32Rect(0, 0, update.Width, update.Height), update.Image, update.Width * 4, 0);
         _shownPart = part;
         PlaceDetail();
         DetailImage.Visibility = Visibility.Visible;

@@ -147,6 +147,77 @@ internal sealed class GpuFrameReader : IDisposable
         }
     }
 
+    /// <summary>
+    /// A texture this card can be told to put finished pictures into, and that another device on the same card —
+    /// the one the window draws with — can open by its handle. Null when the card will not make one.
+    /// </summary>
+    public GpuSurface? CreateSurface(int width, int height)
+    {
+        if (_disposed || width < 1 || height < 1)
+        {
+            return null;
+        }
+
+        lock (_graphics.ContextGate)
+        {
+            ID3D11Texture2D? texture = null;
+            try
+            {
+                var description = new Texture2DDescription(
+                    Format.B8G8R8A8_UNorm, (uint)width, (uint)height, 1, 1,
+                    BindFlags.RenderTarget | BindFlags.ShaderResource, ResourceUsage.Default, CpuAccessFlags.None);
+                description.MiscFlags = ResourceOptionFlags.Shared;
+                texture = _graphics.Device.CreateTexture2D(description);
+                using var resource = texture.QueryInterface<IDXGIResource>();
+                return new GpuSurface(texture, resource.SharedHandle, width, height);
+            }
+            catch (Exception ex) when (ex is COMException or SharpGen.Runtime.SharpGenException or InvalidCastException)
+            {
+                _logger.LogInformation("The graphics card would not make a picture it can share with the window ({Message})", ex.Message);
+                texture?.Dispose();
+                return null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The same conversion as <see cref="TryRead"/>, but the finished picture is left on the card, in
+    /// <paramref name="surface"/>, and nothing crosses into memory. False means the card would not do it.
+    /// </summary>
+    public bool TryConvertOnto(ID3D11Texture2D picture, int arraySlice, GpuSurface surface)
+    {
+        if (_disposed || surface.IsDisposed)
+        {
+            return false;
+        }
+
+        var description = picture.Description;
+        var inputSize = new Size((int)description.Width, (int)description.Height);
+        var outputSize = new Size(surface.Width, surface.Height);
+
+        lock (_graphics.ContextGate)
+        {
+            try
+            {
+                Prepare(inputSize, outputSize);
+                if (!Blit(picture, arraySlice, outputSize, surface.Texture))
+                {
+                    return false;
+                }
+
+                // Sent to the card now, not whenever this device next has reason to: the window draws this
+                // picture through another device, which cannot see work that is still waiting in this one's queue.
+                _graphics.Context.Flush();
+                return true;
+            }
+            catch (Exception ex) when (ex is COMException or SharpGen.Runtime.SharpGenException or InvalidOperationException)
+            {
+                _logger.LogWarning("The graphics card could not leave a decoded picture where the window can draw it ({Message})", ex.Message);
+                return false;
+            }
+        }
+    }
+
     /// <summary>The processor and both textures are built for one pair of sizes; a new picture size rebuilds them.</summary>
     private void Prepare(Size inputSize, Size outputSize)
     {
@@ -172,7 +243,7 @@ internal sealed class GpuFrameReader : IDisposable
         _outputSize = outputSize;
     }
 
-    private bool Blit(ID3D11Texture2D picture, int arraySlice, Size outputSize)
+    private bool Blit(ID3D11Texture2D picture, int arraySlice, Size outputSize, ID3D11Texture2D? onto = null)
     {
         // Taken from the picture, and never more of it than there is: for a frame or two after a stream changes
         // size the decoder is still handing out textures of the old one, and asking for rows a texture does not
@@ -189,7 +260,7 @@ internal sealed class GpuFrameReader : IDisposable
                 Texture2D = new Texture2DVideoProcessorInputView { MipSlice = 0, ArraySlice = (uint)Math.Max(arraySlice, 0) },
             });
         using var output = _videoDevice.CreateVideoProcessorOutputView(
-            _target!,
+            onto ?? _target!,
             _enumerator!,
             new VideoProcessorOutputViewDescription { ViewDimension = VideoProcessorOutputViewDimension.Texture2D });
 

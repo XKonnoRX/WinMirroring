@@ -315,6 +315,139 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
         await WaitUntilAsync(() => screenAgain.Sources.Count == 0, ct);
     }
 
+    /// <summary>
+    /// A window that can draw from the graphics card is handed pictures that are still on it. Three things about
+    /// that have to hold over a real stream: the decoder never writes the next picture into the surface the window
+    /// was last given (it would be drawing from it); pictures of a part of the screen go into surfaces of their own,
+    /// so the picture of the whole underneath stays what it was; and a window that takes its word back gets
+    /// pictures in memory again from the next one on.
+    /// </summary>
+    [Fact(Explicit = true)]
+    public async Task AWindowThatDrawsFromTheCardIsHandedPicturesThatStayOnIt()
+    {
+        if (!VideoCodecSupport.CanEncodeH264 || !VideoCodecSupport.CanDecodeH264)
+        {
+            Assert.Skip("No hardware H.264 encoder (or no decoder) on this machine.");
+        }
+
+        using var bridge = Direct3D9Bridge.TryCreate();
+        Assert.SkipWhen(bridge is null, "No Direct3D 9 device on this machine.");
+
+        var ct = TestContext.Current.CancellationToken;
+        var discoveryA = FreeUdpPort();
+        var discoveryB = FreeUdpPort();
+        var a = CreateNode("CardA", discoveryA, $"127.0.0.1:{discoveryB}");
+        var b = CreateNode("CardB", discoveryB, $"127.0.0.1:{discoveryA}");
+        a.Settings.Screen.VideoCodec = Core.Settings.VideoCodec.Auto;
+        await a.StartAsync();
+        await b.StartAsync();
+
+        var log = Path.Combine(Path.GetTempPath(), "winmirroring-stream-card.log");
+        File.WriteAllText(log, string.Empty);
+        await using var screenA = new ScreenStreamingService(a, new FileLogger<ScreenStreamingService>(log));
+        await using var screenB = new ScreenStreamingService(b, new FileLogger<ScreenStreamingService>(log));
+        screenA.Start();
+        screenB.Start();
+
+        await WaitUntilAsync(() => b.Peers.TryGet(a.Identity.Id, out var peer) && peer.TransportEndPoint is not null, ct);
+        Assert.True(await b.PairAsync(a.Identity.Id, ct));
+        await WaitUntilAsync(() => a.Sessions.TryGetSession(b.Identity.Id, out var s) && s.State == SessionState.Ready, ct);
+        await WaitUntilAsync(() => screenA.PeerVirtualDisplay(b.Identity.Id) is not null, ct);
+
+        var opened = new TaskCompletionSource<ScreenViewer>(TaskCreationOptions.RunContinuationsAsynchronously);
+        screenB.ViewerOpened += viewer => opened.TrySetResult(viewer);
+        Assert.True(await screenB.RequestScreenAsync(a.Identity.Id, 0));
+        var viewer = await opened.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        var frames = new List<FrameUpdate>();
+        string? broken = null;
+        GpuSurface? drawing = null;
+        viewer.SurfacesWanted = true;
+        viewer.Attach(update =>
+        {
+            lock (frames)
+            {
+                if (update.Surface is { } surface)
+                {
+                    // What a window does: it is drawing from the last one it was given until this one replaces it.
+                    if (ReferenceEquals(surface, drawing))
+                    {
+                        broken ??= $"frame {update.FrameNo} came in the surface the window was already drawing from";
+                    }
+
+                    if (update.Image.Length != 0 || surface.Width != update.Width || surface.Height != update.Height || surface.IsDisposed)
+                    {
+                        broken ??= $"frame {update.FrameNo} came on the card and did not agree with itself";
+                    }
+
+                    drawing = surface;
+                }
+
+                frames.Add(update);
+            }
+
+            viewer.FramePresented();
+        });
+
+        List<FrameUpdate> Got()
+        {
+            lock (frames)
+            {
+                return [.. frames];
+            }
+        }
+
+        // A still desktop sends a picture or two and stops; asking for the whole again under a new name is a
+        // picture each time.
+        for (byte name = 11; name <= 18; name++)
+        {
+            viewer.SetCrop(ViewParts.Whole, name);
+            var wanted = name;
+            await WaitUntilAsync(() => Got().Any(f => f.CropId == wanted), ct);
+        }
+
+        var whole = Got().Where(f => f.Surface is not null).ToList();
+        Assert.SkipWhen(whole.Count == 0, "This machine's graphics card does not decode this stream, so nothing stays on it.");
+        Assert.Null(broken);
+        Assert.InRange(whole.Select(f => f.Surface).Distinct().Count(), 2, 4);
+
+        // Now a part of the screen. Once its first picture is here, no more of the whole will come — pictures
+        // arrive in the order they were made — so the last picture of the whole is the one the window keeps
+        // underneath, and is what must stay as it is.
+        var part = new System.Drawing.RectangleF(0.25f, 0.25f, 0.5f, 0.5f);
+        viewer.SetCrop(part, 30, part);
+        await WaitUntilAsync(() => Got().Any(f => f.CropId == 30), ct);
+        var kept = Got().Last(f => f.Surface is not null && f.CropId != 30).Surface!;
+        var before = bridge!.Read(kept);
+
+        // As the other device on the card sees it: a picture, and an opaque one.
+        Assert.Equal(kept.Width * kept.Height * 4, before.Length);
+        Assert.True(before.Where((_, i) => i % 4 == 3).All(alpha => alpha == 255), "the picture on the card is not opaque");
+        Assert.True(before.Max() - before.Min() > 40, "the picture on the card is one flat colour");
+
+        // More of the part, and long enough for the sharp picture a still screen is followed by.
+        viewer.SetCrop(part, 31, part);
+        await WaitUntilAsync(() => Got().Any(f => f.CropId == 31), ct);
+        await Task.Delay(400, ct);
+        var parts = Got().Where(f => f.CropId is 30 or 31 && f.Surface is not null).Select(f => f.Surface!).Distinct().ToList();
+        Assert.NotEmpty(parts);
+        Assert.Empty(parts.Intersect(Got().Where(f => f.CropId is not (30 or 31) && f.Surface is not null).Select(f => f.Surface!)));
+        Assert.False(kept.IsDisposed);
+        Assert.Equal(before, bridge.Read(kept));
+        Assert.Null(broken);
+
+        // The window finds it cannot draw them after all: the next pictures are in memory, as they always were.
+        viewer.SurfacesWanted = false;
+        viewer.SetCrop(ViewParts.Whole, 40);
+        await WaitUntilAsync(() => Got().Any(f => f.CropId == 40), ct);
+        var inMemory = Got().Last(f => f.CropId == 40);
+        Assert.Null(inMemory.Surface);
+        Assert.Equal(inMemory.Width * inMemory.Height * 4, inMemory.Image.Length);
+
+        viewer.Close();
+        await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
+    }
+
     private static List<(int Width, int Height)> Seen(List<(int Width, int Height)> sizes)
     {
         lock (sizes)

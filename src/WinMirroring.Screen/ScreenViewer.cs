@@ -14,7 +14,13 @@ using WinMirroring.Screen.Transport;
 namespace WinMirroring.Screen;
 
 /// <summary>Changed part of the shared image after one frame message; the UI copies these rectangles.</summary>
-public sealed record FrameUpdate(uint FrameNo, int Width, int Height, byte[] Image, IReadOnlyList<Rectangle> Dirty, bool Resized, byte CropId = 0);
+/// <remarks>
+/// With <paramref name="Surface"/> set, the picture is not in <paramref name="Image"/> (which is then empty) but on
+/// the graphics card, in that surface, and the window draws it from there. It is the window's until it calls
+/// <see cref="ScreenViewer.FramePresented"/> — and stays untouched after that for as long as it is the last one
+/// the window was given.
+/// </remarks>
+public sealed record FrameUpdate(uint FrameNo, int Width, int Height, byte[] Image, IReadOnlyList<Rectangle> Dirty, bool Resized, byte CropId = 0, GpuSurface? Surface = null);
 
 /// <summary>
 /// Viewer side of one stream, independent of the UI. Decodes frames into a persistent BGRA image and hands each
@@ -141,7 +147,169 @@ public sealed class ScreenViewer : IAsyncDisposable
             Volatile.Write(ref _paintMs, (int)Math.Round(Stopwatch.GetElapsedTime(started).TotalMilliseconds));
         }
 
+        lock (_surfaceGate)
+        {
+            // The picture it was given is now the one it is drawing from; the one before it is free to be written.
+            if (_handedFrom is { } pool)
+            {
+                if (pool.Handed is { } shown)
+                {
+                    pool.Shown = shown;
+                    pool.Handed = null;
+                }
+
+                _handedFrom = null;
+            }
+        }
+
         Volatile.Write(ref _presentingSince, 0);
+    }
+
+    // ---- pictures that stay on the graphics card ----------------------------------------------------------
+    //
+    // See GpuSurface for why. What is decided here is which surface the decoder may write into, and the rule is
+    // that it is never one the window might be drawing from. The window draws from the last surface it confirmed
+    // (Shown), and may at any moment switch to the one it has been handed and not yet confirmed (Handed); so the
+    // decoder writes into a third (Spare). Three is therefore the number: with two, the decoder's next picture
+    // would have to go into the one the window had not yet let go of, and what was on the screen would be the top
+    // of one picture and the bottom of the next.
+    //
+    // Pictures of the whole screen and pictures of a part of it (see SetCrop) each have their own three. The
+    // window keeps the last picture of the whole under the part it is zoomed into, and that picture has to stay
+    // what it was while parts are being decoded.
+
+    private sealed class SurfacePool
+    {
+        public List<GpuSurface> All = [];
+
+        /// <summary>The set before this one — a different size, or another decoder — kept until the one after it.</summary>
+        public List<GpuSurface> Retired = [];
+        public GpuSurface? Shown;
+        public GpuSurface? Handed;
+        public GpuSurface? Spare;
+        public H264VideoDecoder? Owner;
+        public int Width;
+        public int Height;
+    }
+
+    private readonly object _surfaceGate = new();
+    private readonly SurfacePool _wholeSurfaces = new();
+    private readonly SurfacePool _partSurfaces = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<byte, bool> _isPart = new();
+    private SurfacePool? _handedFrom;
+    private volatile bool _surfacesWanted;
+    private long _onCard;
+    private long _reportedOnCard;
+
+    /// <summary>
+    /// Whether the window can draw pictures straight from the graphics card. While it says so, and while the card
+    /// is the one decoding, pictures are left there (<see cref="FrameUpdate.Surface"/>); otherwise, and whenever
+    /// the window takes this back, they arrive in memory as they always did. The window may change its mind at
+    /// any time — it is the one that finds out whether drawing them works.
+    /// </summary>
+    public bool SurfacesWanted
+    {
+        get => _surfacesWanted;
+        set => _surfacesWanted = value;
+    }
+
+    /// <summary>A surface the decoder may write the next picture into, or null when it must go into memory.</summary>
+    private GpuSurface? SpareOf(SurfacePool pool, H264VideoDecoder decoder, int width, int height)
+    {
+        lock (_surfaceGate)
+        {
+            if (!ReferenceEquals(pool.Owner, decoder) || pool.Width != width || pool.Height != height)
+            {
+                // Not given up at once: one of them may be on its way to the window, or on the screen. They go
+                // when the set after this one is itself replaced, by which time neither can be true.
+                foreach (var old in pool.Retired)
+                {
+                    old.Dispose();
+                }
+
+                pool.Retired = pool.All;
+                pool.All = [];
+                pool.Shown = pool.Handed = pool.Spare = null;
+                pool.Owner = decoder;
+                pool.Width = width;
+                pool.Height = height;
+            }
+
+            if (pool.Spare is null)
+            {
+                pool.Spare = pool.All.FirstOrDefault(s => !ReferenceEquals(s, pool.Shown) && !ReferenceEquals(s, pool.Handed));
+                if (pool.Spare is null && pool.All.Count < 4 && decoder.CreateSurface(width, height) is { } made)
+                {
+                    pool.All.Add(made);
+                    pool.Spare = made;
+                }
+            }
+
+            return pool.Spare;
+        }
+    }
+
+    private void ReleaseSurfaces()
+    {
+        lock (_surfaceGate)
+        {
+            foreach (var pool in new[] { _wholeSurfaces, _partSurfaces })
+            {
+                foreach (var surface in pool.All.Concat(pool.Retired))
+                {
+                    surface.Dispose();
+                }
+
+                pool.All = [];
+                pool.Retired = [];
+                pool.Shown = pool.Handed = pool.Spare = null;
+                pool.Owner = null;
+            }
+
+            _handedFrom = null;
+        }
+    }
+
+    /// <summary>
+    /// Hands the window a picture that is on the card, or leaves it unshown while the window is still busy with
+    /// the one before — in which case it stays in the spare surface and the next picture is written over it.
+    /// </summary>
+    private void PresentSurface(uint frameNo, SurfacePool pool, GpuSurface surface, bool resized, byte cropId)
+    {
+        _decoded++;
+        _onCard++;
+        Report();
+        if (_present is not { } present)
+        {
+            return;
+        }
+
+        var now = Environment.TickCount64;
+        var holding = Volatile.Read(ref _presentingSince);
+        lock (_surfaceGate)
+        {
+            if (holding != 0 && now - holding < PresentGrace.TotalMilliseconds)
+            {
+                _skipped++;
+                return;
+            }
+
+            // A window that never said it had finished (see PresentGrace) is taken to be drawing what it was given.
+            if (_handedFrom is { Handed: { } unconfirmed } stale)
+            {
+                stale.Shown = unconfirmed;
+                stale.Handed = null;
+            }
+
+            pool.Handed = surface;
+            pool.Spare = null;
+            _handedFrom = pool;
+        }
+
+        _missedFrames = false;
+        Volatile.Write(ref _presentingSince, now);
+        Volatile.Write(ref _presentStarted, Stopwatch.GetTimestamp());
+        present(new FrameUpdate(frameNo, surface.Width, surface.Height, [], [new Rectangle(0, 0, surface.Width, surface.Height)], resized, cropId, surface));
     }
 
     /// <summary>
@@ -192,6 +360,11 @@ public sealed class ScreenViewer : IAsyncDisposable
     public void SetCrop(RectangleF crop, byte id = 0, RectangleF? part = null)
     {
         _part = part is { Width: > 0, Height: > 0 } p ? new Part(p.X, p.Y, p.Width, p.Height) : Whole;
+        if (id != 0)
+        {
+            _isPart[id] = !ReferenceEquals(_part, Whole); // which of the two sets of surfaces its pictures go into
+        }
+
         _outbox.Writer.TryWrite(ScreenCodec.EncodeCrop(StreamId, ScreenCodec.Normalize(crop), id));
     }
 
@@ -562,6 +735,7 @@ public sealed class ScreenViewer : IAsyncDisposable
         }
         finally
         {
+            ReleaseSurfaces();
             _videoDecoder?.Dispose();
             _videoDecoder = null;
             _decoder.Dispose();
@@ -660,6 +834,9 @@ public sealed class ScreenViewer : IAsyncDisposable
 
         var produced = false;
         var resized = false;
+        SurfacePool? pool = null;
+        GpuSurface? onto = null;
+        var onCard = false;
         if (_videoDecoder is not null)
         {
             // The source says how large each picture is, and it changes while the stream runs: it sends the
@@ -667,7 +844,21 @@ public sealed class ScreenViewer : IAsyncDisposable
             _videoDecoder.Expect(frame.Width, frame.Height);
             try
             {
-                produced = _videoDecoder.DecodeInto(frame.Data, ref _image, out var width, out var height, read: !hurry);
+                // Left on the card when the window can draw it from there; into memory otherwise.
+                if (!hurry && SurfacesWanted && _videoDecoder.UsesGraphicsCard)
+                {
+                    pool = _isPart.TryGetValue(frame.CropId, out var part) && part ? _partSurfaces : _wholeSurfaces;
+                    onto = SpareOf(pool, _videoDecoder, frame.Width, frame.Height);
+                }
+
+                produced = _videoDecoder.DecodeInto(frame.Data, ref _image, out var width, out var height, read: !hurry, onto: onto);
+                onCard = produced && onto is not null && _videoDecoder.LastWasLeftOnCard;
+                if (onCard)
+                {
+                    width = onto!.Width;
+                    height = onto.Height;
+                }
+
                 if (produced && !hurry)
                 {
                     resized = width != _width || height != _height;
@@ -688,6 +879,7 @@ public sealed class ScreenViewer : IAsyncDisposable
                 _decodeInMemory = true;
                 _videoDecoder.Dispose();
                 _videoDecoder = null;
+                ReleaseSurfaces();
                 produced = false;
             }
         }
@@ -719,6 +911,11 @@ public sealed class ScreenViewer : IAsyncDisposable
 
         _hurriedInARow = 0;
         _videoShown = true;
+        if (onCard)
+        {
+            PresentSurface(frame.FrameNo, pool!, onto!, resized, frame.CropId);
+            return;
+        }
 
         // Video carries the whole picture every time, so nothing has to be carried over between buffers.
         Present(frame.FrameNo, [new Rectangle(0, 0, _width, _height)], resized, accumulates: false, frame.CropId);
@@ -799,12 +996,15 @@ public sealed class ScreenViewer : IAsyncDisposable
         var skipped = _skipped - _reportedSkipped;
         var (delivered, repaired, lost) = Datagrams;
         var hurried = _hurried - _reportedHurried;
+        var onCard = _onCard - _reportedOnCard;
         _logger.LogInformation(
             "View of {Peer} (stream {Stream}): {Rate:F1} frames/s decoded, {Shown:F1} shown, {Skipped} not shown "
-            + "while the window was busy, {Hurried} decoded without being drawn to catch up; by UDP {Delivered} "
-            + "pictures of which {Repaired} had a lost datagram rebuilt, {Lost} given up on",
-            PeerName, StreamId, decoded / seconds, (decoded - skipped - hurried) / seconds, skipped, hurried, delivered, repaired, lost);
+            + "while the window was busy, {Hurried} decoded without being drawn to catch up, {OnCard} left on the "
+            + "graphics card for the window; by UDP {Delivered} pictures of which {Repaired} had a lost datagram "
+            + "rebuilt, {Lost} given up on",
+            PeerName, StreamId, decoded / seconds, (decoded - skipped - hurried) / seconds, skipped, hurried, onCard, delivered, repaired, lost);
         _reportedHurried = _hurried;
+        _reportedOnCard = _onCard;
         _reportedTicks = now;
         _reportedDecoded = _decoded;
         _reportedSkipped = _skipped;
