@@ -448,6 +448,90 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
         await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
     }
 
+    /// <summary>
+    /// A view switches to another of the source's monitors, and back, and again. The stream has to live through
+    /// it and stay video. It did not: the capture of the monitor being left is closed from the thread that
+    /// handles the request while the stream's own loop may still be holding it, and a frame read from a closed
+    /// capture was a null reference that first cost the stream its graphics card, then its codec, then itself.
+    /// Needs a second monitor.
+    /// </summary>
+    [Fact(Explicit = true)]
+    public async Task SwitchingMonitorsUnderAStreamDoesNotEndIt()
+    {
+        if (!VideoCodecSupport.CanEncodeH264 || !VideoCodecSupport.CanDecodeH264)
+        {
+            Assert.Skip("No hardware H.264 encoder (or no decoder) on this machine.");
+        }
+
+        var monitors = DisplayCatalog.Monitors().Count;
+        Assert.SkipWhen(monitors < 2, "This machine has one monitor; there is nothing to switch to.");
+
+        var ct = TestContext.Current.CancellationToken;
+        var discoveryA = FreeUdpPort();
+        var discoveryB = FreeUdpPort();
+        var a = CreateNode("SwitchA", discoveryA, $"127.0.0.1:{discoveryB}");
+        var b = CreateNode("SwitchB", discoveryB, $"127.0.0.1:{discoveryA}");
+        a.Settings.Screen.VideoCodec = Core.Settings.VideoCodec.Auto;
+        await a.StartAsync();
+        await b.StartAsync();
+
+        var log = Path.Combine(Path.GetTempPath(), "winmirroring-stream-switch.log");
+        File.WriteAllText(log, string.Empty);
+        await using var screenA = new ScreenStreamingService(a, new FileLogger<ScreenStreamingService>(log));
+        await using var screenB = new ScreenStreamingService(b, new FileLogger<ScreenStreamingService>(log));
+        screenA.Start();
+        screenB.Start();
+
+        await WaitUntilAsync(() => b.Peers.TryGet(a.Identity.Id, out var peer) && peer.TransportEndPoint is not null, ct);
+        Assert.True(await b.PairAsync(a.Identity.Id, ct));
+        await WaitUntilAsync(() => a.Sessions.TryGetSession(b.Identity.Id, out var s) && s.State == SessionState.Ready, ct);
+        await WaitUntilAsync(() => screenA.PeerVirtualDisplay(b.Identity.Id) is not null, ct);
+
+        var opened = new TaskCompletionSource<ScreenViewer>(TaskCreationOptions.RunContinuationsAsynchronously);
+        screenB.ViewerOpened += viewer => opened.TrySetResult(viewer);
+        Assert.True(await screenB.RequestScreenAsync(a.Identity.Id, 0));
+        var viewer = await opened.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        string? ended = null;
+        var closed = false;
+        viewer.Closed += (_, reason) =>
+        {
+            ended = reason ?? "(no reason)";
+            closed = true;
+        };
+
+        var frames = 0;
+        viewer.Attach(_ =>
+        {
+            Interlocked.Increment(ref frames);
+            viewer.FramePresented();
+        });
+        await WaitUntilAsync(() => Volatile.Read(ref frames) > 0, ct);
+        Assert.Equal("h264", viewer.Info.Codec);
+
+        for (var i = 0; i < 14; i++)
+        {
+            var target = (viewer.Info.MonitorIndex + 1) % monitors;
+            viewer.SwitchMonitor(target);
+            await WaitUntilAsync(() => closed || viewer.Info.MonitorIndex == target, ct);
+            Assert.False(closed, $"the stream ended at switch {i + 1}: {ended}");
+
+            // Not the same wait every time, so the switch lands in different places of the stream's own loop.
+            await Task.Delay(20 + (i * 53 % 160), ct);
+            Assert.False(closed, $"the stream ended after switch {i + 1}: {ended}");
+        }
+
+        // Still video, and still producing pictures.
+        Assert.Equal("h264", viewer.Info.Codec);
+        var before = Volatile.Read(ref frames);
+        viewer.SetCrop(ViewParts.Whole, 9);
+        await WaitUntilAsync(() => closed || Volatile.Read(ref frames) > before, ct);
+        Assert.False(closed, $"the stream ended after the last switch: {ended}");
+
+        viewer.Close();
+        await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
+    }
+
     private static List<(int Width, int Height)> Seen(List<(int Width, int Height)> sizes)
     {
         lock (sizes)

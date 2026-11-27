@@ -204,6 +204,22 @@ internal sealed class WgcCapture : IDisposable
     /// Runs <paramref name="use"/> on the latest frame while it is held still, and reports what it returned. The
     /// texture is only valid for the duration of the call.
     /// </summary>
+    /// <summary>
+    /// This capture has been closed. A stream that switches monitors closes the capture it had from another thread
+    /// than the one that is reading frames from it, so the reader can find itself holding a capture that has just
+    /// stopped existing — and must be able to tell that from a capture, or a graphics card, that has failed.
+    /// </summary>
+    public bool IsDisposed
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _disposed;
+            }
+        }
+    }
+
     public bool WithLatestFrame(Func<ID3D11Texture2D, bool> use)
     {
         lock (_gate)
@@ -221,7 +237,11 @@ internal sealed class WgcCapture : IDisposable
             width = _width;
             height = _height;
             version = _version;
-            if (version == 0 || _frame is null)
+
+            // Closed: there is no frame. Without this the frame was still looked at after it had been given up,
+            // which is a null reference, which ended the whole stream — every time a view switched monitors at
+            // the wrong moment.
+            if (_disposed || version == 0 || _frame is null)
             {
                 return false;
             }
@@ -391,8 +411,16 @@ internal sealed class WgcCapture : IDisposable
         _pool.FrameArrived -= OnFrameArrived;
         _session.Dispose();
         _pool.Dispose();
-        _staging?.Dispose();
-        _frame?.Dispose();
+
+        // Under the same lock everything that reads the frame holds, so nobody is in the middle of it.
+        lock (_gate)
+        {
+            _staging?.Dispose();
+            _staging = null;
+            _frame?.Dispose();
+            _frame = null;
+        }
+
         if (_shared is null)
         {
             // Only our own device is ours to close; the shared one outlives every stream.

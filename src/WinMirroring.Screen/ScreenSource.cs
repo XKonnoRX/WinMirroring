@@ -1044,6 +1044,13 @@ internal sealed class ScreenSource : IAsyncDisposable
         }
         catch (Exception ex)
         {
+            if (capture.IsDisposed)
+            {
+                // Not the encoder's failure: the capture was closed under this frame by a switch of monitors.
+                _logger.LogDebug("A frame of {Title} was dropped as its capture closed: {Message}", Title, ex.Message);
+                return true;
+            }
+
             // With the exception, not just its message: this has happened once in the wild (while two monitors were
             // being streamed at once) and dropped a stream to tiles, and a message alone says nothing about where.
             _logger.LogWarning(ex, "H.264 encode failed for {Title}; using JPEG tiles", Title);
@@ -1076,6 +1083,13 @@ internal sealed class ScreenSource : IAsyncDisposable
 
         if (!capture.WithLatestFrame(source => converter.TryConvert(source, crop, target)))
         {
+            if (capture.IsDisposed)
+            {
+                // The view switched monitors and this capture was closed under us. That is not the card refusing:
+                // there is nothing to convert this turn, and the next turn has the new capture.
+                return true;
+            }
+
             return GiveUpOnGpu();
         }
 

@@ -89,6 +89,11 @@ public partial class ScreenViewerWindow
     /// <summary>Draws a picture of the whole screen from the card. False: it could not, and the frame is dropped.</summary>
     private bool ShowWholeSurface(FrameUpdate update, GpuSurface surface)
     {
+        if (surface.IsDisposed)
+        {
+            return false; // the view ended while this picture was on its way here; nothing has gone wrong
+        }
+
         try
         {
             _wholeSurface ??= new D3DImage();
@@ -118,6 +123,11 @@ public partial class ScreenViewerWindow
     /// <summary>The same for the part zoomed into. False: it could not, and the frame is dropped.</summary>
     private bool ShowPartSurface(GpuSurface surface)
     {
+        if (surface.IsDisposed)
+        {
+            return false;
+        }
+
         try
         {
             _partSurface ??= new D3DImage();
