@@ -107,8 +107,8 @@ public sealed class ScreenSettings
     public bool DirectPresent { get; set; } = true;
 
     /// <summary>
-    /// Viewing a device with several monitors: two fingers swiped sideways go to the monitor on that side (and so
-    /// are not passed on as a sideways scroll where there is one). On by default.
+    /// Viewing a device with several monitors: three fingers swiped sideways go to the monitor on that side (and so
+    /// are not passed on to the other device where there is one). On by default.
     /// </summary>
     public bool SwipeMonitors { get; set; } = true;
 
