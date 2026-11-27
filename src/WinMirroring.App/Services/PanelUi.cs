@@ -36,6 +36,12 @@ public sealed class PanelUi
     /// <summary>Closes the panel (a press that came from a device watching this screen, or a screen was chosen).</summary>
     public Action? Hide { get; set; }
 
+    /// <summary>Whether the panel is on the screen now; the small pictures of monitors are only asked for while it is.</summary>
+    public Func<bool>? IsShown { get; set; }
+
+    private System.Windows.Threading.DispatcherTimer? _pictureTimer;
+    private long _picturesPushedTicks;
+
     /// <summary>Opens the old settings window, the device field, and hides the floating button.</summary>
     public Action? OpenSettings { get; set; }
 
@@ -68,6 +74,24 @@ public sealed class PanelUi
         });
 
         _bar.Changed += Changed;
+
+        // Pictures of the other monitors, for the buttons that switch to them: wanted while the panel is open,
+        // asked for again every second (the device sending them stops by itself when the asking stops), and
+        // shown as they arrive — though not more often than once a second, since each showing redraws the panel.
+        _viewers.MonitorPicturesChanged += () =>
+        {
+            var now = Environment.TickCount64;
+            if (IsShown?.Invoke() == true && now - _picturesPushedTicks >= 1000)
+            {
+                _picturesPushedTicks = now;
+                _bridge.Push("panel.changed");
+            }
+        };
+        _pictureTimer = new System.Windows.Threading.DispatcherTimer(
+            TimeSpan.FromSeconds(1),
+            System.Windows.Threading.DispatcherPriority.Background,
+            (_, _) => _viewers.WantMonitorPictures(IsShown?.Invoke() == true),
+            Application.Current.Dispatcher);
     }
 
     private void Changed() => Application.Current?.Dispatcher.BeginInvoke(() => _bridge.Push("panel.changed"));
@@ -91,6 +115,7 @@ public sealed class PanelUi
                 inputOn = v.InputOn,
                 zoom = v.Zoom,
             }).ToList(),
+            stats = _vm.ScreenShowStats,
             bar = new
             {
                 visible = _bar.Visible,
@@ -107,15 +132,30 @@ public sealed class PanelUi
             {
                 id = p.Id,
                 name = p.Name,
-                monitors = _screen.PeerMonitors(p.Id)
-                    .Select(m => new { index = m.Index, label = m.Label, primary = m.Primary, key = m.Key })
-                    .ToList(),
+                monitors = MonitorsOf(p.Id),
                 screenOpen = _viewers.IsScreenOpen(p.Id),
                 secondMonitor = _vm.IsSecondMonitor(p.Id),
                 canBecome = _screen.PeerVirtualDisplay(p.Id),
                 sound = new { here = _vm.SoundHereChoice(p.Id).ToString(), playing = _vm.IsSoundFrom(p.Id), sentTo = _vm.IsSoundSentTo(p.Id) },
             }).ToList(),
         };
+    }
+
+    private object MonitorsOf(string peerId)
+    {
+        var pictures = _viewers.MonitorPictures(peerId);
+        var shown = _viewers.ShownMonitorOf(peerId);
+        return _screen.PeerMonitors(peerId)
+            .Select(m => new
+            {
+                index = m.Index,
+                label = m.Label,
+                primary = m.Primary,
+                key = m.Key,
+                image = pictures.TryGetValue(m.Key, out var picture) ? picture : null,
+                shown = shown is { Length: > 0 } && string.Equals(shown, m.Key, StringComparison.OrdinalIgnoreCase),
+            })
+            .ToList();
     }
 
     private async Task<object?> RunAsync(CommandArgs call)
@@ -140,6 +180,14 @@ public sealed class PanelUi
 
             case "zoom":
                 _viewers.ZoomView(call.StreamId, call.Text switch { "in" => 1, "out" => -1, _ => 0 });
+                break;
+
+            case "stats":
+                _vm.ScreenShowStats = call.On ?? !_vm.ScreenShowStats;
+                break;
+
+            case "mark":
+                _viewers.MarkHitch(call.StreamId);
                 break;
 
             case "viewInput":

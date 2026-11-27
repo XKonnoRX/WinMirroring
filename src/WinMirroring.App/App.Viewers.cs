@@ -26,6 +26,7 @@ public partial class App : IViewerControl
         }
 
         var window = new ScreenViewerWindow(viewer, _services!) { WaitToResume = WaitToResume };
+        viewer.MonitorPicturesChanged += _ => Dispatcher.BeginInvoke(() => MonitorPicturesChanged?.Invoke());
         window.Activated += (_, _) =>
         {
             _activeView = viewer.StreamId;
@@ -246,4 +247,23 @@ public partial class App : IViewerControl
     public void SetViewInput(uint streamId, bool on) => FindView(streamId)?.SetInput(on);
 
     public void ZoomView(uint streamId, int direction) => FindView(streamId)?.ZoomFromPanel(direction);
+
+    public void MarkHitch(uint streamId) => FindView(streamId)?.MarkHitch();
+
+    public event Action? MonitorPicturesChanged;
+
+    public IReadOnlyDictionary<string, string> MonitorPictures(string peerId) =>
+        FindScreenView(peerId)?.Viewer.MonitorPictures.ToDictionary(
+            p => p.Key,
+            p => "data:image/jpeg;base64," + Convert.ToBase64String(p.Value.Jpeg),
+            StringComparer.OrdinalIgnoreCase)
+        ?? new Dictionary<string, string>();
+
+    public void WantMonitorPictures(bool on)
+    {
+        foreach (var view in _openViewers.Where(v => v.Viewer.Info.Kind == "monitor" && !v.IsWaitingToResume))
+        {
+            view.Viewer.WantMonitorPictures(on && view.Viewer.Info.MonitorCount > 1);
+        }
+    }
 }

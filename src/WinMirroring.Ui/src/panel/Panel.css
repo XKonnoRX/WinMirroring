@@ -58,6 +58,24 @@
   transition: background 130ms var(--ease), border-color 130ms var(--ease);
 }
 
+/* A button for a monitor, with a small live picture of what is on it. */
+.item.has-picture {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+}
+
+.monitor-picture {
+  flex: none;
+  width: 112px;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: #000;
+}
+
 .item:hover {
   background: var(--surface-hover);
   border-color: #3a4556;

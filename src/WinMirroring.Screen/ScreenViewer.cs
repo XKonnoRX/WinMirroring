@@ -410,6 +410,94 @@ public sealed class ScreenViewer : IAsyncDisposable
 
     public void Close() => _ = CloseAsync(notifySource: true, reason: null);
 
+    // ---- small pictures of the source's other monitors ------------------------------------------------
+
+    /// <summary>One of them: a JPEG, and when it came.</summary>
+    public sealed record MonitorPicture(string MonitorKey, int Width, int Height, byte[] Jpeg, long ReceivedTicks);
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, MonitorPicture> _pictures = new(StringComparer.OrdinalIgnoreCase);
+    private long _picturesAskedTicks;
+    private bool _picturesOn;
+
+    /// <summary>The latest picture of each of the source's other monitors, by the monitor's name; empty until asked for.</summary>
+    public IReadOnlyDictionary<string, MonitorPicture> MonitorPictures => _pictures;
+
+    /// <summary>A new picture of one of them arrived. Raised off the UI thread.</summary>
+    public event Action<ScreenViewer>? MonitorPicturesChanged;
+
+    /// <summary>
+    /// Asks the source to keep sending them, or to stop. Meant to be called again every second or so for as long
+    /// as they are wanted — the source stops by itself when it has not been asked for a while, so a viewer that
+    /// simply goes away is not sent them for ever.
+    /// </summary>
+    public void WantMonitorPictures(bool on)
+    {
+        var now = Environment.TickCount64;
+        if (on == _picturesOn && (!on || now - _picturesAskedTicks < 2000))
+        {
+            return;
+        }
+
+        _picturesOn = on;
+        _picturesAskedTicks = now;
+        if (!on)
+        {
+            _pictures.Clear();
+        }
+
+        _ = SendControlAsync(new ScreenThumbsMessage(StreamId, on));
+    }
+
+    internal void OnThumbnail(ScreenThumbMessage thumb)
+    {
+        if (thumb.Jpeg.Length is 0 or > 256 * 1024 || _pictures.Count > 16 && !_pictures.ContainsKey(thumb.MonitorKey))
+        {
+            return;
+        }
+
+        _pictures[thumb.MonitorKey] = new MonitorPicture(thumb.MonitorKey, thumb.Width, thumb.Height, thumb.Jpeg, Environment.TickCount64);
+        MonitorPicturesChanged?.Invoke(this);
+    }
+
+    /// <summary>How the stream is doing as its source last said (about once a second), or null before it has.</summary>
+    public ScreenStatsMessage? Stats { get; private set; }
+
+    internal void OnStats(ScreenStatsMessage stats) => Stats = stats;
+
+    /// <summary>What this end has counted since the view opened, for showing beside what the source says.</summary>
+    public sealed record ViewCounts(long Decoded, long NotShown, long Hurried, long OnCard, long ByDatagram, long Rebuilt, long GivenUp, long AskedAgain);
+
+    public ViewCounts Counts
+    {
+        get
+        {
+            var (delivered, repaired, lost) = Datagrams;
+            return new ViewCounts(
+                Volatile.Read(ref _decoded), Volatile.Read(ref _skipped), Volatile.Read(ref _hurried), Volatile.Read(ref _onCard),
+                delivered, repaired, lost, PiecesAskedFor);
+        }
+    }
+
+    /// <summary>
+    /// The person watching says the stream hitched just now. Written to this device's log with what it is
+    /// counting, and passed to the source, which writes what it is measuring: two lines at the same second, one
+    /// from each end, which is where looking for the cause starts.
+    /// </summary>
+    public void MarkHitch(string note)
+    {
+        var counts = Counts;
+        var stats = Stats;
+        _logger.LogWarning(
+            "HITCH marked here in the view of {Peer} (stream {Stream}): {Note}. So far: {Decoded} decoded, {NotShown} "
+            + "not shown while the window was busy, {Hurried} hurried, {OnCard} left on the card; by UDP {ByDatagram} "
+            + "pictures, {Rebuilt} rebuilt, {GivenUp} given up, {Asked} requests for pieces; {Waiting} waiting to be "
+            + "decoded; the source last said: acknowledged in {Ack} ms, {Kbps} kbit/s, {Fps} frames/s, {Path}",
+            PeerName, StreamId, note, counts.Decoded, counts.NotShown, counts.Hurried, counts.OnCard, counts.ByDatagram,
+            counts.Rebuilt, counts.GivenUp, counts.AskedAgain, Volatile.Read(ref _waiting),
+            stats?.AckMs, stats?.Kbps, stats?.Fps, stats is null ? "nothing yet" : stats.Udp ? "UDP" : "the connection");
+        _ = SendControlAsync(new ScreenMarkMessage(StreamId, note));
+    }
+
     /// <summary>The source says a tap from here put the focus in a text box there (true), or took it out (false).</summary>
     public event Action<ScreenViewer, bool>? KeyboardHint;
 

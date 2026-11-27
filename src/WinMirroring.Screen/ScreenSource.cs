@@ -140,6 +140,15 @@ internal sealed class ScreenSource : IAsyncDisposable
     private long _lastBlockedReport = -10_000;
     private long _monitorCheckedTicks;
 
+    /// <summary>How often the viewer is told how the stream is doing (see ScreenStatsMessage).</summary>
+    private static readonly TimeSpan StatsEvery = TimeSpan.FromSeconds(1);
+
+    private long _statsTicks;
+    private long _statsFrames;
+    private long _statsBytes;
+    private double _statsEncoderMs;
+    private int _reportNow;
+
     // Diagnostics, written and read by the streaming loop only.
     private long _reportedTicks;
     private long _reportedChanges;
@@ -1283,6 +1292,8 @@ internal sealed class ScreenSource : IAsyncDisposable
                     await _window.TakeAsync(frameNo, ct).ConfigureAwait(false);
                     Interlocked.Increment(ref _framesSent);
                     Interlocked.Add(ref _bytesSent, message.Length);
+                    Interlocked.Increment(ref _statsFrames);
+                    Interlocked.Add(ref _statsBytes, message.Length);
                     var carried = _link is { Carries: true };
                     if (!TrySendByUdp(message))
                     {
@@ -1367,11 +1378,12 @@ internal sealed class ScreenSource : IAsyncDisposable
             }
         }
 
+        TellTheViewer(now, reading, fps);
         if (_reportedTicks == 0)
         {
             _reportedTicks = now;
         }
-        else if (now - _reportedTicks >= ReportEvery.TotalMilliseconds)
+        else if (now - _reportedTicks >= ReportEvery.TotalMilliseconds || Interlocked.Exchange(ref _reportNow, 0) == 1)
         {
             var seconds = (now - _reportedTicks) / 1000.0;
 
@@ -1385,6 +1397,11 @@ internal sealed class ScreenSource : IAsyncDisposable
             var encoderMs = Interlocked.Exchange(ref _heldFrames, 0) is var held and > 0
                 ? Interlocked.Exchange(ref _heldTicks, 0) * 1000.0 / Stopwatch.Frequency / held
                 : 0;
+            if (encoderMs > 0)
+            {
+                _statsEncoderMs = encoderMs;
+            }
+
             _logger.LogInformation(
                 "Stream {Stream} to {Peer}: {Codec} over {Path}, {Rate:F1} messages/s, {Kbps:F0} kbit/s at {Share:P0} "
                 + "of the configured bitrate{Held}, {Fps} fps asked for, bitrate moved {Changes} times, "
@@ -1416,6 +1433,135 @@ internal sealed class ScreenSource : IAsyncDisposable
         }
 
         return fps;
+    }
+
+    /// <summary>Once a second, the numbers the viewer cannot measure for itself (see ScreenStatsMessage).</summary>
+    private void TellTheViewer(long now, LinkReading reading, int fps)
+    {
+        if (_statsTicks == 0)
+        {
+            _statsTicks = now;
+            return;
+        }
+
+        var elapsed = now - _statsTicks;
+        if (elapsed < StatsEvery.TotalMilliseconds)
+        {
+            return;
+        }
+
+        _statsTicks = now;
+        var seconds = elapsed / 1000.0;
+        var frames = Interlocked.Exchange(ref _statsFrames, 0);
+        var bytes = Interlocked.Exchange(ref _statsBytes, 0);
+
+        // The encoder's time is averaged over the ten-second report; between reports the last one stands, and
+        // before the first there is the current average.
+        var heldFrames = Interlocked.Read(ref _heldFrames);
+        var encoderMs = heldFrames > 0 ? Interlocked.Read(ref _heldTicks) * 1000.0 / Stopwatch.Frequency / heldFrames : _statsEncoderMs;
+        var stats = new ScreenStatsMessage(
+            StreamId,
+            (int)Math.Round(reading.DelayMs),
+            (int)Math.Round(reading.ViewerMs),
+            (int)Math.Round(encoderMs),
+            (int)Math.Round(bytes * 8 / 1000.0 / seconds),
+            Math.Round(frames / seconds, 1),
+            _link is { Carries: true },
+            (int)Math.Round(_pacing.Share * 100),
+            reading.GivenUp,
+            _link?.Resent ?? 0);
+        _ = SendQuietlyAsync(stats);
+    }
+
+    private async Task SendQuietlyAsync(ControlMessage message)
+    {
+        try
+        {
+            await Session.SendControlAsync(message).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
+        {
+            // The stream's own loops notice a connection that has gone; this is only telling.
+        }
+    }
+
+    // ---- small pictures of the other monitors ------------------------------------------------------------
+
+    /// <summary>How often each of them is taken while the viewer wants them.</summary>
+    private static readonly TimeSpan ThumbsEvery = TimeSpan.FromMilliseconds(1500);
+
+    /// <summary>Asked for again within this long, or they stop: a viewer that has gone must not be sent them for ever.</summary>
+    private static readonly TimeSpan ThumbsWantedFor = TimeSpan.FromSeconds(6);
+
+    private long _thumbsWantedUntil;
+    private int _thumbsRunning;
+
+    /// <summary>The viewer wants (or no longer wants) pictures of this device's other monitors.</summary>
+    public void OnThumbsWanted(bool on)
+    {
+        if (!on || Kind != StreamKind.Monitor)
+        {
+            Volatile.Write(ref _thumbsWantedUntil, 0);
+            return;
+        }
+
+        Volatile.Write(ref _thumbsWantedUntil, Environment.TickCount64 + (long)ThumbsWantedFor.TotalMilliseconds);
+        if (Interlocked.Exchange(ref _thumbsRunning, 1) == 0)
+        {
+            _ = Task.Run(() => ThumbsLoopAsync(_cts.Token));
+        }
+    }
+
+    private async Task ThumbsLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested && Environment.TickCount64 < Volatile.Read(ref _thumbsWantedUntil))
+            {
+                var shown = _monitor?.DeviceName;
+                foreach (var monitor in DisplayCatalog.Monitors())
+                {
+                    if (string.Equals(monitor.DeviceName, shown, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue; // the one being watched is on the viewer's screen already, at full size
+                    }
+
+                    if (MonitorThumbnail.Capture(monitor.Bounds, out var width, out var height) is { } jpeg)
+                    {
+                        await Session.SendControlAsync(new ScreenThumbMessage(StreamId, monitor.DeviceName, width, height, jpeg), ct).ConfigureAwait(false);
+                    }
+                }
+
+                await Task.Delay(ThumbsEvery, ct).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or InvalidOperationException or ObjectDisposedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("Small pictures of the other monitors stopped: {Message}", ex.Message);
+        }
+        finally
+        {
+            Volatile.Write(ref _thumbsRunning, 0);
+        }
+    }
+
+    /// <summary>
+    /// The person watching says the stream hitched just now. Said in the log at once, and the stream's full line
+    /// is written straight after it rather than whenever its ten seconds are next up.
+    /// </summary>
+    public void OnMark(string note)
+    {
+        var reading = _window.Reading;
+        _logger.LogWarning(
+            "HITCH marked by the viewer of {Title} on {Peer} (stream {Stream}): {Note}. Just now: acknowledged in "
+            + "{Delay:F0} ms of which the viewer {Viewer:F0} ms, {InFlight} in flight, oldest unanswered for "
+            + "{Oldest:F0} ms, {GivenUp} not waited for so far, path {Path}",
+            Title, Session.PeerName, StreamId, note, reading.DelayMs, reading.ViewerMs, _window.InFlight,
+            _window.OldestAgeMs, reading.GivenUp, _link is { Carries: true } ? "UDP" : "the connection");
+        Interlocked.Exchange(ref _reportNow, 1);
     }
 
     private List<byte[]> BuildJpegMessages(byte[] frame, int frameWidth, int frameHeight, Rectangle crop, bool force)

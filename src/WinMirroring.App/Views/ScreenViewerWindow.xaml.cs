@@ -149,6 +149,7 @@ public partial class ScreenViewerWindow : Window
         _statsTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) =>
         {
             StatsText.Text = $"{_framesSinceTick} кадр/с";
+            ShowStats(_framesSinceTick);
             _framesSinceTick = 0;
 
             // Once a second is the throttle on this: the source rebuilds its encoder when the size changes, and

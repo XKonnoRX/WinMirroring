@@ -458,6 +458,38 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
 
                 break;
 
+            case ScreenStatsMessage stats:
+                if (_viewers.TryGetValue(stats.StreamId, out var told) && ReferenceEquals(told.Session, session))
+                {
+                    told.OnStats(stats);
+                }
+
+                break;
+
+            case ScreenThumbsMessage thumbs:
+                if (_sources.TryGetValue(thumbs.StreamId, out var pictured) && ReferenceEquals(pictured.Session, session))
+                {
+                    pictured.OnThumbsWanted(thumbs.On);
+                }
+
+                break;
+
+            case ScreenThumbMessage thumb:
+                if (_viewers.TryGetValue(thumb.StreamId, out var shownTo) && ReferenceEquals(shownTo.Session, session))
+                {
+                    shownTo.OnThumbnail(thumb);
+                }
+
+                break;
+
+            case ScreenMarkMessage mark:
+                if (_sources.TryGetValue(mark.StreamId, out var marked) && ReferenceEquals(marked.Session, session))
+                {
+                    marked.OnMark(mark.Note.Length > 200 ? mark.Note[..200] : mark.Note);
+                }
+
+                break;
+
             case ScreenStopMessage stop:
                 if (_sources.TryGetValue(stop.StreamId, out var source) && ReferenceEquals(source.Session, session) && _sources.TryRemove(stop.StreamId, out _))
                 {

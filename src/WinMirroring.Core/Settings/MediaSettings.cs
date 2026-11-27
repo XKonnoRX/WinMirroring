@@ -104,6 +104,13 @@ public sealed class ScreenSettings
     /// are not passed on as a sideways scroll where there is one). On by default.
     /// </summary>
     public bool SwipeMonitors { get; set; } = true;
+
+    /// <summary>
+    /// Viewing another device: a line over the picture with how the stream is doing — frames, the delay as the
+    /// source measures it, the path, the bitrate, what has been lost. Off by default; it is for when something
+    /// feels wrong and one wants to see what.
+    /// </summary>
+    public bool ShowStats { get; set; }
 }
 
 /// <summary>

@@ -21,6 +21,10 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(ScreenStreamMessage), "screen-stream")]
 [JsonDerivedType(typeof(ScreenStopMessage), "screen-stop")]
 [JsonDerivedType(typeof(ScreenKeyboardMessage), "screen-keyboard")]
+[JsonDerivedType(typeof(ScreenStatsMessage), "screen-stats")]
+[JsonDerivedType(typeof(ScreenMarkMessage), "screen-mark")]
+[JsonDerivedType(typeof(ScreenThumbsMessage), "screen-thumbs")]
+[JsonDerivedType(typeof(ScreenThumbMessage), "screen-thumb")]
 [JsonDerivedType(typeof(ScreenCodecFallbackMessage), "screen-fallback")]
 [JsonDerivedType(typeof(LogRequestMessage), "log-request")]
 [JsonDerivedType(typeof(LogResponseMessage), "log-response")]
@@ -222,6 +226,47 @@ public sealed record ScreenStopMessage(uint StreamId, string? Reason) : ControlM
 /// tablet itself. An older viewer does not know the message and ignores it.
 /// </summary>
 public sealed record ScreenKeyboardMessage(uint StreamId, bool Show) : ControlMessage;
+
+/// <summary>
+/// Source → viewer, about once a second while a stream runs: how the stream is doing as the source sees it. The
+/// viewer can count its own frames, but the numbers that say why a stream feels the way it does are measured at
+/// this end — how long a frame takes to be acknowledged, how long the encoder holds it, what is actually going
+/// out and by which path — and used to be readable only in this device's log, afterwards.
+/// </summary>
+/// <param name="AckMs">Milliseconds from sending a frame to its acknowledgement, smoothed.</param>
+/// <param name="ViewerMs">...of which the viewer itself held the frame for this long.</param>
+/// <param name="EncoderMs">How long the encoder holds a frame.</param>
+/// <param name="Udp">Pictures are going by datagram rather than on the connection.</param>
+/// <param name="SharePercent">Share of the configured bitrate the stream is asking for (100 unless held back).</param>
+/// <param name="GaveUp">Frames the source stopped waiting on an acknowledgement for, since the stream began.</param>
+/// <param name="Resent">Datagrams sent a second time at the viewer's request, since the stream began.</param>
+public sealed record ScreenStatsMessage(
+    uint StreamId,
+    int AckMs,
+    int ViewerMs,
+    int EncoderMs,
+    int Kbps,
+    double Fps,
+    bool Udp,
+    int SharePercent,
+    long GaveUp,
+    long Resent) : ControlMessage;
+
+/// <summary>
+/// Viewer → source: the person watching says the stream hitched just now. Both devices write a line in their logs
+/// with what they are measuring at that moment, so that looking for the cause afterwards starts at the right
+/// second instead of somewhere in an evening.
+/// </summary>
+public sealed record ScreenMarkMessage(uint StreamId, string Note) : ControlMessage;
+
+/// <summary>
+/// Viewer → source: start (or stop) sending small pictures of the device's other monitors. Asked for while the
+/// viewer has its menu open, where each monitor is a button, so that the buttons show what is on them.
+/// </summary>
+public sealed record ScreenThumbsMessage(uint StreamId, bool On) : ControlMessage;
+
+/// <summary>Source → viewer: one of those pictures, a JPEG a couple of hundred pixels wide.</summary>
+public sealed record ScreenThumbMessage(uint StreamId, string MonitorKey, int Width, int Height, byte[] Jpeg) : ControlMessage;
 
 /// <summary>Viewer → source: H.264 gives no picture here (no decoder, or it stays silent); send JPEG tiles instead.</summary>
 public sealed record ScreenCodecFallbackMessage(uint StreamId, string Reason) : ControlMessage;

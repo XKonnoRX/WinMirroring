@@ -184,6 +184,7 @@ const sampleSettings = {
     keyboardButton: true,
     directPresent: true,
     swipeMonitors: true,
+    showStats: false,
     closeUnusedMinutes: 5,
     maxFps: 60,
     quality: 70,
@@ -234,6 +235,7 @@ const samplePanel = {
     { streamId: 1, title: 'DESKTOP-P50HIEF: Монитор 1', peerId: 'tablet', kind: 'monitor', active: true, inputAllowed: true, inputOn: true, zoom: 1 },
     { streamId: 2, title: 'KONNY: Блокнот', peerId: 'self', kind: 'window', active: false, inputAllowed: true, inputOn: true, zoom: 1 },
   ],
+  stats: false,
   bar: { visible: true, active: 'Основные', presets: ['Основные', 'Браузер', 'Текст'] },
   input: { enabled: true, syncKeyboardLayout: true, adminControl: false },
   devices: [

@@ -637,6 +637,86 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
         await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
     }
 
+    /// <summary>
+    /// The viewer is told, about once a second, how the stream is doing as the source measures it; and when the
+    /// person watching says it hitched, both ends write that down at once, each with its own numbers.
+    /// </summary>
+    [Fact(Explicit = true)]
+    public async Task TheViewerIsToldHowTheStreamIsDoingAndCanMarkAHitch()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var discoveryA = FreeUdpPort();
+        var discoveryB = FreeUdpPort();
+        var a = CreateNode("StatsA", discoveryA, $"127.0.0.1:{discoveryB}");
+        var b = CreateNode("StatsB", discoveryB, $"127.0.0.1:{discoveryA}");
+        a.Settings.Screen.VideoCodec = Core.Settings.VideoCodec.Auto;
+        await a.StartAsync();
+        await b.StartAsync();
+
+        var log = Path.Combine(Path.GetTempPath(), "winmirroring-stream-stats.log");
+        File.WriteAllText(log, string.Empty);
+        await using var screenA = new ScreenStreamingService(a, new FileLogger<ScreenStreamingService>(log));
+        await using var screenB = new ScreenStreamingService(b, new FileLogger<ScreenStreamingService>(log));
+        screenA.Start();
+        screenB.Start();
+
+        await WaitUntilAsync(() => b.Peers.TryGet(a.Identity.Id, out var peer) && peer.TransportEndPoint is not null, ct);
+        Assert.True(await b.PairAsync(a.Identity.Id, ct));
+        await WaitUntilAsync(() => a.Sessions.TryGetSession(b.Identity.Id, out var s) && s.State == SessionState.Ready, ct);
+        await WaitUntilAsync(() => screenA.PeerVirtualDisplay(b.Identity.Id) is not null, ct);
+
+        var opened = new TaskCompletionSource<ScreenViewer>(TaskCreationOptions.RunContinuationsAsynchronously);
+        screenB.ViewerOpened += viewer => opened.TrySetResult(viewer);
+        Assert.True(await screenB.RequestScreenAsync(a.Identity.Id, 0));
+        var viewer = await opened.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+        viewer.Attach(_ => viewer.FramePresented());
+
+        await WaitUntilAsync(() => viewer.Stats is not null && viewer.Counts.Decoded > 0, ct);
+        var stats = viewer.Stats!;
+        Assert.Equal(viewer.StreamId, stats.StreamId);
+        Assert.InRange(stats.AckMs, 0, 5000);
+        Assert.InRange(stats.SharePercent, 30, 100);
+
+        // Small pictures of the other monitors, for as long as they are asked for.
+        Assert.Empty(viewer.MonitorPictures);
+        if (DisplayCatalog.Monitors().Count > 1)
+        {
+            viewer.WantMonitorPictures(true);
+            await WaitUntilAsync(() => viewer.MonitorPictures.Count == DisplayCatalog.Monitors().Count - 1, ct);
+            Assert.DoesNotContain(viewer.Info.MonitorKey, viewer.MonitorPictures.Keys);
+            foreach (var picture in viewer.MonitorPictures.Values)
+            {
+                Assert.Equal(Capture.MonitorThumbnail.Width, picture.Width);
+                Assert.InRange(picture.Height, 16, 1024);
+                Assert.InRange(picture.Jpeg.Length, 500, 200_000);
+                Assert.Equal((0xFF, 0xD8), (picture.Jpeg[0], picture.Jpeg[1])); // a JPEG
+            }
+
+            // Kept where it can be looked at: that it is a JPEG says nothing about what it is a picture of.
+            foreach (var picture in viewer.MonitorPictures.Values)
+            {
+                var monitor = DisplayCatalog.Monitors().First(m => m.DeviceName == picture.MonitorKey);
+                File.WriteAllBytes(Path.Combine(Path.GetTempPath(), $"winmirroring-monitor-picture-{monitor.Index + 1}.jpg"), picture.Jpeg);
+                File.AppendAllText(log, $"picture of monitor {monitor.Index + 1} {monitor.DeviceName} at {monitor.Bounds}: {picture.Width}x{picture.Height}, {picture.Jpeg.Length} bytes{Environment.NewLine}");
+            }
+
+            viewer.WantMonitorPictures(false);
+            Assert.Empty(viewer.MonitorPictures);
+        }
+
+        viewer.MarkHitch("a test said so");
+        await WaitUntilAsync(() =>
+        {
+            var written = File.ReadAllText(log);
+            return written.Contains("HITCH marked here", StringComparison.Ordinal)
+                && written.Contains("HITCH marked by the viewer", StringComparison.Ordinal)
+                && written.Contains("a test said so", StringComparison.Ordinal);
+        }, ct);
+
+        viewer.Close();
+        await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
+    }
+
     private static List<(int Width, int Height)> Seen(List<(int Width, int Height)> sizes)
     {
         lock (sizes)

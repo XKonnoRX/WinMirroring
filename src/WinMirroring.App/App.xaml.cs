@@ -206,6 +206,7 @@ public partial class App : Application
 
             var panel = _services.GetRequiredService<PanelUi>();
             panel.Hide = HideWebPanel;
+            panel.IsShown = () => _webPanel is { IsVisible: true };
             panel.OpenHub = ShowHub;
             panel.OpenSettings = ShowMainWindow;
             panel.OpenButtonEditor = ShowButtonEditor;

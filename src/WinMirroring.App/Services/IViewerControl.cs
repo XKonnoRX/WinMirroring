@@ -47,4 +47,19 @@ public interface IViewerControl
 
     /// <summary>Zooms the view in (positive), out (negative), or back to the whole picture (zero).</summary>
     void ZoomView(uint streamId, int direction);
+
+    /// <summary>
+    /// Small pictures of the monitors of a device whose screen is open here, by monitor name, as images a page can
+    /// show ("data:image/jpeg;base64,…"). Empty when no view of it is open or none have arrived.
+    /// </summary>
+    IReadOnlyDictionary<string, string> MonitorPictures(string peerId);
+
+    /// <summary>Says whether those pictures are wanted just now (while the menu that shows them is open).</summary>
+    void WantMonitorPictures(bool on);
+
+    /// <summary>A picture arrived; raised on the UI thread.</summary>
+    event Action? MonitorPicturesChanged;
+
+    /// <summary>The person watching says this view hitched just now: both devices note it in their logs.</summary>
+    void MarkHitch(uint streamId);
 }

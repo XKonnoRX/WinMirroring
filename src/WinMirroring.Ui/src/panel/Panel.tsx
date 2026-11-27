@@ -119,6 +119,18 @@ export function Panel() {
                       +
                     </button>
                   </div>
+                  {/* For when something feels wrong: the numbers, live, and a way to say "it was just now" that
+                      both devices write down. */}
+                  <button className={`item${state.stats ? ' is-on' : ''}`} onClick={() => void run('stats', { on: !state.stats })}>
+                    Показатели поверх изображения
+                  </button>
+                  <button
+                    className="item"
+                    onClick={() => void run('mark', { streamId: view.streamId })}
+                    title="Записать в журналы обоих устройств, что трансляция подвисла именно сейчас"
+                  >
+                    Подвисло — отметить в журнале
+                  </button>
                   {(view.kind === 'monitor' || view.kind === 'display') && (
                     <>
                       <button
@@ -166,10 +178,14 @@ export function Panel() {
               device.monitors.map((monitor, index) => (
                 <button
                   key={monitor.index}
-                  className="item"
+                  className={`item${monitor.shown ? ' is-on' : ''}${monitor.image ? ' has-picture' : ''}`}
                   onClick={() => void run('showScreen', { deviceId: device.id, monitor: monitor.index, text: monitor.key })}
                 >
-                  {monitor.primary ? 'Основной экран' : `Монитор ${index + 1}`} <span className="dim">{monitor.label}</span>
+                  {/* What is on that monitor now, so the button can be recognised rather than read. */}
+                  {monitor.image && <img className="monitor-picture" src={monitor.image} alt="" />}
+                  <span>
+                    {monitor.primary ? 'Основной экран' : `Монитор ${index + 1}`} <span className="dim">{monitor.label}</span>
+                  </span>
                 </button>
               ))
             ) : (
