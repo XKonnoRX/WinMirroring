@@ -14,7 +14,7 @@ using WinMirroring.Screen.Transport;
 namespace WinMirroring.Screen;
 
 /// <summary>Changed part of the shared image after one frame message; the UI copies these rectangles.</summary>
-public sealed record FrameUpdate(uint FrameNo, int Width, int Height, byte[] Image, IReadOnlyList<Rectangle> Dirty, bool Resized);
+public sealed record FrameUpdate(uint FrameNo, int Width, int Height, byte[] Image, IReadOnlyList<Rectangle> Dirty, bool Resized, byte CropId = 0);
 
 /// <summary>
 /// Viewer side of one stream, independent of the UI. Decodes frames into a persistent BGRA image and hands each
@@ -144,12 +144,32 @@ public sealed class ScreenViewer : IAsyncDisposable
         Volatile.Write(ref _presentingSince, 0);
     }
 
-    public void SendPointer(PointerAction action, MouseButton button, float x, float y, int wheel = 0) =>
-        _outbox.Writer.TryWrite(ScreenCodec.EncodePointer(StreamId, action, button, x, y, wheel));
+    /// <summary>
+    /// The part of the whole picture the source is sending at the moment, as the window last asked for it (see
+    /// <see cref="SetCrop"/>): the whole of it unless the window has zoomed in. The window goes on thinking in
+    /// positions on the whole picture — that is what it lays out and what its pointer is measured on — while the
+    /// source reads every position against the part it is sending, so they are converted here, on the way out and
+    /// on the way in. Against what was last <em>asked for</em>, not what is on the screen: positions travel on the
+    /// same connection, in order, behind the request, so by the time the source reads one that request is the part
+    /// it is sending.
+    /// </summary>
+    private sealed record Part(float X, float Y, float Width, float Height);
+
+    private static readonly Part Whole = new(0, 0, 1, 1);
+    private volatile Part _part = Whole;
+
+    public void SendPointer(PointerAction action, MouseButton button, float x, float y, int wheel = 0)
+    {
+        var part = _part;
+        _outbox.Writer.TryWrite(ScreenCodec.EncodePointer(StreamId, action, button, (x - part.X) / part.Width, (y - part.Y) / part.Height, wheel));
+    }
 
     /// <summary>Touch contact: action 1 down, 2 move, 3 up, 4 cancel; <paramref name="contact"/> 0–9.</summary>
-    public void SendTouch(byte action, byte contact, float x, float y) =>
-        _outbox.Writer.TryWrite(ScreenCodec.EncodeTouch(StreamId, action, contact, x, y));
+    public void SendTouch(byte action, byte contact, float x, float y)
+    {
+        var part = _part;
+        _outbox.Writer.TryWrite(ScreenCodec.EncodeTouch(StreamId, action, contact, (x - part.X) / part.Width, (y - part.Y) / part.Height));
+    }
 
     public void SendKey(ushort virtualKey, ushort scanCode, bool up, bool extended) =>
         _outbox.Writer.TryWrite(ScreenCodec.EncodeKey(StreamId, virtualKey, scanCode, up, extended));
@@ -164,7 +184,16 @@ public sealed class ScreenViewer : IAsyncDisposable
     }
 
     /// <summary>Stream only this normalized part of the source image (the full image is 0,0,1,1).</summary>
-    public void SetCrop(RectangleF crop) => _outbox.Writer.TryWrite(ScreenCodec.EncodeCrop(StreamId, ScreenCodec.Normalize(crop)));
+    /// <remarks>
+    /// <paramref name="id"/> names the request, and comes back on every picture made of it
+    /// (<see cref="FrameUpdate.CropId"/>). <paramref name="part"/> says which part of the picture the window lays
+    /// out this request is — null for all of it — and is what positions are converted against from here on.
+    /// </remarks>
+    public void SetCrop(RectangleF crop, byte id = 0, RectangleF? part = null)
+    {
+        _part = part is { Width: > 0, Height: > 0 } p ? new Part(p.X, p.Y, p.Width, p.Height) : Whole;
+        _outbox.Writer.TryWrite(ScreenCodec.EncodeCrop(StreamId, ScreenCodec.Normalize(crop), id));
+    }
 
     /// <summary>
     /// Tells the source how large the picture is actually being drawn here, in real pixels, so it can encode it
@@ -365,8 +394,8 @@ public sealed class ScreenViewer : IAsyncDisposable
     }
 
     /// <summary>A picture is whole: into the decoder it goes, exactly as one off the connection would.</summary>
-    private void OnWholePicture(uint frameNo, int width, int height, bool keyframe, ReadOnlySpan<byte> picture) =>
-        Enqueue(ScreenCodec.EncodeVideoFrame(StreamId, frameNo, width, height, keyframe, picture));
+    private void OnWholePicture(uint frameNo, int width, int height, bool keyframe, ReadOnlySpan<byte> picture, byte tag) =>
+        Enqueue(ScreenCodec.EncodeVideoFrame(StreamId, frameNo, width, height, keyframe, picture, tag));
 
     /// <summary>
     /// A picture lost more than one of its datagrams and is not coming. It is acknowledged all the same, because a
@@ -463,6 +492,9 @@ public sealed class ScreenViewer : IAsyncDisposable
 
         if (ScreenCodec.TryDecodeCursor(message) is { } cursor)
         {
+            // The source says where its pointer is on the part it is sending; the window wants it on the whole.
+            var part = _part;
+            cursor = cursor with { X = part.X + (cursor.X * part.Width), Y = part.Y + (cursor.Y * part.Height) };
             Pointer = cursor;
             PointerMoved?.Invoke(this, cursor);
         }
@@ -680,7 +712,7 @@ public sealed class ScreenViewer : IAsyncDisposable
         _videoShown = true;
 
         // Video carries the whole picture every time, so nothing has to be carried over between buffers.
-        Present(frame.FrameNo, [new Rectangle(0, 0, _width, _height)], resized, accumulates: false);
+        Present(frame.FrameNo, [new Rectangle(0, 0, _width, _height)], resized, accumulates: false, frame.CropId);
     }
 
     /// <summary>
@@ -693,7 +725,7 @@ public sealed class ScreenViewer : IAsyncDisposable
     /// video needs no carrying over. A frame that was not shown leaves the window's own bitmap behind what the
     /// buffer holds, so the next frame it does take is marked as changed all over.
     /// </summary>
-    private void Present(uint frameNo, IReadOnlyList<Rectangle> dirty, bool resized, bool accumulates)
+    private void Present(uint frameNo, IReadOnlyList<Rectangle> dirty, bool resized, bool accumulates, byte cropId = 0)
     {
         _decoded++;
         Report();
@@ -735,7 +767,7 @@ public sealed class ScreenViewer : IAsyncDisposable
         }
 
         (_image, _spare) = (_spare, image);
-        present(new FrameUpdate(frameNo, _width, _height, image, dirty, resized));
+        present(new FrameUpdate(frameNo, _width, _height, image, dirty, resized, cropId));
     }
 
     /// <summary>Every ten seconds, what this view actually managed: decoded, shown, and how far behind the window is.</summary>

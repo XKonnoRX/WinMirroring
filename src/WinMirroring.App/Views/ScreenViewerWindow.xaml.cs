@@ -297,6 +297,11 @@ public partial class ScreenViewerWindow : Window
     private void UpdateInfo()
     {
         var info = _viewer.Info;
+        if (!PartsPossible && _askedPart != WholePicture)
+        {
+            AskForWholeAnew(); // it has gone over to tiles, which carry no word of which part they are
+        }
+
         Title = $"{info.Title} — {_viewer.PeerName}";
         TitleText.Text = Title;
         QuickTitle.Text = Title;
@@ -377,6 +382,7 @@ public partial class ScreenViewerWindow : Window
         {
             _scaledForMotion = true;
             RenderOptions.SetBitmapScalingMode(ScreenImage, BitmapScalingMode.Linear);
+            RenderOptions.SetBitmapScalingMode(DetailImage, BitmapScalingMode.Linear);
         }
 
         _sharpenTimer ??= new DispatcherTimer(SharpenAfter, DispatcherPriority.Background, (_, _) => ScaleForReading(), Dispatcher);
@@ -391,6 +397,7 @@ public partial class ScreenViewerWindow : Window
         {
             _scaledForMotion = false;
             RenderOptions.SetBitmapScalingMode(ScreenImage, BitmapScalingMode.HighQuality);
+            RenderOptions.SetBitmapScalingMode(DetailImage, BitmapScalingMode.HighQuality);
         }
     }
 
@@ -398,7 +405,38 @@ public partial class ScreenViewerWindow : Window
     {
         try
         {
-            if (_bitmap is null || update.Resized || _bitmap.PixelWidth != update.Width || _bitmap.PixelHeight != update.Height)
+            if (PartOf(update) is { } part)
+            {
+                if (part.IsEmpty)
+                {
+                    return; // of a part asked for before the picture changed altogether; it belongs nowhere now
+                }
+
+                // A part of the screen, asked for because the view is zoomed in: it goes over the picture of the
+                // whole, which stays as it last was.
+                try
+                {
+                    PresentDetail(update, part);
+                }
+                catch (Exception ex)
+                {
+                    GiveUpOnParts(ex);
+                    return;
+                }
+
+                PlacePointer();
+                _framesSinceTick++;
+                ScaleForMotion();
+                return;
+            }
+
+            // A picture of the whole. Whatever part was drawn over it is older than this.
+            HideDetail();
+
+            // By the bitmap's own size, not by whether the stream's size changed: coming back from a part, the
+            // stream's size has changed and this bitmap's has not.
+            var resized = _bitmap is null || _bitmap.PixelWidth != update.Width || _bitmap.PixelHeight != update.Height;
+            if (resized)
             {
                 _bitmap = new WriteableBitmap(update.Width, update.Height, 96, 96, PixelFormats.Bgr32, null);
                 _bitmap.WritePixels(new Int32Rect(0, 0, update.Width, update.Height), update.Image, update.Width * 4, 0);
@@ -411,11 +449,11 @@ public partial class ScreenViewerWindow : Window
                 var stride = update.Width * 4;
                 foreach (var rect in update.Dirty)
                 {
-                    _bitmap.WritePixels(new Int32Rect(rect.X, rect.Y, rect.Width, rect.Height), update.Image, stride, (rect.Y * update.Width + rect.X) * 4);
+                    _bitmap!.WritePixels(new Int32Rect(rect.X, rect.Y, rect.Width, rect.Height), update.Image, stride, (rect.Y * update.Width + rect.X) * 4);
                 }
             }
 
-            if (update.Resized)
+            if (resized)
             {
                 // The first frame, and every change of size: say how large it is shown here without waiting for
                 // the next tick, so a view opens at the right size rather than switching a second later.
@@ -541,11 +579,10 @@ public partial class ScreenViewerWindow : Window
         }
 
         // Zoomed in, the picture is drawn larger, so more of the other device's pixels are worth having (the source
-        // never sends more than it has).
+        // never sends more than it has) — or, where the source can send a part of it, it is the part that is sized.
         var dpi = VisualTreeHelper.GetDpi(this);
-        _viewer.SetShownSize(
-            (int)Math.Round(ScreenImage.ActualWidth * dpi.DpiScaleX * _zoom),
-            (int)Math.Round(ScreenImage.ActualHeight * dpi.DpiScaleY * _zoom));
+        var (width, height) = ShownSizeFor(ScreenImage.ActualWidth * dpi.DpiScaleX, ScreenImage.ActualHeight * dpi.DpiScaleY);
+        _viewer.SetShownSize((int)Math.Round(width), (int)Math.Round(height));
     }
 
     /// <summary>First frame of a window stream (and after a crop): size the viewer to the content, as large as fits.</summary>
@@ -1290,7 +1327,7 @@ public partial class ScreenViewerWindow : Window
             (float)(right - left) * _crop.Width,
             (float)(bottom - top) * _crop.Height);
         _sizedToContent = false;
-        _viewer.SetCrop(_crop);
+        AskForWholeAnew();
         ResetCropButton.IsEnabled = true;
         ResetZoom(); // the part chosen is what fills the window now
     }
@@ -1299,7 +1336,7 @@ public partial class ScreenViewerWindow : Window
     {
         _crop = new System.Drawing.RectangleF(0, 0, 1, 1);
         _sizedToContent = false;
-        _viewer.SetCrop(_crop);
+        AskForWholeAnew();
         ResetCropButton.IsEnabled = false;
         ResetZoom();
     }
@@ -1318,6 +1355,7 @@ public partial class ScreenViewerWindow : Window
             _crop = new System.Drawing.RectangleF(0, 0, 1, 1);
             ResetCropButton.IsEnabled = false;
             ResetZoom();
+            AskForWholeAnew();
             _viewer.SwitchMonitor((info.MonitorIndex + step + info.MonitorCount) % info.MonitorCount);
         }
     }
@@ -1606,6 +1644,7 @@ public partial class ScreenViewerWindow : Window
     {
         _statsTimer.Stop();
         _sharpenTimer?.Stop();
+        _partTimer?.Stop();
         _noticeTimer.Stop();
         _layoutTimer.Stop();
         InputLanguageManager.Current.InputLanguageChanged -= OnInputLanguageChanged;

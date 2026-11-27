@@ -109,6 +109,7 @@ public partial class ScreenViewerWindow
         _zoomShift.X = _pan.X;
         _zoomShift.Y = _pan.Y - _lift;
         PlacePointer();
+        ViewMoved();
     }
 
     private static double Clamp(double pan, double origin, double size, double view)

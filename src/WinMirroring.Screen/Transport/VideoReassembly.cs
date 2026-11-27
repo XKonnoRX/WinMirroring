@@ -23,8 +23,11 @@ internal sealed class VideoReassembly
     /// </summary>
     private static readonly TimeSpan Reorder = TimeSpan.FromMilliseconds(8);
 
-    /// <summary>A whole picture, in order. The span is only valid for the call.</summary>
-    public delegate void PictureHandler(uint frameNo, int width, int height, bool keyframe, ReadOnlySpan<byte> picture);
+    /// <summary>
+    /// A whole picture, in order. The span is only valid for the call. <paramref name="tag"/> is whatever the
+    /// sender put in the datagrams' spare byte — the name of the part of the screen the picture shows.
+    /// </summary>
+    public delegate void PictureHandler(uint frameNo, int width, int height, bool keyframe, ReadOnlySpan<byte> picture, byte tag);
 
     private readonly PictureHandler _deliver;
     private readonly Action<uint> _giveUp;
@@ -192,7 +195,7 @@ internal sealed class VideoReassembly
             if (_pictures.TryGetValue(_next, out var picture) && picture.Complete)
             {
                 _delivered++;
-                _deliver(_next, picture.Width, picture.Height, picture.Keyframe, picture.Data.AsSpan(0, picture.Total));
+                _deliver(_next, picture.Width, picture.Height, picture.Keyframe, picture.Data.AsSpan(0, picture.Total), picture.Tag);
                 Advance();
                 continue;
             }
@@ -277,6 +280,7 @@ internal sealed class VideoReassembly
             Width = header.Width,
             Height = header.Height,
             Keyframe = header.Keyframe,
+            Tag = header.Tag,
         };
 
         _pictures[header.FrameNo] = picture;
@@ -296,6 +300,7 @@ internal sealed class VideoReassembly
         public int Width;
         public int Height;
         public bool Keyframe;
+        public byte Tag;
 
         public bool Complete => Received == Count;
     }

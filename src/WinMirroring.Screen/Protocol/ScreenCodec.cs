@@ -80,7 +80,7 @@ public sealed record ScreenCursor(uint StreamId, uint ShapeId, float X, float Y,
 public sealed record ScreenCursorShape(uint StreamId, uint ShapeId, int Width, int Height, int HotspotX, int HotspotY, byte[] Pixels);
 
 /// <summary>One H.264 access unit for a stream: the decoded picture is <see cref="Width"/>×<see cref="Height"/>.</summary>
-public sealed record ScreenVideoFrame(uint StreamId, uint FrameNo, int Width, int Height, bool Keyframe, byte[] Data);
+public sealed record ScreenVideoFrame(uint StreamId, uint FrameNo, int Width, int Height, bool Keyframe, byte[] Data, byte CropId = 0);
 
 /// <summary>
 /// Screen channel, little-endian, first byte <see cref="ScreenMessageType"/>, then u32 stream id.
@@ -165,7 +165,13 @@ public static class ScreenCodec
     private const int VideoHeader = 16;
 
     /// <summary>VideoFrame: u32 frame no, u16 width, u16 height, u8 flags (bit0 keyframe), then the H.264 bytes.</summary>
-    public static byte[] EncodeVideoFrame(uint streamId, uint frameNo, int width, int height, bool keyframe, ReadOnlySpan<byte> data)
+    /// <summary>Where in a video frame message the name of the part of the screen it shows is kept (see EncodeCrop).</summary>
+    private const int VideoCropIdAt = 14;
+
+    /// <summary>The name of the part of the screen a video frame message shows; 0 from a source that does not say.</summary>
+    public static byte VideoCropId(ReadOnlySpan<byte> message) => message.Length > VideoCropIdAt ? message[VideoCropIdAt] : (byte)0;
+
+    public static byte[] EncodeVideoFrame(uint streamId, uint frameNo, int width, int height, bool keyframe, ReadOnlySpan<byte> data, byte cropId = 0)
     {
         var message = new byte[VideoHeader + data.Length];
         var span = message.AsSpan();
@@ -175,7 +181,8 @@ public static class ScreenCodec
         BinaryPrimitives.WriteUInt16LittleEndian(span[9..], (ushort)width);
         BinaryPrimitives.WriteUInt16LittleEndian(span[11..], (ushort)height);
         span[13] = (byte)(keyframe ? 1 : 0);
-        // span[14..16] reserved for alignment / future flags.
+        span[VideoCropIdAt] = cropId;
+        // span[15] reserved for alignment / future flags.
         data.CopyTo(span[VideoHeader..]);
         return message;
     }
@@ -225,7 +232,7 @@ public static class ScreenCodec
         int height = BinaryPrimitives.ReadUInt16LittleEndian(message[11..]);
         var keyframe = (message[13] & 1) != 0;
         var data = message[VideoHeader..].ToArray();
-        return new ScreenVideoFrame(streamId, frameNo, width, height, keyframe, data);
+        return new ScreenVideoFrame(streamId, frameNo, width, height, keyframe, data, message[VideoCropIdAt]);
     }
 
     /// <summary>
@@ -299,10 +306,20 @@ public static class ScreenCodec
             return false;
         }
 
-        x = Math.Clamp(x, 0f, 1f);
-        y = Math.Clamp(y, 0f, 1f);
+        x = Math.Clamp(x, -PositionReach, 1 + PositionReach);
+        y = Math.Clamp(y, -PositionReach, 1 + PositionReach);
         return true;
     }
+
+    /// <summary>
+    /// How far outside the picture a position may be and still be taken. Positions are shares of the part of the
+    /// screen being sent, and used to be held to 0..1 — but a viewer that has zoomed in is sent only what it has
+    /// in view, and for a moment after it moves, what it is pointing at can be on the screen and outside that
+    /// part. Held to the edge, such a tap landed at the edge. The source turns the position into a point on its
+    /// screen and holds it to the screen there, which is the right place for the limit; this one only keeps a
+    /// nonsense number from becoming a nonsense point.
+    /// </summary>
+    private const float PositionReach = 8;
 
     public const int MaxTextLength = 4096;
 
@@ -364,9 +381,16 @@ public static class ScreenCodec
         return true;
     }
 
-    public static byte[] EncodeCrop(uint streamId, RectangleF crop)
+    /// <summary>
+    /// Asks for one part of the screen. <paramref name="id"/> is a name the viewer gives this request, and every
+    /// video frame made of that part carries it back: the viewer asks for a new part while pictures of the old one
+    /// are still arriving, and has to know which is which to draw each in the right place. Zero is a request that
+    /// was given no name, which is what an older viewer sends.
+    /// </summary>
+    public static byte[] EncodeCrop(uint streamId, RectangleF crop, byte id = 0)
     {
-        var message = new byte[21];
+        var message = new byte[22];
+        message[21] = id;
         message[0] = (byte)ScreenMessageType.Crop;
         BinaryPrimitives.WriteUInt32LittleEndian(message.AsSpan(1), streamId);
         BinaryPrimitives.WriteSingleLittleEndian(message.AsSpan(5), crop.X);
@@ -533,8 +557,8 @@ public static class ScreenCodec
 
         action = (PointerAction)message[5];
         button = (Input.Protocol.MouseButton)message[6];
-        x = Math.Clamp(BinaryPrimitives.ReadSingleLittleEndian(message[7..]), 0f, 1f);
-        y = Math.Clamp(BinaryPrimitives.ReadSingleLittleEndian(message[11..]), 0f, 1f);
+        x = Math.Clamp(BinaryPrimitives.ReadSingleLittleEndian(message[7..]), -PositionReach, 1 + PositionReach);
+        y = Math.Clamp(BinaryPrimitives.ReadSingleLittleEndian(message[11..]), -PositionReach, 1 + PositionReach);
         wheel = BinaryPrimitives.ReadInt16LittleEndian(message[15..]);
         return float.IsFinite(x) && float.IsFinite(y);
     }
@@ -555,9 +579,12 @@ public static class ScreenCodec
         return true;
     }
 
-    public static bool TryDecodeCrop(ReadOnlySpan<byte> message, out RectangleF crop)
+    public static bool TryDecodeCrop(ReadOnlySpan<byte> message, out RectangleF crop) => TryDecodeCrop(message, out crop, out _);
+
+    public static bool TryDecodeCrop(ReadOnlySpan<byte> message, out RectangleF crop, out byte id)
     {
         crop = default;
+        id = message.Length > 21 ? message[21] : (byte)0;
         if (message.Length < 21 || message[0] != (byte)ScreenMessageType.Crop)
         {
             return false;

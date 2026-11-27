@@ -168,7 +168,7 @@ public class LatencyTests
         var delivered = new List<uint>();
         var givenUp = new List<uint>();
         long clock = 0;
-        var reassembly = new VideoReassembly((frameNo, _, _, _, _) => delivered.Add(frameNo), givenUp.Add, () => clock);
+        var reassembly = new VideoReassembly((frameNo, _, _, _, _, _) => delivered.Add(frameNo), givenUp.Add, () => clock);
 
         Feed(reassembly, 10);
         Assert.Equal([10u], delivered);
@@ -192,7 +192,7 @@ public class LatencyTests
         var delivered = new List<uint>();
         var givenUp = new List<uint>();
         long clock = 0;
-        var reassembly = new VideoReassembly((frameNo, _, _, _, _) => delivered.Add(frameNo), givenUp.Add, () => clock);
+        var reassembly = new VideoReassembly((frameNo, _, _, _, _, _) => delivered.Add(frameNo), givenUp.Add, () => clock);
 
         Feed(reassembly, 1);
         var plain = new byte[VideoDatagram.SafeDatagramBytes];

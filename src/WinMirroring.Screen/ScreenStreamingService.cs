@@ -607,8 +607,8 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
                 source.OnKey(vk, scan, up, extended);
                 break;
 
-            case ScreenMessageType.Crop when ScreenCodec.TryDecodeCrop(span, out var crop):
-                source.OnCrop(crop);
+            case ScreenMessageType.Crop when ScreenCodec.TryDecodeCrop(span, out var crop, out var cropId):
+                source.OnCrop(crop, cropId);
                 break;
 
             case ScreenMessageType.Touch when ScreenCodec.TryDecodeTouch(span, out var touchAction, out var contact, out var tx, out var ty):

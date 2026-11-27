@@ -111,6 +111,10 @@
              Stylus.IsPressAndHoldEnabled="False" Stylus.IsFlicksEnabled="False"
              Stylus.IsTapFeedbackEnabled="False" Stylus.IsTouchFeedbackEnabled="False" />
       <Canvas x:Name="Overlay" IsHitTestVisible="False">
+        <!-- Zoomed in, the part of the screen that is in view, drawn over the picture of the whole (see
+             ScreenViewerWindow.Detail). It takes no input: everything is still pointed at the picture underneath. -->
+        <Image x:Name="DetailImage" Visibility="Collapsed" IsHitTestVisible="False" Stretch="Fill"
+               RenderOptions.BitmapScalingMode="Linear" />
         <Rectangle x:Name="CropRectangle" Stroke="#3B82F6" StrokeThickness="2" Fill="#333B82F6" Visibility="Collapsed" />
         <!-- The other device's pointer, drawn here rather than sent inside the picture: it then moves at the rate
              the mouse moves instead of the rate frames arrive. -->

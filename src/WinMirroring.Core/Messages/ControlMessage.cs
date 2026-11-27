@@ -209,7 +209,8 @@ public sealed record ScreenStreamMessage(
     int ScalePercent = 100,
     string Codec = "jpeg",
     string MonitorKey = "",
-    string MediaKey = "") : ControlMessage;
+    string MediaKey = "",
+    bool CropTags = false) : ControlMessage;
 
 /// <summary>Either side: the stream ends.</summary>
 public sealed record ScreenStopMessage(uint StreamId, string? Reason) : ControlMessage;

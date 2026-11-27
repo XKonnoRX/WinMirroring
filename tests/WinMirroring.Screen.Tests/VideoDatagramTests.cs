@@ -248,7 +248,7 @@ public class VideoDatagramTests
     private sealed class Loopback
     {
         public Loopback() => Reassembly = new VideoReassembly(
-            (frameNo, width, height, keyframe, picture) => Delivered.Add(new Whole(frameNo, width, height, keyframe, picture.ToArray())),
+            (frameNo, width, height, keyframe, picture, _) => Delivered.Add(new Whole(frameNo, width, height, keyframe, picture.ToArray())),
             GivenUp.Add,
             () => Clock);
 

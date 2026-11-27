@@ -128,6 +128,100 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
         await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
     }
 
+    /// <summary>
+    /// Zoomed in, a viewer asks for the part of the screen it has in view. The pictures that come back have to be
+    /// of that part — smaller than the screen — and each has to say which request it was made for, because the
+    /// viewer draws a part in the place it is a part of and pictures of the last request are still arriving when
+    /// the next is made. Asking for the whole again brings the whole back, under its own name.
+    /// </summary>
+    [Fact(Explicit = true)]
+    public async Task APartOfTheScreenComesBackUnderTheNameItWasAskedForBy()
+    {
+        if (!VideoCodecSupport.CanEncodeH264 || !VideoCodecSupport.CanDecodeH264)
+        {
+            Assert.Skip("No hardware H.264 encoder (or no decoder) on this machine.");
+        }
+
+        var ct = TestContext.Current.CancellationToken;
+        var discoveryA = FreeUdpPort();
+        var discoveryB = FreeUdpPort();
+        var a = CreateNode("PartA", discoveryA, $"127.0.0.1:{discoveryB}");
+        var b = CreateNode("PartB", discoveryB, $"127.0.0.1:{discoveryA}");
+        a.Settings.Screen.VideoCodec = Core.Settings.VideoCodec.Auto;
+        await a.StartAsync();
+        await b.StartAsync();
+
+        var log = Path.Combine(Path.GetTempPath(), "winmirroring-stream-part.log");
+        File.WriteAllText(log, string.Empty);
+        await using var screenA = new ScreenStreamingService(a, new FileLogger<ScreenStreamingService>(log));
+        await using var screenB = new ScreenStreamingService(b, new FileLogger<ScreenStreamingService>(log));
+        screenA.Start();
+        screenB.Start();
+
+        await WaitUntilAsync(() => b.Peers.TryGet(a.Identity.Id, out var peer) && peer.TransportEndPoint is not null, ct);
+        Assert.True(await b.PairAsync(a.Identity.Id, ct));
+        await WaitUntilAsync(() => a.Sessions.TryGetSession(b.Identity.Id, out var s) && s.State == SessionState.Ready, ct);
+        await WaitUntilAsync(() => screenA.PeerVirtualDisplay(b.Identity.Id) is not null, ct);
+
+        var opened = new TaskCompletionSource<ScreenViewer>(TaskCreationOptions.RunContinuationsAsynchronously);
+        screenB.ViewerOpened += viewer => opened.TrySetResult(viewer);
+        Assert.True(await screenB.RequestScreenAsync(a.Identity.Id, 0));
+        var viewer = await opened.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+        Assert.True(viewer.Info.CropTags, "the source should say it names the part each picture is of");
+
+        var frames = new List<(int Width, int Height, byte CropId)>();
+        viewer.Attach(update =>
+        {
+            lock (frames)
+            {
+                frames.Add((update.Width, update.Height, update.CropId));
+            }
+
+            viewer.FramePresented();
+        });
+
+        List<(int Width, int Height, byte CropId)> Got()
+        {
+            lock (frames)
+            {
+                return [.. frames];
+            }
+        }
+
+        await WaitUntilAsync(() => Got().Count > 0, ct);
+        var full = Got()[0];
+        Assert.Equal(0, full.CropId);
+
+        // The middle quarter of the screen, as request 5.
+        var part = new System.Drawing.RectangleF(0.25f, 0.25f, 0.5f, 0.5f);
+        viewer.SetCrop(part, 5, part);
+        await WaitUntilAsync(() => Got().Any(f => f.CropId == 5), ct);
+        var detail = Got().Last(f => f.CropId == 5);
+        Assert.InRange(detail.Width, (full.Width / 2) - 4, (full.Width / 2) + 4);
+        Assert.InRange(detail.Height, (full.Height / 2) - 4, (full.Height / 2) + 4);
+
+        // Nothing that came before the request was answered may carry its name, and nothing after it the old one
+        // at the new size: a picture drawn in the wrong place is what the names exist to prevent.
+        Assert.All(Got().Where(f => f.CropId == 5), f => Assert.Equal((detail.Width, detail.Height), (f.Width, f.Height)));
+        Assert.All(Got().Where(f => f.CropId == 0), f => Assert.Equal((full.Width, full.Height), (f.Width, f.Height)));
+
+        // Another part of the same size, somewhere else: the size alone would not tell them apart.
+        var moved = new System.Drawing.RectangleF(0.5f, 0.5f, 0.5f, 0.5f);
+        viewer.SetCrop(moved, 6, moved);
+        await WaitUntilAsync(() => Got().Any(f => f.CropId == 6), ct);
+        var afterSix = Got().SkipWhile(f => f.CropId != 6).ToList();
+        Assert.All(afterSix, f => Assert.Equal(6, f.CropId));
+
+        // And the whole again.
+        viewer.SetCrop(ViewParts.Whole, 7);
+        await WaitUntilAsync(() => Got().Any(f => f.CropId == 7), ct);
+        var whole = Got().Last(f => f.CropId == 7);
+        Assert.Equal((full.Width, full.Height), (whole.Width, whole.Height));
+
+        viewer.Close();
+        await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
+    }
+
     private static List<(int Width, int Height)> Seen(List<(int Width, int Height)> sizes)
     {
         lock (sizes)

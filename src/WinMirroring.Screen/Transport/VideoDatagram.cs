@@ -57,7 +57,7 @@ internal static class VideoDatagram
     /// </summary>
     public const int MaxPictureBytes = 4 << 20;
 
-    public readonly record struct Header(uint FrameNo, int Total, int Width, int Height, int Count, int Index, bool Keyframe)
+    public readonly record struct Header(uint FrameNo, int Total, int Width, int Height, int Count, int Index, bool Keyframe, byte Tag = 0)
     {
         public bool IsParity => Index <= ParityIndex && Index > ParityIndex - Blocks(Count);
 
@@ -91,13 +91,13 @@ internal static class VideoDatagram
     /// Writes piece <paramref name="piece"/> of a picture — header and payload — into <paramref name="plaintext"/>
     /// and returns its length. The pieces come first and the parities behind them, one per block.
     /// </summary>
-    public static int Write(Span<byte> plaintext, uint frameNo, int width, int height, bool keyframe, ReadOnlySpan<byte> picture, int piece)
+    public static int Write(Span<byte> plaintext, uint frameNo, int width, int height, bool keyframe, ReadOnlySpan<byte> picture, int piece, byte tag = 0)
     {
         var count = Fragments(picture.Length);
         var parity = piece >= count;
         var block = parity ? piece - count : 0;
         var index = parity ? ParityIndex - block : piece;
-        WriteHeader(plaintext, new Header(frameNo, picture.Length, width, height, count, index, keyframe));
+        WriteHeader(plaintext, new Header(frameNo, picture.Length, width, height, count, index, keyframe, tag));
 
         if (parity)
         {
@@ -122,7 +122,7 @@ internal static class VideoDatagram
         BinaryPrimitives.WriteUInt16LittleEndian(plaintext[12..], (ushort)header.Count);
         BinaryPrimitives.WriteUInt16LittleEndian(plaintext[14..], (ushort)header.Index);
         plaintext[16] = (byte)(header.Keyframe ? 1 : 0);
-        plaintext[17] = 0;
+        plaintext[17] = header.Tag; // which part of the screen the picture shows; it was a spare byte before
     }
 
     /// <summary>Reads a datagram's header, or false when it does not describe a piece of a picture at all.</summary>
@@ -164,7 +164,8 @@ internal static class VideoDatagram
             BinaryPrimitives.ReadUInt16LittleEndian(plaintext[10..]),
             count,
             index,
-            (plaintext[16] & 1) != 0);
+            (plaintext[16] & 1) != 0,
+            plaintext[17]);
 
         return plaintext.Length - HeaderSize == header.Length;
     }

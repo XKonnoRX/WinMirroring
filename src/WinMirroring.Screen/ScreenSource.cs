@@ -193,6 +193,16 @@ internal sealed class ScreenSource : IAsyncDisposable
     private bool _videoFailed;
     private GpuNv12Converter? _gpuConverter;
 
+    /// <summary>The name the viewer gave the part of the screen it last asked for (see ScreenCodec.EncodeCrop).</summary>
+    private volatile byte _cropId;
+
+    /// <summary>
+    /// The name of the part each frame handed to the encoder shows, in the order they were handed over, so that
+    /// what comes out can be given the name of what went in: a frame is collected a few milliseconds after it was
+    /// fed, and the part asked for may have changed in between. Touched only under <see cref="_encoderGate"/>.
+    /// </summary>
+    private readonly Queue<byte> _fedTags = new();
+
     /// <summary>The frame at the size it is sent at, when the processor is the one making it smaller.</summary>
     private byte[] _scaled = [];
     private bool _gpuFailed;
@@ -280,7 +290,8 @@ internal sealed class ScreenSource : IAsyncDisposable
         Kind == StreamKind.Window ? WindowScalePercent(Window) : 100,
         Codec,
         _monitor?.DeviceName ?? string.Empty,
-        _link?.Key ?? string.Empty);
+        _link?.Key ?? string.Empty,
+        CropTags: true);
 
     /// <summary>Viewer side runs a copy of the window: carry out a command on this device's real window.</summary>
     public void OnWindowCommand(WindowCommand command)
@@ -366,6 +377,7 @@ internal sealed class ScreenSource : IAsyncDisposable
             _capture = capture;
             _monitor = monitor;
             _crop = new RectangleF(0, 0, 1, 1);
+            _cropId = 0;
             Title = MonitorTitle(monitor);
         }
 
@@ -417,11 +429,12 @@ internal sealed class ScreenSource : IAsyncDisposable
         Volatile.Write(ref _forceAll, 1);
     }
 
-    public void OnCrop(RectangleF crop)
+    public void OnCrop(RectangleF crop, byte id = 0)
     {
         lock (_gate)
         {
             _crop = ScreenCodec.Normalize(crop);
+            _cropId = id;
         }
 
         Volatile.Write(ref _forceAll, 1);
@@ -876,10 +889,12 @@ internal sealed class ScreenSource : IAsyncDisposable
                 var force = Interlocked.Exchange(ref _forceAll, 0) == 1;
                 Rectangle crop;
                 RectangleF cropFraction;
+                byte cropId;
                 lock (_gate)
                 {
                     _frameSize = new Size(width, height);
                     cropFraction = _crop;
+                    cropId = _cropId;
                     crop = ScreenCodec.ToPixels(cropFraction, width, height);
                 }
 
@@ -906,7 +921,7 @@ internal sealed class ScreenSource : IAsyncDisposable
                     // of it — making one, feeding it, giving it up — happens here.
                     lock (_encoderGate)
                     {
-                        fedVideo = TryFeedVideo(capture, ref frame, width, crop, force);
+                        fedVideo = TryFeedVideo(capture, ref frame, width, crop, force, cropId);
                     }
 
                     if (_videoFailed)
@@ -948,7 +963,7 @@ internal sealed class ScreenSource : IAsyncDisposable
     /// whole stream stays on tiles from now on). What the encoder makes of the frame is collected by
     /// <see cref="CollectLoopAsync"/> as soon as it exists, which is not this loop's business.
     /// </summary>
-    private bool TryFeedVideo(WgcCapture capture, ref byte[] frame, int frameWidth, Rectangle crop, bool force)
+    private bool TryFeedVideo(WgcCapture capture, ref byte[] frame, int frameWidth, Rectangle crop, bool force, byte cropId)
     {
         var videoCrop = new Rectangle(crop.X, crop.Y, Nv12Converter.Even(crop.Width), Nv12Converter.Even(crop.Height));
         if (videoCrop.Width < 16 || videoCrop.Height < 16)
@@ -964,6 +979,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         if (_videoEncoder is null || _videoEncoder.Width != output.Width || _videoEncoder.Height != output.Height)
         {
             _videoEncoder?.Dispose();
+            _fedTags.Clear();
             _videoEncoder = H264VideoEncoder.TryCreate(output.Width, output.Height, _pacing.Fps, ScaleBitrate(output.Width, output.Height), _logger);
             if (_videoEncoder is null)
             {
@@ -998,7 +1014,7 @@ internal sealed class ScreenSource : IAsyncDisposable
 
         try
         {
-            if (!TryFeedOnGpu(capture, videoCrop, output, force))
+            if (!TryFeedOnGpu(capture, videoCrop, output, force, cropId))
             {
                 if (!capture.TryCopyLatest(ref frame, out var width, out _, out _))
                 {
@@ -1007,7 +1023,7 @@ internal sealed class ScreenSource : IAsyncDisposable
 
                 if (output.Width == videoCrop.Width && output.Height == videoCrop.Height)
                 {
-                    _videoEncoder.Feed(frame, width, videoCrop, force);
+                    Fed(_videoEncoder.Feed(frame, width, videoCrop, force), cropId);
                 }
                 else
                 {
@@ -1019,7 +1035,7 @@ internal sealed class ScreenSource : IAsyncDisposable
                     }
 
                     BgraScaler.Scale(frame, width, videoCrop, _scaled, output.Width, output.Height);
-                    _videoEncoder.Feed(_scaled, output.Width, new Rectangle(0, 0, output.Width, output.Height), force);
+                    Fed(_videoEncoder.Feed(_scaled, output.Width, new Rectangle(0, 0, output.Width, output.Height), force), cropId);
                 }
             }
 
@@ -1045,7 +1061,7 @@ internal sealed class ScreenSource : IAsyncDisposable
     /// there and given to the encoder as a texture. False means this is not possible — then the frame is read back
     /// into memory and converted by the processor, exactly as before, and that stays the way for this stream.
     /// </summary>
-    private bool TryFeedOnGpu(WgcCapture capture, Rectangle crop, Size output, bool force)
+    private bool TryFeedOnGpu(WgcCapture capture, Rectangle crop, Size output, bool force, byte cropId)
     {
         if (_gpuFailed || !capture.UsesSharedDevice || _videoEncoder is not { UsesSharedDevice: true } encoder)
         {
@@ -1063,7 +1079,7 @@ internal sealed class ScreenSource : IAsyncDisposable
             return GiveUpOnGpu();
         }
 
-        encoder.FeedTexture(target, force);
+        Fed(encoder.FeedTexture(target, force), cropId);
         if (!_gpuReported)
         {
             _gpuReported = true;
@@ -1086,6 +1102,15 @@ internal sealed class ScreenSource : IAsyncDisposable
         return false;
     }
 
+    /// <summary>Remembers which part of the screen the frame just handed to the encoder shows, if it took it.</summary>
+    private void Fed(bool taken, byte cropId)
+    {
+        if (taken)
+        {
+            _fedTags.Enqueue(cropId);
+        }
+    }
+
     private List<byte[]> BuildVideoMessages(IReadOnlyList<VideoAccessUnit> units)
     {
         var encoder = _videoEncoder;
@@ -1097,7 +1122,17 @@ internal sealed class ScreenSource : IAsyncDisposable
 
         foreach (var unit in units)
         {
-            messages.Add(ScreenCodec.EncodeVideoFrame(StreamId, ++_frameNo, encoder.Width, encoder.Height, unit.Keyframe, unit.Data));
+            // One picture out for each frame in, in order, so the name at the head of the line is this one's.
+            var cropId = _fedTags.TryDequeue(out var fed) ? fed : _cropId;
+            messages.Add(ScreenCodec.EncodeVideoFrame(StreamId, ++_frameNo, encoder.Width, encoder.Height, unit.Keyframe, unit.Data, cropId));
+        }
+
+        // If the encoder ever swallowed a frame without making a picture of it, the line would be one name too
+        // long from then on, and every later picture would carry the name of the one before it. More names than
+        // frames it can still be holding means that happened: the oldest are dropped.
+        while (_fedTags.Count > encoder.Waiting + 2)
+        {
+            _fedTags.Dequeue();
         }
 
         return messages;
@@ -1237,7 +1272,7 @@ internal sealed class ScreenSource : IAsyncDisposable
             return false;
         }
 
-        return link.TrySend(frameNo, width, height, keyframe, message.AsSpan(offset));
+        return link.TrySend(frameNo, width, height, keyframe, message.AsSpan(offset), ScreenCodec.VideoCropId(message));
     }
 
     /// <summary>
@@ -1350,13 +1385,19 @@ internal sealed class ScreenSource : IAsyncDisposable
     }
 
     /// <summary>
-    /// Full-screen bitrate scaled down for smaller crops (at least 15% of the configured value) and again by what
-    /// the link is currently willing to carry (see <see cref="StreamPacing"/>).
+    /// Full-screen bitrate scaled down for smaller pictures and again by what the link is currently willing to
+    /// carry (see <see cref="StreamPacing"/>).
+    ///
+    /// Down by the square root of the area, not by the area. A small picture is small because somebody is looking
+    /// at one part of a screen — a window, or a zoomed-in corner — and is looking at it closely: by the area, a
+    /// quarter of the screen got a quarter of the bits and every pixel of it exactly what it had before, so
+    /// zooming in on a blurred picture showed the same blur larger. By the root it gets half, which is twice as
+    /// much for each pixel that is actually on the viewer's screen, and still half of what the whole would cost.
     /// </summary>
     private int ScaleBitrate(int width, int height)
     {
         var baseKbps = Math.Clamp(_settings.VideoBitrateKbps, 500, 100_000);
-        var fraction = Math.Clamp(width * (double)height / (1920 * 1080), 0.15, 1.0);
+        var fraction = Math.Clamp(Math.Sqrt(width * (double)height / (1920 * 1080)), 0.25, 1.0);
         return (int)Math.Round(baseKbps * fraction * _pacing.Share);
     }
 

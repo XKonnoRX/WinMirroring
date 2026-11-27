@@ -261,7 +261,7 @@ internal sealed class VideoLink : IDisposable
     /// of them can be lost without the picture being. False means the path is not carrying — it never was, or has
     /// just stopped working — and the caller must send this picture on the connection instead.
     /// </summary>
-    public bool TrySend(uint frameNo, int width, int height, bool keyframe, ReadOnlySpan<byte> picture)
+    public bool TrySend(uint frameNo, int width, int height, bool keyframe, ReadOnlySpan<byte> picture, byte tag = 0)
     {
         if (picture.Length == 0
             || picture.Length > VideoDatagram.MaxPictureBytes
@@ -314,7 +314,7 @@ internal sealed class VideoLink : IDisposable
         var pieces = VideoDatagram.Pieces(picture.Length);
         for (var piece = 0; piece < pieces; piece++)
         {
-            var length = VideoDatagram.Write(_plain, frameNo, width, height, keyframe, picture, piece);
+            var length = VideoDatagram.Write(_plain, frameNo, width, height, keyframe, picture, piece, tag);
             Send(FrameKind, _plain.AsSpan(0, length));
         }
 

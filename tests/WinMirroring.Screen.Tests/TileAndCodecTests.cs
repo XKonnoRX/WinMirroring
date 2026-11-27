@@ -122,7 +122,7 @@ public class TileAndCodecTests
     public void TouchAndTextMessagesRoundTrip()
     {
         Assert.True(ScreenCodec.TryDecodeTouch(ScreenCodec.EncodeTouch(3, 2, 7, 0.5f, 1.5f), out var action, out var contact, out var x, out var y));
-        Assert.Equal(((byte)2, (byte)7, 0.5f, 1f), (action, contact, x, y));
+        Assert.Equal(((byte)2, (byte)7, 0.5f, 1.5f), (action, contact, x, y));
         Assert.False(ScreenCodec.TryDecodeTouch(ScreenCodec.EncodeTouch(3, 9, 0, 0.5f, 0.5f), out _, out _, out _, out _));
         Assert.False(ScreenCodec.TryDecodeTouch(ScreenCodec.EncodeTouch(3, 1, 0, float.NaN, 0.5f), out _, out _, out _, out _));
 
