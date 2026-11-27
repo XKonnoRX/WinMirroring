@@ -38,6 +38,7 @@ export type SettingsState = {
     autoKeyboard: boolean
     keyboardButton: boolean
     directPresent: boolean
+    swipeMonitors: boolean
     closeUnusedMinutes: number
     maxFps: number
     quality: number

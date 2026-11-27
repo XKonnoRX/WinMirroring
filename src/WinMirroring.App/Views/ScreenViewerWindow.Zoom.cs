@@ -106,7 +106,7 @@ public partial class ScreenViewerWindow
             Clamp(_pan.Y, origin.Y, ScreenImage.ActualHeight * _zoom, Surface.ActualHeight));
 
         _zoomScale.ScaleX = _zoomScale.ScaleY = _zoom;
-        _zoomShift.X = _pan.X;
+        _zoomShift.X = _pan.X + _pageShift;
         _zoomShift.Y = _pan.Y - _lift;
         PlacePointer();
         ViewMoved();
@@ -152,6 +152,9 @@ public partial class ScreenViewerWindow
         _gesture.Clear();
         _gestureStart = null;
         _undecided = false;
+        _paging = false;
+        _pageShift = 0;
+        _overpull = 0;
         _edgeTimer?.Stop();
         ApplyView();
         UpdateZoomText();
@@ -374,14 +377,34 @@ public partial class ScreenViewerWindow
 
         e.Handled = true;
         var (distance, middle) = Measure();
+        if (_paging)
+        {
+            // Sliding the picture towards the monitor beside it (see ScreenViewerWindow.Paging).
+            _pageShift = (middle - start.Middle).X;
+            ApplyView();
+            return true;
+        }
+
         if (_undecided)
         {
             var pinched = start.Distance > 0 && Math.Abs((distance / start.Distance) - 1) >= PinchDecides;
             if (!pinched)
             {
-                if ((middle - start.Middle).Length >= SlideDecides)
+                var slide = middle - start.Middle;
+                if (slide.Length >= SlideDecides)
                 {
-                    HandOverToRemote();
+                    if (StartsPaging(slide))
+                    {
+                        // Sideways, and there is a monitor that way: the picture goes with the fingers.
+                        _undecided = false;
+                        _paging = true;
+                        _pageShift = slide.X;
+                        ApplyView();
+                    }
+                    else
+                    {
+                        HandOverToRemote();
+                    }
                 }
 
                 return true;
@@ -406,12 +429,32 @@ public partial class ScreenViewerWindow
             _pan = start.Pan + (middle - start.Middle);
         }
 
+        // What the fingers asked for and what the edge of the picture allowed: the difference is how far they
+        // have pulled past it. Only while they are moving it, not while they are changing its size.
+        var wanted = _pan.X;
+        _pageShift = 0;
         ApplyView();
+        var moving = _zoom > 1.02 && start.Zoom > 0 && Math.Abs((_zoom / start.Zoom) - 1) < 0.08;
+        _overpull = moving && SwipeBetweenMonitors ? wanted - _pan.X : 0;
+        if (_overpull != 0 && MonitorRevealedBy(_overpull) is not null)
+        {
+            _pageShift = _overpull * OverpullShown;
+            ApplyView();
+        }
+
         return true;
     }
 
     private bool GestureTouchUp(TouchEventArgs e)
     {
+        if (_paging && _gesture.ContainsKey(e.TouchDevice.Id))
+        {
+            // Either finger lifting ends a swipe between monitors.
+            e.Handled = true;
+            FinishPaging();
+            return true;
+        }
+
         if (_undecided && _gesture.ContainsKey(e.TouchDevice.Id))
         {
             // Lifted before deciding — a two-finger tap: it is the other device's, and the lift goes there too.
@@ -434,12 +477,18 @@ public partial class ScreenViewerWindow
         else
         {
             _gestureStart = null;
+            if (FinishOverpull())
+            {
+                return true; // pulled past the edge far enough: it has gone to the monitor on that side
+            }
+
             if (_zoom < 1.03)
             {
                 ResetZoom();
             }
             else
             {
+                ApplyView();
                 ReportShownSize();
             }
         }

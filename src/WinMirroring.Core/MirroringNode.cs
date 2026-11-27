@@ -76,6 +76,7 @@ public sealed class MirroringNode : IAsyncDisposable
 
         SettingsStore = new SettingsStore(options.DataDirectory);
         Settings = SettingsStore.Load();
+        Transport.InterfacePin.Enabled = Settings.PinConnectionsToInterface;
 
         var changed = false;
         if (options.DeviceName is { Length: > 0 } name && Settings.DeviceName != name)

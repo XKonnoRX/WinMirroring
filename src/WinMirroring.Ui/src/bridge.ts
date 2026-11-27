@@ -183,6 +183,7 @@ const sampleSettings = {
     autoKeyboard: false,
     keyboardButton: true,
     directPresent: true,
+    swipeMonitors: true,
     closeUnusedMinutes: 5,
     maxFps: 60,
     quality: 70,

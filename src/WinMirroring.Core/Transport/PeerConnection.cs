@@ -32,6 +32,9 @@ public sealed class PeerConnection : IAsyncDisposable
     /// <summary>True on the side that opened the TCP connection.</summary>
     public bool IsInitiator { get; }
 
+    /// <summary>The interface this connection is held to (see <see cref="InterfacePin"/>), or null when it is not.</summary>
+    public string? PinnedTo { get; private init; }
+
     /// <summary>The server's TLS certificate, available on the initiator side only.</summary>
     public X509Certificate2? RemoteCertificate { get; }
 
@@ -48,12 +51,26 @@ public sealed class PeerConnection : IAsyncDisposable
     {
         var client = new TcpClient(AddressFamily.InterNetwork);
         ConfigureSocket(client.Client);
+        var pinned = InterfacePin.TryPin(client.Client, endPoint.Address, bind: true);
         SslStream? ssl = null;
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(ProtocolConstants.ConnectTimeout);
-            await client.ConnectAsync(endPoint, timeout.Token).ConfigureAwait(false);
+            try
+            {
+                await client.ConnectAsync(endPoint, timeout.Token).ConfigureAwait(false);
+            }
+            catch (SocketException) when (pinned is not null && !ct.IsCancellationRequested)
+            {
+                // Held to an interface and it would not connect. Whatever the reason, the way that always worked
+                // is tried before giving up: the connection as the routing table would have it.
+                client.Dispose();
+                client = new TcpClient(AddressFamily.InterNetwork);
+                ConfigureSocket(client.Client);
+                pinned = null;
+                await client.ConnectAsync(endPoint, timeout.Token).ConfigureAwait(false);
+            }
 
             X509Certificate2? captured = null;
             ssl = new SslStream(client.GetStream(), leaveInnerStreamOpen: false);
@@ -79,7 +96,7 @@ public sealed class PeerConnection : IAsyncDisposable
             handshakeTimeout.CancelAfter(ProtocolConstants.HandshakeTimeout);
             await ssl.AuthenticateAsClientAsync(options, handshakeTimeout.Token).ConfigureAwait(false);
 
-            return new PeerConnection(client, ssl, isInitiator: true, captured);
+            return new PeerConnection(client, ssl, isInitiator: true, captured) { PinnedTo = pinned };
         }
         catch
         {
@@ -93,6 +110,9 @@ public sealed class PeerConnection : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(client);
         ConfigureSocket(client.Client);
+
+        // The answers go back out by the interface the peer is on, whatever the routing table comes to say.
+        var pinned = client.Client.RemoteEndPoint is IPEndPoint remote ? InterfacePin.TryPin(client.Client, remote.Address, bind: false) : null;
         var ssl = new SslStream(client.GetStream(), leaveInnerStreamOpen: false);
         try
         {
@@ -109,7 +129,7 @@ public sealed class PeerConnection : IAsyncDisposable
             timeout.CancelAfter(ProtocolConstants.HandshakeTimeout);
             await ssl.AuthenticateAsServerAsync(options, timeout.Token).ConfigureAwait(false);
 
-            return new PeerConnection(client, ssl, isInitiator: false, remoteCertificate: null);
+            return new PeerConnection(client, ssl, isInitiator: false, remoteCertificate: null) { PinnedTo = pinned };
         }
         catch
         {

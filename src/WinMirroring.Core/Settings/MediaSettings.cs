@@ -98,6 +98,12 @@ public sealed class ScreenSettings
     /// detect itself: a driver that draws such a picture wrongly without saying so.
     /// </summary>
     public bool DirectPresent { get; set; } = true;
+
+    /// <summary>
+    /// Viewing a device with several monitors: two fingers swiped sideways go to the monitor on that side (and so
+    /// are not passed on as a sideways scroll where there is one). On by default.
+    /// </summary>
+    public bool SwipeMonitors { get; set; } = true;
 }
 
 /// <summary>

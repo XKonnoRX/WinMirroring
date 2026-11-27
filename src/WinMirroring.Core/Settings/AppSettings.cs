@@ -19,6 +19,13 @@ public sealed class AppSettings
     /// <summary>Network interface ids to use. Empty means every interface that is up.</summary>
     public List<string> SelectedInterfaceIds { get; set; } = [];
 
+    /// <summary>
+    /// Hold each connection to the network interface its peer is on, so that a VPN switched on or off does not
+    /// take it elsewhere and reset it (see Transport.InterfacePin). On by default; here so it can be switched off
+    /// in the settings file if it turns out to get in the way on some network.
+    /// </summary>
+    public bool PinConnectionsToInterface { get; set; } = true;
+
     /// <summary>Peers that cannot be found by broadcast (VPN): "host" or "host:discoveryPort".</summary>
     public List<string> ManualPeerAddresses { get; set; } = [];
 

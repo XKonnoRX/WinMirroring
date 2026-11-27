@@ -49,6 +49,9 @@ public sealed partial class MainViewModel
     public partial bool ScreenDirectPresent { get; set; }
 
     [ObservableProperty]
+    public partial bool ScreenSwipeMonitors { get; set; }
+
+    [ObservableProperty]
     public partial int ScreenMaxFps { get; set; }
 
     [ObservableProperty]
@@ -70,6 +73,7 @@ public sealed partial class MainViewModel
         ScreenAutoKeyboard = settings.AutoKeyboardOnTap;
         ScreenKeyboardButton = settings.KeyboardButton;
         ScreenDirectPresent = settings.DirectPresent;
+        ScreenSwipeMonitors = settings.SwipeMonitors;
         ScreenMaxFps = settings.MaxFps;
         ScreenQuality = settings.Quality;
         ScreenVideoCodec = settings.VideoCodec;
@@ -388,6 +392,8 @@ public sealed partial class MainViewModel
     partial void OnScreenKeyboardButtonChanged(bool value) => SaveScreen(s => s.KeyboardButton = value);
 
     partial void OnScreenDirectPresentChanged(bool value) => SaveScreen(s => s.DirectPresent = value);
+
+    partial void OnScreenSwipeMonitorsChanged(bool value) => SaveScreen(s => s.SwipeMonitors = value);
 
     partial void OnScreenMaxFpsChanged(int value)
     {

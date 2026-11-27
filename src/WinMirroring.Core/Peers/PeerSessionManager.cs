@@ -331,6 +331,10 @@ public sealed class PeerSessionManager : IAsyncDisposable
 
         _logger.LogInformation("Session with {Peer} ({Remote}) established as {Role}, state {State}, {Protocol}",
             session.PeerName, session.RemoteEndPoint, session.IsInitiator ? "initiator" : "responder", session.State, connection.NegotiatedProtocol);
+        if (connection.PinnedTo is { } held)
+        {
+            _logger.LogInformation("The connection to {Peer} is held to {Interface}; routes that come and go (a VPN) should not move it", session.PeerName, held);
+        }
 
         ForgetIfTheyHaveForgottenUs(session);
 
