@@ -267,6 +267,10 @@ public sealed class HubUi
             $"Переподключиться к {name}?",
             "Соединение закроется. Если через него сейчас управляют этим устройством, управление прервётся, пока оно не восстановится.",
             "Да, переподключить"),
+        "microphone" => (
+            $"Передавать микрофон этого устройства на {name}?",
+            "Всё, что слышит микрофон здесь, будет слышно программам на том устройстве, пока передачу не выключат.",
+            "Да, передавать"),
         "removeAddress" => (
             "Убрать этот адрес?",
             "Если устройство находится только по нему (через VPN, например), связь с ним пропадёт.",
@@ -280,7 +284,9 @@ public sealed class HubUi
         var name = _node.Peers.TryGet(id, out var info) && !string.IsNullOrEmpty(info.Name) ? info.Name
             : _node.Introductions.TryGet(id, out var known) ? known.Name
             : id;
-        if (DangerOf(call.Name, call.Name == "removeAddress" ? call.Text ?? name : name) is { } danger
+        // (Switching the microphone off is never asked about: only switching it on gives something away.)
+        if (!(call.Name == "microphone" && _vm.IsMicrophoneSentTo(id))
+            && DangerOf(call.Name, call.Name == "removeAddress" ? call.Text ?? name : name) is { } danger
             && !await _guard.ConfirmAsync(danger.What, danger.Why, danger.Yes))
         {
             return "Отменено.";
@@ -349,6 +355,9 @@ public sealed class HubUi
                 });
                 return null;
 
+            case "microphone":
+                return await _vm.ToggleMicrophoneAsync(id, name);
+
             case "soundTo":
                 if (call.Text == "here")
                 {
@@ -374,6 +383,7 @@ public sealed class HubUi
             case "removeAddress":
                 _node.Settings.ManualPeerAddresses.RemoveAll(a => string.Equals(a, call.Text, StringComparison.OrdinalIgnoreCase));
                 _node.SaveSettings();
+                _vm.ReloadManualAddresses();
                 Changed();
                 return $"Адрес {call.Text} убран.";
 
@@ -429,6 +439,7 @@ public sealed class HubUi
 
         _node.Settings.ManualPeerAddresses.Add(address);
         _node.SaveSettings();
+        _vm.ReloadManualAddresses();
         Changed();
         return $"{address} добавлен. Устройство появится, когда ответит (это может занять несколько секунд).";
     }

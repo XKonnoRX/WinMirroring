@@ -141,6 +141,77 @@ public sealed class ScreenStreamIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// A viewer whose graphics card does not decode HEVC, sent HEVC: it says so, the source steps down to H.264,
+    /// and the pictures must then arrive. The viewer has to start a decoder for the new format although it had just
+    /// concluded that it had none — which is where this went wrong when HEVC was new: it never tried, and showed
+    /// nothing.
+    /// </summary>
+    [Fact(Explicit = true)]
+    public async Task AViewerThatCannotDecodeHevcIsSentH264AndShowsIt()
+    {
+        if (!VideoCodecSupport.CanEncodeHevc || !VideoCodecSupport.CanDecodeHevc || !VideoCodecSupport.CanDecodeH264)
+        {
+            Assert.Skip("No hardware HEVC encoder (or no decoder for it or for H.264) on this machine.");
+        }
+
+        var ct = TestContext.Current.CancellationToken;
+        var discoveryA = FreeUdpPort();
+        var discoveryB = FreeUdpPort();
+        var a = CreateNode("StepA", discoveryA, $"127.0.0.1:{discoveryB}");
+        var b = CreateNode("StepB", discoveryB, $"127.0.0.1:{discoveryA}");
+        a.Settings.Screen.VideoCodec = Core.Settings.VideoCodec.Hevc;
+        await a.StartAsync();
+        await b.StartAsync();
+
+        var log = Path.Combine(Path.GetTempPath(), "winmirroring-stream-stepdown.log");
+        File.WriteAllText(log, string.Empty);
+        await using var screenA = new ScreenStreamingService(a, new FileLogger<ScreenStreamingService>(log));
+        await using var screenB = new ScreenStreamingService(b, new FileLogger<ScreenStreamingService>(log));
+        screenA.Start();
+        screenB.Start();
+
+        await WaitUntilAsync(() => b.Peers.TryGet(a.Identity.Id, out var peer) && peer.TransportEndPoint is not null, ct);
+        Assert.True(await b.PairAsync(a.Identity.Id, ct));
+        await WaitUntilAsync(() => a.Sessions.TryGetSession(b.Identity.Id, out var s) && s.State == SessionState.Ready, ct);
+        await WaitUntilAsync(() => screenA.PeerVirtualDisplay(b.Identity.Id) is not null, ct);
+
+        ScreenViewer.RefuseHevcForTest = true;
+        try
+        {
+            var opened = new TaskCompletionSource<ScreenViewer>(TaskCreationOptions.RunContinuationsAsynchronously);
+            screenB.ViewerOpened += viewer => opened.TrySetResult(viewer);
+            Assert.True(await screenB.RequestScreenAsync(a.Identity.Id, 0));
+            var viewer = await opened.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            Assert.Equal("hevc", viewer.Info.Codec); // it is what was asked for, and what both said they could do
+
+            var shownAsH264 = 0;
+            viewer.Attach(update =>
+            {
+                if (viewer.Info.Codec == "h264" && update.Width > 0)
+                {
+                    Interlocked.Increment(ref shownAsH264);
+                }
+
+                viewer.FramePresented();
+            });
+
+            await WaitUntilAsync(() => viewer.Info.Codec == "h264", ct);
+            await WaitUntilAsync(() => Volatile.Read(ref shownAsH264) > 0, ct);
+
+            // And it stays there: one complaint is one step down, not two.
+            await Task.Delay(1500, ct);
+            Assert.Equal("h264", viewer.Info.Codec);
+
+            viewer.Close();
+            await WaitUntilAsync(() => screenA.Sources.Count == 0, ct);
+        }
+        finally
+        {
+            ScreenViewer.RefuseHevcForTest = false;
+        }
+    }
+
+    /// <summary>
     /// Zoomed in, a viewer asks for the part of the screen it has in view. The pictures that come back have to be
     /// of that part — smaller than the screen — and each has to say which request it was made for, because the
     /// viewer draws a part in the place it is a part of and pictures of the last request are still arriving when

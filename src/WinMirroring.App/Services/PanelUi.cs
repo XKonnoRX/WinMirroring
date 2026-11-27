@@ -136,7 +136,7 @@ public sealed class PanelUi
                 screenOpen = _viewers.IsScreenOpen(p.Id),
                 secondMonitor = _vm.IsSecondMonitor(p.Id),
                 canBecome = _screen.PeerVirtualDisplay(p.Id),
-                sound = new { here = _vm.SoundHereChoice(p.Id).ToString(), playing = _vm.IsSoundFrom(p.Id), sentTo = _vm.IsSoundSentTo(p.Id) },
+                sound = new { here = _vm.SoundHereChoice(p.Id).ToString(), playing = _vm.IsSoundFrom(p.Id), sentTo = _vm.IsSoundSentTo(p.Id), mic = _vm.IsMicrophoneSentTo(p.Id) },
             }).ToList(),
         };
     }

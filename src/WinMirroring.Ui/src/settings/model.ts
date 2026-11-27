@@ -29,6 +29,13 @@ export type SettingsState = {
     buffer: number
     status: string
     targets: { id: string; name: string }[]
+    /** Other devices may send their microphone here. */
+    acceptMic: boolean
+    /** Id of the output it is played into; empty for "find a virtual cable". */
+    micOutput: string
+    micOutputs: { id: string; name: string }[]
+    /** Where it would go right now, or what is missing. */
+    micNote: string
   }
   screen: {
     allowViewing: boolean

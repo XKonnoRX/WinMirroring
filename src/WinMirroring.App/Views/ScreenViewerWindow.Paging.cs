@@ -1,4 +1,5 @@
-﻿using System.Windows.Input;
+﻿using System.Windows;
+using System.Windows.Input;
 using WinMirroring.App.Services;
 using WinMirroring.Screen;
 
@@ -100,26 +101,260 @@ public partial class ScreenViewerWindow
     private bool StartsPaging(System.Windows.Vector slide) =>
         MonitorNeighbours.IsSideways(slide.X, slide.Y) && MonitorRevealedBy(slide.X) is not null;
 
-    /// <summary>The fingers let go: across to the other monitor if they went far enough, back where it was if not.</summary>
+    // ---- the page ------------------------------------------------------------------------------------------
+    //
+    // A swipe that only slid the picture aside and then, on letting go, put another in its place was a jump at both
+    // ends: nothing came in where the picture went out, and the change itself was a cut. It is a page now. Beside
+    // the picture, on the side it is leaving, comes a page the size of the view carrying the last small picture of
+    // the monitor on that side; letting go carries the movement through — the page slides the rest of the way in,
+    // or the picture slides back — and the page stays where it has come to rest until that monitor's own stream
+    // has a frame to put in its place.
+
+    /// <summary>Between the picture and the page beside it, so that the two read as two.</summary>
+    private const double PageGap = 24;
+
+    /// <summary>How wide the small pictures are asked for: to fill the view for a moment, not to be read from.</summary>
+    private const int PagePictureWidth = 640;
+
+    /// <summary>A pull towards a side with no monitor on it gives this much, to show there is nothing there.</summary>
+    private const double NothingThereGives = 0.22;
+
+    /// <summary>The page is being carried the rest of the way after the fingers let go.</summary>
+    private bool _pageSliding;
+
+    /// <summary>The monitor whose page is resting over the picture, waiting for its first frame; null when none is.</summary>
+    private string? _pageHeld;
+
+    /// <summary>The monitor the page that is up shows, so that it is only filled in when that changes.</summary>
+    private string? _pageShows;
+
+    private System.Windows.Threading.DispatcherTimer? _pageHeldTimer;
+    private readonly Dictionary<string, (System.Windows.Media.Imaging.BitmapSource Picture, long Ticks)> _pagePictures = new(StringComparer.OrdinalIgnoreCase);
+    private bool _pagePicturesWatched;
+
+    /// <summary>
+    /// Asks the other device for small pictures of its other monitors, so that there is one to show the moment a
+    /// swipe starts. Asked when a view opens, when it changes monitor, and when two fingers come down (a third
+    /// may follow); the other device sends them for a few seconds and stops, and what arrived is kept here.
+    /// </summary>
+    private void HavePagePicturesAtHand()
+    {
+        if (!SwipeBetweenMonitors)
+        {
+            return;
+        }
+
+        if (!_pagePicturesWatched)
+        {
+            _pagePicturesWatched = true;
+            _viewer.MonitorPicturesChanged += _ => Dispatcher.BeginInvoke(TakePagePictures);
+        }
+
+        _viewer.AskForMonitorPictures(PagePictureWidth);
+    }
+
+    private void TakePagePictures()
+    {
+        foreach (var (key, picture) in _viewer.MonitorPictures)
+        {
+            if (_pagePictures.TryGetValue(key, out var have) && have.Ticks >= picture.ReceivedTicks)
+            {
+                continue;
+            }
+
+            try
+            {
+                var bitmap = new System.Windows.Media.Imaging.BitmapImage();
+                bitmap.BeginInit();
+                bitmap.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                bitmap.StreamSource = new System.IO.MemoryStream(picture.Jpeg);
+                bitmap.EndInit();
+                bitmap.Freeze();
+                _pagePictures[key] = (bitmap, picture.ReceivedTicks);
+                if (string.Equals(_pageShows, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    PageImage.Source = bitmap; // a fresher one of the page that is up
+                }
+            }
+            catch (Exception ex) when (ex is NotSupportedException or InvalidOperationException or System.IO.IOException or ArgumentException)
+            {
+            }
+        }
+    }
+
+    /// <summary>The fingers have moved: the picture goes with them, less willingly towards a side with nothing on it.</summary>
+    private void SlidePageTo(double shift)
+    {
+        _pageShift = MonitorRevealedBy(shift) is null ? shift * NothingThereGives : shift;
+        ApplyView();
+    }
+
+    /// <summary>Puts the page where the picture's movement says it is, or takes it away. Called whenever the view moves.</summary>
+    private void PlacePage()
+    {
+        var width = Surface.ActualWidth;
+        var height = Surface.ActualHeight;
+        if (width <= 0 || height <= 0)
+        {
+            return;
+        }
+
+        if (_pageHeld is not null)
+        {
+            ShowPageAt(0, width, height);
+            return;
+        }
+
+        if ((!_paging && !_pageSliding) || _pageShift == 0 || MonitorRevealedBy(_pageShift) is not { } target)
+        {
+            if (PageCover.Visibility == Visibility.Visible)
+            {
+                PageCover.Visibility = Visibility.Collapsed;
+                _pageShows = null;
+            }
+
+            return;
+        }
+
+        if (!string.Equals(_pageShows, target.Key, StringComparison.OrdinalIgnoreCase))
+        {
+            _pageShows = target.Key;
+            PageImage.Source = _pagePictures.TryGetValue(target.Key, out var have) ? have.Picture : null;
+            PageLabel.Text = $"Монитор {target.Position + 1}";
+        }
+
+        // The picture moving left leaves room on its right, and the other way round.
+        ShowPageAt(_pageShift + ((_pageShift < 0 ? 1 : -1) * (width + PageGap)), width, height);
+    }
+
+    private void ShowPageAt(double left, double width, double height)
+    {
+        PageCover.Width = width;
+        PageCover.Height = height;
+        System.Windows.Controls.Canvas.SetLeft(PageCover, left);
+        System.Windows.Controls.Canvas.SetTop(PageCover, 0);
+        PageCover.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>
+    /// The fingers let go: the movement is carried through. Far enough over, the page comes the rest of the way in
+    /// and its monitor is asked for; otherwise the picture goes back where it was.
+    /// </summary>
     private void FinishPaging()
     {
         var shift = _pageShift;
+        var width = Surface.ActualWidth;
         LetGoOfPaging();
-        if (Math.Abs(shift) >= MonitorNeighbours.CommitsAfter(Surface.ActualWidth) && MonitorRevealedBy(shift) is { } target)
+        if (Math.Abs(shift) >= MonitorNeighbours.CommitsAfter(width) && MonitorRevealedBy(shift) is { } target)
         {
-            GoToMonitor(target.Position, target.Key);
+            SlidePage(shift, (shift < 0 ? -1 : 1) * (width + PageGap), () =>
+            {
+                // The page has arrived and stays: the stream it stands in for has not started yet.
+                _pageHeld = target.Key;
+                _pageHeldTimer ??= new System.Windows.Threading.DispatcherTimer(
+                    TimeSpan.FromSeconds(2.5), System.Windows.Threading.DispatcherPriority.Background, (_, _) => LetThePageGo(), Dispatcher);
+                _pageHeldTimer.Stop();
+                _pageHeldTimer.Interval = TimeSpan.FromSeconds(2.5); // if the stream never says so: not for ever
+                _pageHeldTimer.Start();
+                GoToMonitor(target.Position, target.Key);
+            });
         }
         else
         {
-            ApplyView();
+            SlidePage(shift, 0, ApplyView);
         }
+    }
+
+    /// <summary>Moves the picture (and the page with it) from one shift to another over a moment, easing out.</summary>
+    private void SlidePage(double from, double to, Action then)
+    {
+        var distance = Math.Abs(to - from);
+        if (distance < 1)
+        {
+            _pageShift = 0;
+            then();
+            return;
+        }
+
+        // Longer for further, within what still feels like one movement.
+        var lasts = TimeSpan.FromMilliseconds(Math.Clamp(120 + (distance * 0.12), 140, 300));
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        _pageSliding = true;
+        _pageShift = from;
+        EventHandler? step = null;
+        step = (_, _) =>
+        {
+            var t = Math.Min(1, clock.Elapsed.TotalMilliseconds / lasts.TotalMilliseconds);
+            var eased = 1 - Math.Pow(1 - t, 3);
+            _pageShift = from + ((to - from) * eased);
+            if (t < 1)
+            {
+                ApplyView();
+                return;
+            }
+
+            System.Windows.Media.CompositionTarget.Rendering -= step;
+            _pageSliding = false;
+            _pageShift = 0; // whatever follows starts from the picture in its own place
+            then();
+        };
+        System.Windows.Media.CompositionTarget.Rendering += step;
+    }
+
+    /// <summary>A frame arrived. If it is of the monitor whose page is resting over the picture, the page has done its work.</summary>
+    private void PageSawAFrame()
+    {
+        if (_pageHeld is { } key && string.Equals(_viewer.Info.MonitorKey, key, StringComparison.OrdinalIgnoreCase))
+        {
+            LetThePageGo();
+        }
+    }
+
+    /// <summary>
+    /// The stream says it is of the monitor whose page is resting over the picture. Its first frame is here or
+    /// about to be — and a screen on which nothing moves sends no second one to wait for — so the page goes in a
+    /// moment either way.
+    /// </summary>
+    private void PageHeardOfItsMonitor()
+    {
+        if (_pageHeld is { } key && _pageHeldTimer is { } timer && string.Equals(_viewer.Info.MonitorKey, key, StringComparison.OrdinalIgnoreCase))
+        {
+            timer.Stop();
+            timer.Interval = TimeSpan.FromMilliseconds(300);
+            timer.Start();
+        }
+    }
+
+    /// <summary>Takes the resting page away, fading: what is under it is the same picture, sharper.</summary>
+    private void LetThePageGo()
+    {
+        _pageHeldTimer?.Stop();
+        if (_pageHeld is null)
+        {
+            return;
+        }
+
+        _pageHeld = null;
+        _pageShows = null;
+        var fade = new System.Windows.Media.Animation.DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(160));
+        fade.Completed += (_, _) =>
+        {
+            PageCover.BeginAnimation(OpacityProperty, null);
+            PageCover.Opacity = 1;
+            if (_pageHeld is null && !_paging && !_pageSliding)
+            {
+                PageCover.Visibility = Visibility.Collapsed;
+            }
+        };
+        PageCover.BeginAnimation(OpacityProperty, fade);
     }
 
     /// <summary>The swipe was taken away before it was finished: the picture goes back, wherever it had got to.</summary>
     private void CancelPaging()
     {
+        var shift = _pageShift;
         LetGoOfPaging();
-        ApplyView();
+        SlidePage(shift, 0, ApplyView);
     }
 
     private void LetGoOfPaging()
@@ -137,7 +372,7 @@ public partial class ScreenViewerWindow
         }
     }
 
-    private void GoToMonitor(int position, string key)
+    private void GoToMonitor(int position, string? key)
     {
         _crop = new System.Drawing.RectangleF(0, 0, 1, 1);
         ResetCropButton.IsEnabled = false;

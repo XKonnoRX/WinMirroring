@@ -130,6 +130,20 @@ public sealed partial class MainViewModel : ObservableObject
 
     public ObservableCollection<string> ManualAddresses { get; } = [];
 
+    /// <summary>
+    /// The addresses were changed past this list (the devices page adds and removes them in the settings
+    /// directly): take them from the settings again. Without this, "Apply" on the network page wrote back the list
+    /// as it stood when the program started, and an address added since was gone.
+    /// </summary>
+    public void ReloadManualAddresses() => _dispatcher.InvokeAsync(() =>
+    {
+        ManualAddresses.Clear();
+        foreach (var address in _node.Settings.ManualPeerAddresses)
+        {
+            ManualAddresses.Add(address);
+        }
+    });
+
     public ObservableCollection<DeviceChoice> DeviceChoices { get; } = [];
 
     public ObservableCollection<LayoutCellViewModel> LayoutCells { get; } = [];

@@ -8,6 +8,19 @@ namespace WinMirroring.Audio.Capture;
 
 internal delegate void AudioFrameHandler(ReadOnlySpan<float> interleavedStereo);
 
+/// <summary>Where a stream's sound comes from, in whole frames of the one format (see <see cref="AudioFormat"/>).</summary>
+internal interface IAudioSource : IAsyncDisposable
+{
+    event AudioFrameHandler? FrameReady;
+
+    /// <summary>True when it also hears what this app plays, so that sending must pause while it does.</summary>
+    bool IncludesOwnPlayback { get; }
+
+    string Description { get; }
+
+    void Start();
+}
+
 /// <summary>
 /// Captures what this device plays and slices it into 10 ms 48 kHz stereo frames.
 /// Preferred: process loopback of every process except this one, so sound received from another device and
@@ -15,7 +28,7 @@ internal delegate void AudioFrameHandler(ReadOnlySpan<float> interleavedStereo);
 /// format, converted and resampled here; it does include our own playback (<see cref="IncludesOwnPlayback"/>).
 /// Endpoint mute does not affect either kind of capture (verified on Windows 11).
 /// </summary>
-internal sealed class AudioCapture : IAsyncDisposable
+internal sealed class AudioCapture : IAudioSource
 {
     private readonly WasapiRecorder _recorder;
     private readonly ILogger _logger;
@@ -26,8 +39,11 @@ internal sealed class AudioCapture : IAsyncDisposable
     private float[] _resampled = new float[4096];
     private int _frameFill;
 
-    /// <summary>Set only for the endpoint-loopback fallback, which captures from a device of its own.</summary>
+    /// <summary>Set for a capture that is from a device of its own: the endpoint-loopback fallback, and a microphone.</summary>
     private MMDevice? _device;
+
+    /// <summary>What it is, when it is not a loopback at all.</summary>
+    private string? _label;
 
     private AudioCapture(WasapiRecorder recorder, bool processLoopback, ILogger logger)
     {
@@ -52,7 +68,50 @@ internal sealed class AudioCapture : IAsyncDisposable
     /// <summary>True for the endpoint-loopback fallback, which also hears what this app plays.</summary>
     public bool IncludesOwnPlayback { get; }
 
-    public string Description => $"{(IncludesOwnPlayback ? "endpoint" : "process")} loopback, {_sourceFormat}";
+    public string Description => _label is null
+        ? $"{(IncludesOwnPlayback ? "endpoint" : "process")} loopback, {_sourceFormat}"
+        : $"{_label}, {_sourceFormat}";
+
+    /// <summary>
+    /// This device's microphone: the one Windows uses for calls, or else its ordinary one. With
+    /// <paramref name="forCalls"/> it is opened the way a calling program opens it, which asks the system for what
+    /// it does for calls — taking the echo of the speakers out, steadying the level — where the device has that;
+    /// some will not open that way, and then it is opened plainly. Throws when there is no microphone.
+    /// </summary>
+    public static AudioCapture CreateForMicrophone(ILogger logger, bool forCalls)
+    {
+        using var enumerator = new MMDeviceEnumerator();
+        MMDevice device;
+        try
+        {
+            device = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+        }
+        catch (Exception ex) when (ex is COMException or InvalidOperationException)
+        {
+            device = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia);
+        }
+
+        try
+        {
+            var builder = new WasapiRecorderBuilder().WithDevice(device);
+            if (forCalls)
+            {
+                builder = builder.WithCommunicationsMode();
+            }
+
+            var recorder = builder.Build();
+            return new AudioCapture(recorder, processLoopback: true, logger)
+            {
+                _device = device,
+                _label = $"microphone {device.FriendlyName}{(forCalls ? ", as for a call" : string.Empty)}",
+            };
+        }
+        catch
+        {
+            device.Dispose();
+            throw;
+        }
+    }
 
     public static async Task<AudioCapture> CreateAsync(ILogger logger)
     {

@@ -412,17 +412,19 @@
 | `device-info` | `DeviceInfoMessage` | `AppVersion, IsReply=false` | версия приложения | `DeviceInfoService` (App) |
 | `vouch` | `PeerVouchMessage` | `Peers: List<VouchedPeer>, IsReply=false` | список сопряжённых отправителя | `PeerIntroductions` |
 | `vouch-relay` | `VouchRelayMessage` | `ToPeerId, Peer: VouchedPeer` | «передай дальше»: обратное доверие через посредника | `PeerIntroductions` |
-| `audio-start` | `AudioStartMessage` | `StreamId, Key, Codec, SampleRate, Channels, FrameMs, Automatic=false` | начало звукового потока; ключ AES-256-GCM, кодек `opus` или `pcm16` | `AudioService`, `AudioSender` |
+| `audio-start` | `AudioStartMessage` | `StreamId, Key, Codec, SampleRate, Channels, FrameMs, Automatic=false, Microphone=false` | начало звукового потока (с `Microphone` — это микрофон отправителя, место ему в виртуальном кабеле, а не в динамиках); ключ AES-256-GCM, кодек `opus` или `pcm16` | `AudioService`, `AudioSender` |
 | `audio-stop` | `AudioStopMessage` | `StreamId` | конец звукового потока | `AudioService`, `AudioSender` |
 | `audio-route` | `AudioRouteRequestMessage` | `Listen, Refuse=false` | пожелание получателя: слать сюда / не слать / автоматически | `AudioService` |
 | `audio-loss` | `AudioLossReportMessage` | `StreamId, PercentLost, JitterMs` | отчёт получателя о потерях и джиттере | `AudioService` |
+| `mic-offer` | `MicrophoneOfferMessage` | — | «можно прислать тебе мой микрофон?»; старая версия не отвечает, и это значит «нет» | `AudioService` |
+| `mic-answer` | `MicrophoneAnswerMessage` | `Accepted, Device=null, Reason=null` | ответ: куда будет воспроизводиться, или почему нет (`off`, `no-device`) | `AudioService` |
 | `screen-request` | `ScreenRequestMessage` | `StreamId, MonitorIndex, MonitorKey?, MaxFps?` | зритель просит поток монитора | `ScreenStreamingService`, `ScreenViewer` |
 | `screen-stream` | `ScreenStreamMessage` | `StreamId, Kind, Title, MonitorIndex, MonitorCount, ControlAllowed, Minimized=false, ScalePercent=100, Codec="jpeg", MonitorKey="", MediaKey="", CropTags=false, MediaReplies=false` | поток начался или изменился; `Kind`: `monitor`/`window`/`display` | `ScreenSource`, `ScreenStreamingService`, `ScreenViewer` |
 | `screen-stop` | `ScreenStopMessage` | `StreamId, Reason?` | поток закончен (любая сторона) | `ScreenStreamingService`, `ScreenViewer` |
 | `screen-keyboard` | `ScreenKeyboardMessage` | `StreamId, Show` | фокус попал в поле ввода: показать или убрать клавиатуру зрителя | `ScreenStreamingService` |
 | `screen-stats` | `ScreenStatsMessage` | `StreamId, AckMs, ViewerMs, EncoderMs, Kbps, Fps, Udp, SharePercent, GaveUp, Resent` | показатели потока раз в секунду | `ScreenSource`, `ScreenViewer`, окно просмотра |
 | `screen-mark` | `ScreenMarkMessage` | `StreamId, Note` | отметка «подвисло» в журналах обеих сторон | `ScreenStreamingService`, `ScreenViewer` |
-| `screen-thumbs` | `ScreenThumbsMessage` | `StreamId, On` | включить или выключить миниатюры остальных мониторов | `ScreenStreamingService`, `ScreenViewer` |
+| `screen-thumbs` | `ScreenThumbsMessage` | `StreamId, On, Width=0` | включить или выключить миниатюры остальных мониторов; `Width` — какой ширины (0 — обычные 256 px) | `ScreenStreamingService`, `ScreenViewer` |
 | `screen-thumb` | `ScreenThumbMessage` | `StreamId, MonitorKey, Width, Height, Jpeg` | одна миниатюра | `ScreenSource`, `ScreenViewer` |
 | `screen-foreground` | `ScreenForegroundMessage` | `StreamId, Process` | активная программа на источнике | `ScreenSource`, `ScreenStreamingService` |
 | `screen-fallback` | `ScreenCodecFallbackMessage` | `StreamId, Reason` | у зрителя нет картинки из видео, просит перейти на другой кодек | `ScreenStreamingService`, `ScreenViewer` |
@@ -550,6 +552,8 @@
 | `BitrateKbps` | 160 | битрейт |
 | `BufferMs` | 40 | цель джиттер-буфера |
 | `MutedByApp` | `false` | флаг «динамики заглушены нами» для восстановления после сбоя |
+| `AcceptMicrophone` | `true` | принимать микрофон других устройств (в виртуальный кабель) |
+| `MicrophoneOutput` | `""` | id или имя выхода для чужого микрофона; пусто — искать виртуальный кабель |
 
 **`ButtonBarSettings`, `ButtonPreset`, `ButtonBinding`** (`ButtonBarSettings.cs`). Хранятся на устройстве, не синхронизируются.
 

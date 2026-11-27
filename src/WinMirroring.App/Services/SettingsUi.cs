@@ -139,6 +139,10 @@ public sealed class SettingsUi
             buffer = _vm.AudioBuffer,
             status = _vm.AudioStatusText,
             targets = _vm.DeviceChoices.Select(c => new { id = c.Id, name = c.Name }).ToList(),
+            acceptMic = _vm.AudioAcceptMicrophone,
+            micOutput = _vm.AudioMicrophoneOutput,
+            micOutputs = _vm.MicrophoneOutputChoices.Select(c => new { id = c.Id, name = c.Name }).ToList(),
+            micNote = _vm.MicrophoneOutputNote,
         },
         screen = new
         {
@@ -282,6 +286,8 @@ public sealed class SettingsUi
             case "audio.receive": _vm.AudioReceiveEnabled = Flag(); break;
             case "audio.bitrate": _vm.AudioBitrate = Number(); break;
             case "audio.buffer": _vm.AudioBuffer = Number(); break;
+            case "audio.acceptMic": _vm.AudioAcceptMicrophone = Flag(); break;
+            case "audio.micOutput": _vm.AudioMicrophoneOutput = text; break;
             case "audio.pinnedId":
                 _vm.AudioPinnedTarget = _vm.DeviceChoices.FirstOrDefault(c => c.Id == text) ?? _vm.DeviceChoices.FirstOrDefault();
                 break;

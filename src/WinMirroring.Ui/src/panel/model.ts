@@ -20,7 +20,8 @@ export type PanelDevice = {
   screenOpen: boolean
   secondMonitor: boolean
   canBecome: boolean | null
-  sound: { here: string; playing: boolean; sentTo: boolean }
+  /** `mic`: this device's microphone is being sent to that one. */
+  sound: { here: string; playing: boolean; sentTo: boolean; mic?: boolean }
 }
 
 export type PanelState = {

@@ -175,8 +175,9 @@
 | `updateDevice`* | `PeerFilesService.SendOwnBuildAsync` |
 | `soundHere` | `text` = `always` / `never` / иное (авто) → `AudioService.SetIncomingChoiceAsync` |
 | `soundTo` | `text` = `here` → `KeepSoundHere()`; `auto` → `SendSoundTo(null)`; иначе `SendSoundTo(id)` |
+| `microphone` | включить или выключить передачу микрофона этого устройства на `deviceId` → `MainViewModel.ToggleMicrophoneAsync`; ответ — строка с исходом (куда воспроизводится там или почему не началось) |
 | `returnCursor`, `returnWindows` | как в трее |
-| `addAddress` | `text` в `Settings.ManualPeerAddresses` + `SaveSettings()` |
+| `addAddress` | `text` в `Settings.ManualPeerAddresses` + `SaveSettings()` + `MainViewModel.ReloadManualAddresses()` (иначе «Применить» в разделе «Сеть» записывало список, каким он был при запуске) |
 | `removeAddress`* | удаляет адрес и сохраняет |
 | `openSettings` | делегат `OpenSettings` = `App.ShowMainWindow` |
 | `copyAddress`, `openShare`, `remoteDesktop`, `ping`, `latency`, `peerLog`, `reconnect`* | инструменты устройства (см. «Диагностика и инструменты») |
@@ -242,7 +243,7 @@
 **Что делает.** Действие, способное отрезать это устройство от того, кто им управляет удалённо, сначала переспрашивается окном на том мониторе, где указатель. Сидящего за устройством не спрашивают.
 
 **Как устроено.** `Services/RemoteGuard.cs`: `IsRemote = RemoteInputTracker.ActiveWithin(4000 мс) || InputSharingService.IsBeingControlled`. `ConfirmAsync(what, why, yes)`: модальное окно «WinMirroring — подтверждение», кнопка по умолчанию «Отмена»; кнопка подтверждения активируется через `ArmAfter = 1 с`; без ответа через `GiveUpAfter = 30 с` — отмена. Вопрос и ответ пишутся в журнал.
-Применяется: выход из трея; `hub.command` `controlInput`, `secondMonitor`, `becomeSecondMonitor`, `updateDevice`, `reconnect`, `removeAddress`; `settings.set` (четыре ключа выше); `settings.command` `applyNetwork`, `addFirewall`, `adminNoPrompt`, `adminPrompt`, `restartElevated`, `installVirtualDisplay`, `stopSource`.
+Применяется: выход из трея; `hub.command` `controlInput`, `secondMonitor`, `becomeSecondMonitor`, `updateDevice`, `reconnect`, `microphone` (только включение), `removeAddress`; `settings.set` (четыре ключа выше); `settings.command` `applyNetwork`, `addFirewall`, `adminNoPrompt`, `adminPrompt`, `restartElevated`, `installVirtualDisplay`, `stopSource`.
 
 **Ограничения и запасные пути.** Нет диспетчера — ответ «нет». Ключи `shell.allowCommands` / `shell.allowElevatedCommands` в списке защищаемых отсутствуют.
 

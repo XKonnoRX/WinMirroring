@@ -56,7 +56,7 @@ public partial class ScreenViewerWindow
     private long _partDueSince;
 
     /// <summary>Whether this stream's source says which part each picture is of; without that, zoom stays as it was.</summary>
-    private bool PartsPossible => !_partsFailed && _viewer.Info.CropTags && _viewer.Info.Codec == "h264";
+    private bool PartsPossible => !_partsFailed && _viewer.Info.CropTags && _viewer.Info.Codec is "h264" or "hevc";
 
     /// <summary>
     /// Something in here threw. Asking for parts is a way of seeing better, not something a view cannot do without,

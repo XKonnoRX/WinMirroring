@@ -110,6 +110,7 @@ public partial class ScreenViewerWindow
         _zoomShift.Y = _pan.Y - _lift;
         PlacePointer();
         ViewMoved();
+        PlacePage();
     }
 
     private static double Clamp(double pan, double origin, double size, double view)
@@ -321,6 +322,12 @@ public partial class ScreenViewerWindow
     private bool GestureTouchDown(TouchEventArgs e)
     {
         var id = e.TouchDevice.Id;
+        if (_pageSliding)
+        {
+            e.Handled = true; // the page is on its way; a finger put down meanwhile is nothing
+            return true;
+        }
+
         if (_gesture.Count > 0)
         {
             if (JoinsAsThird())
@@ -390,6 +397,7 @@ public partial class ScreenViewerWindow
         if (_gesture.Count == 2)
         {
             _twoSince = Environment.TickCount64;
+            HavePagePicturesAtHand(); // a third finger may be on its way
         }
 
         e.Handled = true;
@@ -408,8 +416,7 @@ public partial class ScreenViewerWindow
         if (_paging)
         {
             // Sliding the picture towards the monitor beside it (see ScreenViewerWindow.Paging).
-            _pageShift = (middle - start.Middle).X - _pageFrom;
-            ApplyView();
+            SlidePageTo((middle - start.Middle).X - _pageFrom);
             return true;
         }
 

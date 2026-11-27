@@ -79,6 +79,34 @@ public sealed partial class MainViewModel
             : $"Звук этого устройства играет на {peerName ?? peerId}.";
     }
 
+    /// <summary>This device's microphone is being sent to that device.</summary>
+    public bool IsMicrophoneSentTo(string peerId) => _audio.IsMicrophoneSentTo(peerId);
+
+    /// <summary>
+    /// Starts sending this device's microphone to <paramref name="peerId"/>, or stops if it already goes there.
+    /// What it says back is for showing: where it is played there, or why it did not start.
+    /// </summary>
+    public async Task<string> ToggleMicrophoneAsync(string peerId, string peerName)
+    {
+        if (_audio.IsMicrophoneSentTo(peerId))
+        {
+            await _audio.StopMicrophoneAsync();
+            return StatusText = "Микрофон этого устройства больше никуда не передаётся.";
+        }
+
+        var result = await _audio.SendMicrophoneToAsync(peerId);
+        return StatusText = result.Outcome switch
+        {
+            MicrophoneOutcome.Started => $"Микрофон этого устройства передаётся на {peerName}: там он воспроизводится в «{result.Device}». В программе на {peerName} выберите микрофоном другой конец этого кабеля.",
+            MicrophoneOutcome.Unreachable => $"Нет связи с {peerName}.",
+            MicrophoneOutcome.NotSupported => $"{peerName} не ответил на предложение микрофона: вероятно, там версия WinMirroring старше 1.0.76.",
+            MicrophoneOutcome.Refused => $"На {peerName} приём микрофона выключен (Параметры → Звук).",
+            MicrophoneOutcome.NoOutputThere => $"На {peerName} нет виртуального аудиокабеля, в который можно воспроизвести микрофон. Поставьте там VB-CABLE (vb-audio.com/Cable) или выберите устройство в «Параметры → Звук».",
+            MicrophoneOutcome.NoMicrophoneHere => "На этом устройстве нет микрофона, который удалось открыть.",
+            _ => "Не удалось начать передачу микрофона: подробности в журнале.",
+        };
+    }
+
     public void KeepSoundHere()
     {
         AudioPinnedTarget = _noDevice;

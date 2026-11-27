@@ -41,7 +41,8 @@ internal sealed class AudioSender : IAsyncDisposable
 
     private readonly MirroringNode _node;
     private readonly PeerSession _target;
-    private readonly AudioCapture _capture;
+    private readonly IAudioSource _capture;
+    private readonly bool _microphone;
     private readonly IOpusEncoder _encoder;
     private readonly MediaCipher _cipher;
     private readonly string _key;
@@ -74,8 +75,9 @@ internal sealed class AudioSender : IAsyncDisposable
     private long _cleanSinceTicks;
     private volatile bool _sendSpare;
 
-    private AudioSender(MirroringNode node, PeerSession target, AudioCapture capture, uint streamId, byte[] key, int bitrateKbps, AudioRouteReason reason, Func<bool> suspended, ILogger logger)
+    private AudioSender(MirroringNode node, PeerSession target, IAudioSource capture, uint streamId, byte[] key, int bitrateKbps, AudioRouteReason reason, Func<bool> suspended, ILogger logger, bool microphone)
     {
+        _microphone = microphone;
         _node = node;
         _target = target;
         _capture = capture;
@@ -89,7 +91,7 @@ internal sealed class AudioSender : IAsyncDisposable
         _encoder = OpusCodecFactory.CreateEncoder(AudioFormat.SampleRate, AudioFormat.Channels, OpusApplication.OPUS_APPLICATION_AUDIO);
         _encoder.Bitrate = Math.Clamp(bitrateKbps, 32, 510) * 1000;
         _encoder.Complexity = 6;
-        _encoder.SignalType = OpusSignal.OPUS_SIGNAL_MUSIC;
+        _encoder.SignalType = microphone ? OpusSignal.OPUS_SIGNAL_VOICE : OpusSignal.OPUS_SIGNAL_MUSIC;
         _encoder.UseVBR = true;
         for (var i = 0; i < _queued.Length; i++)
         {
@@ -141,12 +143,26 @@ internal sealed class AudioSender : IAsyncDisposable
     /// <summary>True when capture also hears this app's own playback (fallback mode).</summary>
     public bool CaptureIncludesOwnPlayback => _capture.IncludesOwnPlayback;
 
-    public static async Task<AudioSender> StartAsync(MirroringNode node, PeerSession target, int bitrateKbps, AudioRouteReason reason, Func<bool> suspended, ILogger logger)
+    /// <param name="source">
+/// What to send instead of what this device plays; with <paramref name="microphone"/> it is this device's
+/// microphone, and the stream is announced as one. The sender owns it from here on, whatever happens.
+/// </param>
+    public static async Task<AudioSender> StartAsync(MirroringNode node, PeerSession target, int bitrateKbps, AudioRouteReason reason, Func<bool> suspended, ILogger logger, IAudioSource? source = null, bool microphone = false)
     {
-        var capture = await AudioCapture.CreateAsync(logger).ConfigureAwait(false);
+        var capture = source ?? await AudioCapture.CreateAsync(logger).ConfigureAwait(false);
         var streamId = (uint)Random.Shared.Next(1, int.MaxValue);
         var key = MediaCipher.GenerateKey();
-        var sender = new AudioSender(node, target, capture, streamId, key, bitrateKbps, reason, suspended, logger);
+        AudioSender sender;
+        try
+        {
+            sender = new AudioSender(node, target, capture, streamId, key, bitrateKbps, reason, suspended, logger, microphone);
+        }
+        catch
+        {
+            await capture.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+
         try
         {
             await target.SendControlAsync(sender.StartMessage()).ConfigureAwait(false);
@@ -161,7 +177,15 @@ internal sealed class AudioSender : IAsyncDisposable
             throw;
         }
 
-        logger.LogInformation("Sending sound to {Peer} ({Reason}; stream {Stream}, {Bitrate} kbps, {Capture})", target.PeerName, reason, streamId, bitrateKbps, capture.Description);
+        if (microphone)
+        {
+            logger.LogInformation("Sending the microphone to {Peer} (stream {Stream}, {Bitrate} kbps, {Capture})", target.PeerName, streamId, bitrateKbps, capture.Description);
+        }
+        else
+        {
+            logger.LogInformation("Sending sound to {Peer} ({Reason}; stream {Stream}, {Bitrate} kbps, {Capture})", target.PeerName, reason, streamId, bitrateKbps, capture.Description);
+        }
+
         return sender;
     }
 
@@ -218,7 +242,7 @@ internal sealed class AudioSender : IAsyncDisposable
     }
 
     private AudioStartMessage StartMessage() =>
-        new(StreamId, _key, AudioFormat.Codec, AudioFormat.SampleRate, AudioFormat.Channels, AudioFormat.FrameMs, Automatic);
+        new(StreamId, _key, AudioFormat.Codec, AudioFormat.SampleRate, AudioFormat.Channels, AudioFormat.FrameMs, Automatic, _microphone);
 
     /// <summary>Runs on the capture thread: nothing here but a copy, so capture is never held up.</summary>
     private void OnFrame(ReadOnlySpan<float> frame)
@@ -394,7 +418,7 @@ internal sealed class AudioSender : IAsyncDisposable
         _ready.Dispose();
         _cipher.Dispose();
         _logger.LogInformation(
-            "Stopped sending sound to {Peer} ({Packets} packets, {Dropped} frames dropped before encoding)",
-            _target.PeerName, SentPackets, DroppedFrames);
+            "Stopped sending {What} to {Peer} ({Packets} packets, {Dropped} frames dropped before encoding)",
+            _microphone ? "the microphone" : "sound", _target.PeerName, SentPackets, DroppedFrames);
     }
 }

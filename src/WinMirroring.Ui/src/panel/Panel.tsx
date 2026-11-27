@@ -218,6 +218,13 @@ export function Panel() {
                 </button>
               ))}
             </div>
+            <button
+              className={`item${device.sound.mic ? ' is-on' : ''}`}
+              title="Микрофон этого устройства становится микрофоном того: там он воспроизводится в виртуальный аудиокабель"
+              onClick={() => void run('microphone', { deviceId: device.id })}
+            >
+              {device.sound.mic ? 'Мой микрофон идёт туда — выключить' : 'Мой микрофон — туда'}
+            </button>
           </div>
         ))}
 

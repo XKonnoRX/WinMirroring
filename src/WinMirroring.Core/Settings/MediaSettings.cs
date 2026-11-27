@@ -181,4 +181,16 @@ public sealed class AudioSettings
 
     /// <summary>Set while this app holds the speakers muted, so a crash can be repaired on the next start.</summary>
     public bool MutedByApp { get; set; }
+
+    /// <summary>
+    /// Let another device send its microphone here, to be played into a virtual cable so that programs on this
+    /// device can use it as a microphone. Nothing is ever played into the speakers by this.
+    /// </summary>
+    public bool AcceptMicrophone { get; set; } = true;
+
+    /// <summary>
+    /// The output another device's microphone is played into: its id or its name. Empty: the first virtual cable
+    /// found (VB-CABLE, Steam's streaming microphone and the like), and nothing where there is none.
+    /// </summary>
+    public string MicrophoneOutput { get; set; } = string.Empty;
 }

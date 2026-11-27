@@ -1677,8 +1677,14 @@ internal sealed class ScreenSource : IAsyncDisposable
     private int _thumbsRunning;
 
     /// <summary>The viewer wants (or no longer wants) pictures of this device's other monitors.</summary>
-    public void OnThumbsWanted(bool on)
+    private int _thumbsWidth;
+
+    /// <param name="width">How wide they are wanted; nothing for the usual small ones (see <see cref="MonitorThumbnail"/>).</param>
+    public void OnThumbsWanted(bool on, int width = 0)
     {
+        // The widest anybody asked for while they are being sent: the menu's small ones and the window's wider
+        // ones are the same pictures, and a wide one serves both.
+        Volatile.Write(ref _thumbsWidth, on ? Math.Max(Volatile.Read(ref _thumbsWidth), width) : 0);
         if (!on || Kind != StreamKind.Monitor)
         {
             Volatile.Write(ref _thumbsWantedUntil, 0);
@@ -1706,7 +1712,7 @@ internal sealed class ScreenSource : IAsyncDisposable
                         continue; // the one being watched is on the viewer's screen already, at full size
                     }
 
-                    if (MonitorThumbnail.Capture(monitor.Bounds, out var width, out var height) is { } jpeg)
+                    if (MonitorThumbnail.Capture(monitor.Bounds, Volatile.Read(ref _thumbsWidth), out var width, out var height) is { } jpeg)
                     {
                         await Session.SendControlAsync(new ScreenThumbMessage(StreamId, monitor.DeviceName, width, height, jpeg), ct).ConfigureAwait(false);
                     }
@@ -1724,6 +1730,7 @@ internal sealed class ScreenSource : IAsyncDisposable
         }
         finally
         {
+            Volatile.Write(ref _thumbsWidth, 0);
             Volatile.Write(ref _thumbsRunning, 0);
         }
     }

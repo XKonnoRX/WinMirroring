@@ -492,7 +492,7 @@ public sealed partial class ScreenStreamingService : IAsyncDisposable
             case ScreenThumbsMessage thumbs:
                 if (_sources.TryGetValue(thumbs.StreamId, out var pictured) && ReferenceEquals(pictured.Session, session))
                 {
-                    pictured.OnThumbsWanted(thumbs.On);
+                    pictured.OnThumbsWanted(thumbs.On, thumbs.Width);
                 }
 
                 break;

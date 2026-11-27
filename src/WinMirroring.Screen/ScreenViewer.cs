@@ -57,6 +57,12 @@ public sealed class ScreenViewer : IAsyncDisposable
     private H264VideoDecoder? _videoDecoder;
     private bool _videoDecodeUnavailable;
 
+    /// <summary>The format there turned out to be no decoder for, while <see cref="_videoDecodeUnavailable"/> is set.</summary>
+    private VideoFormat _noDecoderFor;
+
+    /// <summary>For tests: behave as a device whose graphics card does not decode HEVC.</summary>
+    internal static bool RefuseHevcForTest { get; set; }
+
     /// <summary>The graphics card was tried for this stream and let it down; from then on the processor decodes.</summary>
     private bool _decodeInMemory;
 
@@ -496,6 +502,14 @@ public sealed class ScreenViewer : IAsyncDisposable
             return;
         }
 
+        if (!on && now < Volatile.Read(ref _picturesAskedOnceUntil))
+        {
+            // Somebody else asked for them just now (see AskForMonitorPictures): they are not called off, and the
+            // source stops by itself when nobody has asked for a while.
+            _picturesOn = false;
+            return;
+        }
+
         _picturesOn = on;
         _picturesAskedTicks = now;
         if (!on)
@@ -504,6 +518,27 @@ public sealed class ScreenViewer : IAsyncDisposable
         }
 
         _ = SendControlAsync(new ScreenThumbsMessage(StreamId, on));
+    }
+
+    private long _picturesAskedOnceTicks;
+    private long _picturesAskedOnceUntil;
+
+    /// <summary>
+    /// Asks for them once more, this wide: for something that wants to have them at hand without keeping on
+    /// asking — the window, so that a monitor being swiped to can be shown before its stream has started. The
+    /// source sends them for a few seconds and stops by itself.
+    /// </summary>
+    public void AskForMonitorPictures(int width)
+    {
+        var now = Environment.TickCount64;
+        if (now - Volatile.Read(ref _picturesAskedOnceTicks) < 700)
+        {
+            return;
+        }
+
+        Volatile.Write(ref _picturesAskedOnceTicks, now);
+        Volatile.Write(ref _picturesAskedOnceUntil, now + 8000);
+        _ = SendControlAsync(new ScreenThumbsMessage(StreamId, true, width));
     }
 
     internal void OnThumbnail(ScreenThumbMessage thumb)
@@ -1053,9 +1088,14 @@ public sealed class ScreenViewer : IAsyncDisposable
         // description: a stream that steps down from HEVC to H.264 says so on the connection, while its pictures
         // may be coming by datagram, and the two do not arrive in step.
         var format = frame.Keyframe ? VideoInterop.Sniff(frame.Data) : _videoDecoder?.Format ?? VideoInterop.FormatNamed(Info.Codec);
-        if (_videoDecoder is not null && _videoDecoder.Format != format)
+        // A change of format is a new start in either case: with a decoder for the old one, and equally with none —
+        // "there is no decoder" was said of the format that was arriving then, and says nothing about this one.
+        // (Without the second half a device that could not decode HEVC asked for H.264, got it, and went on
+        // showing nothing: it never tried.)
+        if ((_videoDecoder is not null && _videoDecoder.Format != format)
+            || (_videoDecoder is null && _videoDecodeUnavailable && frame.Keyframe && _noDecoderFor != format))
         {
-            _videoDecoder.Dispose();
+            _videoDecoder?.Dispose();
             _videoDecoder = null;
             _videoDecodeUnavailable = false;
             _videoSilentSince = null;
@@ -1067,7 +1107,7 @@ public sealed class ScreenViewer : IAsyncDisposable
         {
             // HEVC only on the graphics card: decoded in memory its pictures come out wrong (see VideoCodecSupport).
             _videoDecoder = H264VideoDecoder.TryCreate(frame.Width, frame.Height, _logger, useGraphicsCard: format == VideoFormat.Hevc || !_decodeInMemory, format);
-            if (_videoDecoder is { Format: VideoFormat.Hevc, UsesGraphicsCard: false })
+            if (_videoDecoder is { Format: VideoFormat.Hevc } && (!_videoDecoder.UsesGraphicsCard || RefuseHevcForTest))
             {
                 _videoDecoder.Dispose();
                 _videoDecoder = null;
@@ -1076,6 +1116,7 @@ public sealed class ScreenViewer : IAsyncDisposable
             if (_videoDecoder is null)
             {
                 _videoDecodeUnavailable = true;
+                _noDecoderFor = format;
                 _logger.LogWarning("No {Format} decoder available for the stream from {Peer}", VideoInterop.NameOf(format), PeerName);
                 RequestTiles(format == VideoFormat.Hevc ? "HEVC на этом устройстве не декодируется видеокартой" : "на этом устройстве нет декодера H.264");
             }
@@ -1142,6 +1183,7 @@ public sealed class ScreenViewer : IAsyncDisposable
                 _videoDecoder.Dispose();
                 _videoDecoder = null;
                 _videoDecodeUnavailable = true;
+                _noDecoderFor = VideoFormat.Hevc;
                 ReleaseSurfaces();
                 RequestTiles("видеокарта перестала декодировать HEVC");
                 produced = false;

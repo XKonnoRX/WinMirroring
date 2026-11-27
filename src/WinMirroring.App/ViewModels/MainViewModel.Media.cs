@@ -56,6 +56,57 @@ public sealed partial class MainViewModel
     [ObservableProperty]
     public partial string AudioStatusText { get; set; } = string.Empty;
 
+    /// <summary>Other devices may send their microphone here (it is played into a virtual cable).</summary>
+    [ObservableProperty]
+    public partial bool AudioAcceptMicrophone { get; set; }
+
+    /// <summary>The output such a microphone is played into: its id, or empty for "find a virtual cable".</summary>
+    [ObservableProperty]
+    public partial string AudioMicrophoneOutput { get; set; } = string.Empty;
+
+    private IReadOnlyList<WinMirroring.Audio.Playback.AudioOutputDevice> _outputs = [];
+    private long _outputsReadTicks = long.MinValue / 2;
+
+    /// <summary>This device's sound outputs. Asking the sound system takes a moment, so an answer is kept for a few seconds.</summary>
+    private IReadOnlyList<WinMirroring.Audio.Playback.AudioOutputDevice> SoundOutputs
+    {
+        get
+        {
+            if (Environment.TickCount64 - _outputsReadTicks > 5000)
+            {
+                _outputs = WinMirroring.Audio.Playback.MicrophoneOutput.List();
+                _outputsReadTicks = Environment.TickCount64;
+            }
+
+            return _outputs;
+        }
+    }
+
+    /// <summary>What can be chosen as the place for another device's microphone: "find a cable", then every output.</summary>
+    public IReadOnlyList<(string Id, string Name)> MicrophoneOutputChoices =>
+        [(string.Empty, "Автоматически: виртуальный аудиокабель"), .. SoundOutputs.Select(o => (o.Id, o.Name))];
+
+    /// <summary>Where such a microphone would go right now, and what to do about it, in a line or two.</summary>
+    public string MicrophoneOutputNote
+    {
+        get
+        {
+            var picked = WinMirroring.Audio.Playback.MicrophoneOutput.Pick(SoundOutputs, AudioMicrophoneOutput);
+            if (picked is null)
+            {
+                var none = "Подходящего виртуального аудиокабеля на этом устройстве нет, поэтому принять чужой микрофон некуда: Windows не даёт программе самой быть микрофоном. Поставьте VB-CABLE (vb-audio.com/Cable) — после установки он найдётся сам.";
+                return SoundOutputs.FirstOrDefault(o => o.Distorts) is { } poor
+                    ? none + $" «{poor.Name}» здесь есть, но сам не выбирается: два его конца настроены на разный формат, и звук через него искажается. Он станет годным, если в настройках звука Windows выставить обоим концам одинаковые частоту и число каналов."
+                    : none;
+            }
+
+            var where = $"Микрофон другого устройства будет воспроизводиться в «{picked.Name}». В программе, которая должна его слышать, выберите микрофоном другой конец этого кабеля (для VB-CABLE это «CABLE Output»).";
+            return picked.Distorts
+                ? where + " Внимание: два конца этого кабеля настроены на разный формат, и звук через него искажается, пока в настройках звука Windows им не выставлены одинаковые частота и число каналов."
+                : where;
+        }
+    }
+
     private void InitializeMedia()
     {
         var clipboard = _node.Settings.Clipboard;
@@ -72,6 +123,8 @@ public sealed partial class MainViewModel
         AudioPinnedTarget = string.IsNullOrEmpty(audio.PinnedTargetId) ? _noDevice : EnsureChoice(audio.PinnedTargetId, null);
         AudioMuteLocal = audio.MuteLocalWhileSending;
         AudioReceiveEnabled = audio.ReceiveEnabled;
+        AudioAcceptMicrophone = audio.AcceptMicrophone;
+        AudioMicrophoneOutput = audio.MicrophoneOutput;
         AudioBitrate = audio.BitrateKbps;
         AudioBuffer = audio.BufferMs;
 
@@ -102,6 +155,18 @@ public sealed partial class MainViewModel
                 $"Играет звук с {incoming.PeerName}: в буфере {incoming.BufferedMs:F0} из {incoming.AimedMs} мс, " +
                 $"разброс прихода {incoming.JitterMs:F1} мс, потеряно пакетов {incoming.Lost} (восстановлено {incoming.Recovered}), " +
                 $"провалов {incoming.Underruns}."));
+        }
+
+        if (status.MicrophoneTo is { } microphoneTo)
+        {
+            lines.Add($"Микрофон этого устройства передаётся на {microphoneTo}.");
+        }
+
+        if (status.MicrophonesHere is { Count: > 0 } microphones)
+        {
+            lines.Add(status.MicrophoneDevice is { } device
+                ? $"Микрофон {string.Join(", ", microphones)} воспроизводится в «{device}»."
+                : $"Микрофон {string.Join(", ", microphones)} приходит, но воспроизвести его некуда: нет виртуального аудиокабеля.");
         }
 
         AudioStatusText = string.Join(Environment.NewLine, lines);
@@ -160,6 +225,10 @@ public sealed partial class MainViewModel
     partial void OnAudioMuteLocalChanged(bool value) => SaveAudio(s => s.MuteLocalWhileSending = value);
 
     partial void OnAudioReceiveEnabledChanged(bool value) => SaveAudio(s => s.ReceiveEnabled = value);
+
+    partial void OnAudioAcceptMicrophoneChanged(bool value) => SaveAudio(s => s.AcceptMicrophone = value);
+
+    partial void OnAudioMicrophoneOutputChanged(string value) => SaveAudio(s => s.MicrophoneOutput = value ?? string.Empty);
 
     partial void OnAudioBitrateChanged(int value)
     {

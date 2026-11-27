@@ -397,6 +397,23 @@ export function Settings() {
               />
               <p className="note">{state.audio.status}</p>
             </Section>
+
+            <Section title="Микрофон другого устройства">
+              <Toggle
+                label="Принимать микрофон других устройств"
+                hint="Микрофон, например, планшета становится микрофоном этого компьютера: его звук воспроизводится в виртуальный аудиокабель, а не в динамики. Включают передачу на том устройстве — в боковой панели, «Мой микрофон — туда»."
+                checked={state.audio.acceptMic}
+                onChange={(v) => void set('audio.acceptMic', v)}
+              />
+              <Choice
+                label="Куда его воспроизводить"
+                disabled={!state.audio.acceptMic}
+                value={state.audio.micOutput}
+                options={state.audio.micOutputs.map((o) => ({ value: o.id, label: o.name }))}
+                onChange={(v) => void set('audio.micOutput', v)}
+              />
+              <p className="note">{state.audio.micNote}</p>
+            </Section>
           </>
         )}
 

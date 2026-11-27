@@ -31,6 +31,8 @@ namespace WinMirroring.Core.Messages;
 [JsonDerivedType(typeof(LogResponseMessage), "log-response")]
 [JsonDerivedType(typeof(AudioRouteRequestMessage), "audio-route")]
 [JsonDerivedType(typeof(AudioLossReportMessage), "audio-loss")]
+[JsonDerivedType(typeof(MicrophoneOfferMessage), "mic-offer")]
+[JsonDerivedType(typeof(MicrophoneAnswerMessage), "mic-answer")]
 [JsonDerivedType(typeof(InputReleaseRequestMessage), "input-release")]
 [JsonDerivedType(typeof(InputBlockedMessage), "input-blocked")]
 [JsonDerivedType(typeof(DisplayInviteMessage), "display-invite")]
@@ -165,7 +167,22 @@ public sealed record LayoutMonitor(
 /// devices would send to each other on their own, the newer one wins and the other gives way. Sent again with the
 /// same stream and key when only the reason changes.
 /// </param>
-public sealed record AudioStartMessage(uint StreamId, string Key, string Codec, int SampleRate, int Channels, int FrameMs, bool Automatic = false) : ControlMessage;
+/// <param name="Microphone">
+/// The stream is the sender's microphone and not what it plays: it belongs in a virtual cable here, never in the
+/// speakers. Sent only to a device that said it takes microphones (see <see cref="MicrophoneOfferMessage"/>), since
+/// one that does not know the word would play it aloud.
+/// </param>
+public sealed record AudioStartMessage(uint StreamId, string Key, string Codec, int SampleRate, int Channels, int FrameMs, bool Automatic = false, bool Microphone = false) : ControlMessage;
+
+/// <summary>
+/// "May I send you my microphone?" — asked before any of it is sent. A device from before microphones does not
+/// know this message and so does not answer, which is taken as no.
+/// </summary>
+public sealed record MicrophoneOfferMessage : ControlMessage;
+
+/// <param name="Device">Where it will be played, for showing to whoever asked.</param>
+/// <param name="Reason">Why not: "off" (switched off there) or "no-device" (no virtual cable there).</param>
+public sealed record MicrophoneAnswerMessage(bool Accepted, string? Device = null, string? Reason = null) : ControlMessage;
 
 public sealed record AudioStopMessage(uint StreamId) : ControlMessage;
 
@@ -266,7 +283,7 @@ public sealed record ScreenMarkMessage(uint StreamId, string Note) : ControlMess
 /// Viewer → source: start (or stop) sending small pictures of the device's other monitors. Asked for while the
 /// viewer has its menu open, where each monitor is a button, so that the buttons show what is on them.
 /// </summary>
-public sealed record ScreenThumbsMessage(uint StreamId, bool On) : ControlMessage;
+public sealed record ScreenThumbsMessage(uint StreamId, bool On, int Width = 0) : ControlMessage;
 
 /// <summary>
 /// Source → viewer: which program is in front on the source now, by its process name ("chrome"). Sent when a stream

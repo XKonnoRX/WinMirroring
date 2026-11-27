@@ -23,16 +23,22 @@ internal static class MonitorThumbnail
     /// A JPEG of what is on the screen in <paramref name="bounds"/> (in the desktop's own pixels), scaled to
     /// <see cref="Width"/> across. Null when it could not be taken.
     /// </summary>
-    public static byte[]? Capture(Rectangle bounds, out int width, out int height)
+    public static byte[]? Capture(Rectangle bounds, out int width, out int height) => Capture(bounds, Width, out width, out height);
+
+    /// <summary>The widest such a picture is made: for standing in for the whole screen a moment, not for watching.</summary>
+    public const int WidestAsked = 960;
+
+    /// <summary>The same, <paramref name="across"/> pixels wide (kept within what such a picture is for).</summary>
+    public static byte[]? Capture(Rectangle bounds, int across, out int width, out int height)
     {
-        width = Width;
+        width = Math.Clamp(across <= 0 ? Width : across, 128, WidestAsked);
         height = 0;
         if (bounds.Width < 16 || bounds.Height < 16)
         {
             return null;
         }
 
-        height = Math.Clamp((int)Math.Round(Width * (double)bounds.Height / bounds.Width), 16, Width * 4);
+        height = Math.Clamp((int)Math.Round(width * (double)bounds.Height / bounds.Width), 16, width * 4);
         var bgr = Shrink(bounds, width, height);
         return bgr is null ? null : EncodeJpeg(bgr, width, height);
     }

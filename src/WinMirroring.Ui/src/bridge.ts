@@ -174,6 +174,13 @@ const sampleSettings = {
     buffer: 40,
     status: 'Звук этого устройства играет здесь.',
     targets: [{ id: '', name: '—' }, { id: 'tablet', name: 'DESKTOP-P50HIEF' }],
+    acceptMic: true,
+    micOutput: '',
+    micOutputs: [
+      { id: '', name: 'Автоматически: виртуальный аудиокабель' },
+      { id: 'cable', name: 'CABLE Input (VB-Audio Virtual Cable)' },
+    ],
+    micNote: 'Микрофон другого устройства будет воспроизводиться в «CABLE Input (VB-Audio Virtual Cable)».',
   },
   screen: {
     allowViewing: true,
@@ -248,7 +255,7 @@ const samplePanel = {
       screenOpen: true,
       secondMonitor: false,
       canBecome: true,
-      sound: { here: 'Automatic', playing: false, sentTo: false },
+      sound: { here: 'Automatic', playing: false, sentTo: false, mic: false },
     },
   ],
 }

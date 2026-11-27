@@ -124,6 +124,18 @@
              the mouse moves instead of the rate frames arrive. -->
         <Image x:Name="PointerImage" Visibility="Collapsed" IsHitTestVisible="False"
                RenderOptions.BitmapScalingMode="NearestNeighbor" />
+        <!-- The monitor being swiped to: a page the size of the view, with the last small picture of that monitor
+             on it, that comes in beside the picture as it is slid away and stays until that monitor's stream
+             has a frame to show (ScreenViewerWindow.Paging). -->
+        <Border x:Name="PageCover" Visibility="Collapsed" Background="Black" IsHitTestVisible="False">
+          <Grid>
+            <Image x:Name="PageImage" Stretch="Uniform" RenderOptions.BitmapScalingMode="Linear" />
+            <Border HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,56"
+                    Background="#B3111827" CornerRadius="6" Padding="16,7">
+              <TextBlock x:Name="PageLabel" Foreground="#E5E7EB" FontSize="15" />
+            </Border>
+          </Grid>
+        </Border>
       </Canvas>
       <TextBlock x:Name="WaitingText" Text="Ожидание изображения…" Foreground="#9CA3AF" FontSize="16"
                  HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />

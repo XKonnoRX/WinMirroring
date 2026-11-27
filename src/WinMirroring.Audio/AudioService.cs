@@ -24,13 +24,20 @@ public sealed record IncomingAudioStatus(
 
 /// <param name="SendingTo">Name of the device this device's sound plays on, or null when it plays here.</param>
 /// <param name="SpeakersMuted">This app holds this device's speakers muted (its sound plays elsewhere).</param>
+/// <param name="MicrophoneTo">Name of the device this device's microphone is sent to, or null.</param>
+/// <param name="MicrophonesHere">Names of the devices whose microphones are played here.</param>
+/// <param name="MicrophoneDevice">The output those are played into, while any is.</param>
 public sealed record AudioStatus(
     string? SendingTo,
     string? SendingToId,
     AudioRouteReason? Reason,
     string? CaptureMode,
     bool SpeakersMuted,
-    IReadOnlyList<IncomingAudioStatus> Receiving);
+    IReadOnlyList<IncomingAudioStatus> Receiving,
+    string? MicrophoneTo = null,
+    string? MicrophoneToId = null,
+    IReadOnlyList<string>? MicrophonesHere = null,
+    string? MicrophoneDevice = null);
 
 /// <summary>What this device wants for another device's sound here (see <see cref="AudioService.SetIncomingChoiceAsync"/>).</summary>
 public enum IncomingSoundChoice
@@ -52,7 +59,7 @@ public enum IncomingSoundChoice
 /// only while this device's sound plays elsewhere and nothing from another device plays here, so neither device
 /// ends up silent with its sound playing into the other one's muted speakers.
 /// </summary>
-public sealed class AudioService : IAsyncDisposable
+public sealed partial class AudioService : IAsyncDisposable
 {
     private static readonly TimeSpan StopDelay = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan ReevaluateDelay = TimeSpan.FromMilliseconds(60);
@@ -91,6 +98,7 @@ public sealed class AudioService : IAsyncDisposable
         _logger = logger;
         _playback = new AudioPlayback(logger);
         _mute = new LocalMuteGuard(node.Settings.Audio, node.SaveSettings, logger);
+        InitializeMicrophone();
     }
 
     public event Action? StatusChanged;
@@ -142,6 +150,32 @@ public sealed class AudioService : IAsyncDisposable
                         stream.Buffer.AimedMs,
                         stream.Buffer.Underruns,
                         stream.Buffer.Trims);
+                }
+
+                foreach (var stream in _micIncoming.Values)
+                {
+                    var total = stream.Packets + stream.Lost;
+                    _logger.LogInformation(
+                        "Microphone of {Peer}: {Packets} packets, {Percent:F2}% lost ({Recovered} rebuilt), spread {Jitter:F1} ms, buffer {Buffered:F0} of {Aimed} ms, {Underruns} underruns",
+                        stream.PeerName,
+                        stream.Packets,
+                        total == 0 ? 0 : stream.Lost * 100.0 / total,
+                        stream.Recovered,
+                        stream.JitterMs,
+                        stream.Buffer.BufferedMs,
+                        stream.Buffer.AimedMs,
+                        stream.Buffer.Underruns);
+                }
+
+                if (Volatile.Read(ref _micSender) is { } microphone)
+                {
+                    _logger.LogInformation(
+                        "Microphone to {Peer}: {Packets} packets sent, {Dropped} frames dropped before encoding, {Encode:F2} ms to encode a {FrameMs} ms frame",
+                        microphone.Target.PeerName,
+                        microphone.SentPackets,
+                        microphone.DroppedFrames,
+                        microphone.EncodeMeanMs,
+                        AudioFormat.FrameMs);
                 }
 
                 if (Volatile.Read(ref _sender) is { } sender)
@@ -319,6 +353,7 @@ public sealed class AudioService : IAsyncDisposable
             }
         }
 
+        ApplyMicrophoneSettings();
         RequestReevaluate();
         UpdateMute();
     }
@@ -326,11 +361,15 @@ public sealed class AudioService : IAsyncDisposable
     public AudioStatus GetStatus()
     {
         var sender = Volatile.Read(ref _sender);
+        var microphone = Volatile.Read(ref _micSender);
         var receiving = _incoming.Values
             .Select(s => new IncomingAudioStatus(
                 s.PeerId, s.PeerName, s.Buffer.BufferedMs, s.Lost, s.Buffer.Underruns, s.Buffer.AimedMs, s.JitterMs, s.Recovered))
             .ToList();
-        return new AudioStatus(sender?.Target.PeerName, sender?.Target.PeerId, sender?.Reason, sender?.CaptureDescription, _mute.IsMuted, receiving);
+        return new AudioStatus(
+            sender?.Target.PeerName, sender?.Target.PeerId, sender?.Reason, sender?.CaptureDescription, _mute.IsMuted, receiving,
+            microphone?.Target.PeerName, microphone?.Target.PeerId,
+            _micIncoming.Values.Select(s => s.PeerName).Distinct().ToList(), _micPlayback.DeviceName);
     }
 
     // ---- routing -----------------------------------------------------------------------------------------
@@ -526,6 +565,7 @@ public sealed class AudioService : IAsyncDisposable
     {
         session.ControlMessageReceived += OnControlMessage;
         RequestReevaluate();
+        MicrophoneSessionReady(session);
     }
 
     private void OnSessionClosed(PeerSession session)
@@ -546,6 +586,7 @@ public sealed class AudioService : IAsyncDisposable
             RemoveIncoming(stream.StreamId);
         }
 
+        MicrophoneSessionClosed(session);
         RequestReevaluate();
     }
 
@@ -553,12 +594,32 @@ public sealed class AudioService : IAsyncDisposable
     {
         switch (message)
         {
+            case AudioStartMessage { Microphone: true } theirMicrophone:
+                StartIncomingMicrophone(session, theirMicrophone);
+                break;
+
             case AudioStartMessage start:
                 StartIncoming(session, start);
                 break;
 
             case AudioStopMessage stop when _incoming.TryGetValue(stop.StreamId, out var stream) && ReferenceEquals(stream.Owner, session):
                 RemoveIncoming(stop.StreamId);
+                break;
+
+            case AudioStopMessage stop when RemoveIncomingMicrophone(session, stop.StreamId):
+                break;
+
+            case MicrophoneOfferMessage:
+                OnMicrophoneOffer(session);
+                break;
+
+            case MicrophoneAnswerMessage answer:
+                OnMicrophoneAnswer(session, answer);
+                break;
+
+            case AudioLossReportMessage report
+                when Volatile.Read(ref _micSender) is { } ourMicrophone && ourMicrophone.StreamId == report.StreamId && ReferenceEquals(ourMicrophone.Target, session):
+                ourMicrophone.OnLossReported(report.PercentLost);
                 break;
 
             case AudioRouteRequestMessage route:
@@ -647,36 +708,11 @@ public sealed class AudioService : IAsyncDisposable
             RemoveIncoming(start.StreamId);
         }
 
-        if (start.Codec != AudioFormat.Codec || start.SampleRate != AudioFormat.SampleRate || start.Channels != AudioFormat.Channels
-            || start.FrameMs is < 5 or > 60)
-        {
-            _logger.LogWarning(
-                "Unsupported sound stream from {Peer}: {Codec} {Rate} Hz x{Channels}, {FrameMs} ms frames",
-                session.PeerName, start.Codec, start.SampleRate, start.Channels, start.FrameMs);
-            return;
-        }
-
-        byte[] key;
-        try
-        {
-            key = Convert.FromBase64String(start.Key);
-        }
-        catch (FormatException)
+        if (CreateIncoming(session, start) is not { } stream)
         {
             return;
         }
 
-        if (key.Length != MediaCipher.KeySize)
-        {
-            return;
-        }
-
-        var stream = new IncomingAudioStream(session, session.RemoteEndPoint.Address, session.PeerName, start.StreamId, key, _node.Settings.Audio.BufferMs, start.FrameMs)
-        {
-            PeerId = session.PeerId,
-            Key = start.Key,
-            Automatic = start.Automatic,
-        };
         stream.LossMeasured += OnLossMeasured;
         _incoming[start.StreamId] = stream;
         _playback.Add(stream.Buffer);
@@ -687,6 +723,41 @@ public sealed class AudioService : IAsyncDisposable
         ConsiderYieldingTo(stream);
         RequestReevaluate();
         StatusChanged?.Invoke();
+    }
+
+    /// <summary>The stream a start message announces, or null when it is not one this device can play.</summary>
+    private IncomingAudioStream? CreateIncoming(PeerSession session, AudioStartMessage start)
+    {
+        if (start.Codec != AudioFormat.Codec || start.SampleRate != AudioFormat.SampleRate || start.Channels != AudioFormat.Channels
+            || start.FrameMs is < 5 or > 60)
+        {
+            _logger.LogWarning(
+                "Unsupported sound stream from {Peer}: {Codec} {Rate} Hz x{Channels}, {FrameMs} ms frames",
+                session.PeerName, start.Codec, start.SampleRate, start.Channels, start.FrameMs);
+            return null;
+        }
+
+        byte[] key;
+        try
+        {
+            key = Convert.FromBase64String(start.Key);
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+
+        if (key.Length != MediaCipher.KeySize)
+        {
+            return null;
+        }
+
+        return new IncomingAudioStream(session, session.RemoteEndPoint.Address, session.PeerName, start.StreamId, key, _node.Settings.Audio.BufferMs, start.FrameMs)
+        {
+            PeerId = session.PeerId,
+            Key = start.Key,
+            Automatic = start.Automatic,
+        };
     }
 
     private void ConsiderYieldingTo(IncomingAudioStream theirs)
@@ -768,7 +839,7 @@ public sealed class AudioService : IAsyncDisposable
     {
         if (MediaCipher.TryReadHeader(packet, out var kind, out var streamId, out var sequence)
             && kind == AudioFormat.MediaKind
-            && _incoming.TryGetValue(streamId, out var stream))
+            && (_incoming.TryGetValue(streamId, out var stream) || _micIncoming.TryGetValue(streamId, out stream)))
         {
             stream.OnPacket(from, packet, sequence);
         }
@@ -830,6 +901,7 @@ public sealed class AudioService : IAsyncDisposable
             _mute.Restore();
         }
 
+        await DisposeMicrophoneAsync().ConfigureAwait(false);
         await _playback.DisposeAsync().ConfigureAwait(false);
         _cts.Dispose();
     }

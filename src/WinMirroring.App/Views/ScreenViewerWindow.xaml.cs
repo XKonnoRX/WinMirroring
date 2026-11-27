@@ -318,6 +318,8 @@ public partial class ScreenViewerWindow : Window
         QuickMonitorPanel.Visibility = monitors;
         MonitorText.Text = $"{info.MonitorIndex + 1} из {info.MonitorCount}";
         WarnIfWindowsTakesTheSwipe();
+        HavePagePicturesAtHand();
+        PageHeardOfItsMonitor();
         QuickMonitorText.Text = $"Монитор {info.MonitorIndex + 1} из {info.MonitorCount}";
         ControlToggle.IsEnabled = info.ControlAllowed;
         KeyboardButton.IsEnabled = info.ControlAllowed;
@@ -428,6 +430,7 @@ public partial class ScreenViewerWindow : Window
         {
             // Any video frame is newer than the sharp picture of a screen that was standing still.
             HideStill();
+            PageSawAFrame();
 
             if (PartOf(update) is { } part)
             {
@@ -910,6 +913,7 @@ public partial class ScreenViewerWindow : Window
             if (_paging)
             {
                 CancelPaging(); // taken away mid-swipe (by the system, mostly): the picture goes back where it was
+                return;
             }
             else if (_undecided || _swiping)
             {
@@ -1510,7 +1514,12 @@ public partial class ScreenViewerWindow : Window
     /// <summary>Gets the view out of the way (back to this device's own desktop) without closing the stream.</summary>
     public void MinimizeView() => WindowState = WindowState.Minimized;
 
-    public void SwitchToMonitor(int index, string? key = null) => _viewer.SwitchMonitor(index, key);
+    /// <summary>
+    /// To another monitor of the same device, from the side panel. By the same road as the swipe and the arrow
+    /// buttons: the other monitor is shown whole, and whatever part of this one was zoomed into is let go — a part
+    /// kept across the change had touches and the pointer landing where that part used to be.
+    /// </summary>
+    public void SwitchToMonitor(int index, string? key = null) => GoToMonitor(index, key);
 
     public void ToggleOnScreenKeyboard() => OnToggleKeyboard(this, new RoutedEventArgs());
 

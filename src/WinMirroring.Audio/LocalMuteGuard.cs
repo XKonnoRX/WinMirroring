@@ -28,6 +28,12 @@ internal sealed class LocalMuteGuard
         _logger = logger;
     }
 
+    /// <summary>
+    /// The id of an output that must never be muted, if there is one now: the virtual cable another device's
+    /// microphone is played into. It has a signal on it, which is what muting looks for, and it is not a speaker.
+    /// </summary>
+    public Func<string?>? Skip { get; set; }
+
     /// <summary>True while this app holds the speakers muted.</summary>
     public bool IsMuted
     {
@@ -128,13 +134,14 @@ internal sealed class LocalMuteGuard
         {
             using var enumerator = new MMDeviceEnumerator();
             var wanted = onlyAudible ? Audible(enumerator) : null;
+            var skip = onlyAudible ? Skip?.Invoke() : null;
             foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
             {
                 using (device)
                 {
                     try
                     {
-                        if (wanted is not null && !wanted.Contains(device.ID))
+                        if ((wanted is not null && !wanted.Contains(device.ID)) || (skip is not null && device.ID == skip))
                         {
                             continue;
                         }
