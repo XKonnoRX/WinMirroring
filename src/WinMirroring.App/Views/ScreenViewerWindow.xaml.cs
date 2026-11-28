@@ -358,6 +358,8 @@ public partial class ScreenViewerWindow : Window
 
     private void OnViewerStateChanged(object? sender, EventArgs e)
     {
+        SurfacesFollowWindowState();
+
         // The user brought the viewer back from the taskbar while the source window is still minimised: restore it too.
         if (_windowMode && WindowState == WindowState.Normal && _followingRemoteMinimize)
         {

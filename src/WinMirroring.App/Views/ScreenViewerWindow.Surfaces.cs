@@ -165,6 +165,46 @@ public partial class ScreenViewerWindow
         }
     }
 
+    /// <summary>
+    /// A view put out of sight holds nothing of the card's, and takes nothing of it until it is looked at again.
+    ///
+    /// The tablet's drawing thread died three times in one night, each time shortly after the device had slept
+    /// and from a message about the window's place; its owner's account is that it is the minimised views that
+    /// hang, and for the last of the three the log says as much — minimised, then asleep, then dead. A minimised
+    /// window is not drawn, so whatever becomes of a surface in WPF's hands while the device sleeps is found
+    /// only afterwards. That is as far as the cause is known. And the tablet sleeps the modern way,
+    /// in which a program is mostly not told that it is about to (there is no "suspend" to hear) — so taking the
+    /// surfaces back before sleep cannot be left to that. It is done here instead, at the moment the view goes
+    /// out of sight, which is always before the sleep that comes of nobody watching.
+    ///
+    /// Nothing is lost by it: a minimised view is drawing for no one. Pictures arrive in memory meanwhile, so the
+    /// one on the screen when the view comes back is the latest, and drawing from the card starts again then.
+    /// </summary>
+    private void SurfacesFollowWindowState()
+    {
+        if (!_surfacesAllowed || _surfacesFailed)
+        {
+            return;
+        }
+
+        if (WindowState == WindowState.Minimized)
+        {
+            DetachSurfaces();
+            PauseSurfaces("the view is minimised");
+        }
+        else if (_surfacesPaused)
+        {
+            if (_wholeSurface is not null)
+            {
+                // No picture came in memory while it was away, so what is in the picture's place is the surface
+                // that was taken back: blank. A screen on which nothing moves would stay so.
+                _viewer.AskForWholePicture();
+            }
+
+            RetrySurfaces();
+        }
+    }
+
     /// <summary>Takes back from WPF the surfaces it was given. The pictures they were go blank until the next one arrives.</summary>
     private void DetachSurfaces()
     {
@@ -229,6 +269,11 @@ public partial class ScreenViewerWindow
         if (_surfacesFailed || !_surfacesAllowed || !_surfacesPaused)
         {
             return;
+        }
+
+        if (WindowState == WindowState.Minimized)
+        {
+            return; // out of sight: tried again when the view is brought back (SurfacesFollowWindowState)
         }
 
         if ((RenderCapability.Tier >> 16) < 2)

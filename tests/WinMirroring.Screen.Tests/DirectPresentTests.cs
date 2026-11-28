@@ -25,7 +25,17 @@ public class DirectPresentTests
     private const int Height = 360;
 
     [Fact(Explicit = true)]
-    public void APictureLeftOnTheCardIsWhatWpfPutsOnTheScreen()
+    public void APictureLeftOnTheCardIsWhatWpfPutsOnTheScreen() => DrawsTwoPictures(minimisedBetween: false);
+
+    /// <summary>
+    /// What a view does when it is put out of sight: the surface is taken back from WPF, the window is minimised
+    /// with nothing of the card's in it, and when it is brought back it is given a surface again. That the second
+    /// picture is then on the screen says both halves work — WPF lets go without complaint, and takes up again.
+    /// </summary>
+    [Fact(Explicit = true)]
+    public void AViewMinimisedWithNothingOfTheCardsDrawsFromItAgainWhenBroughtBack() => DrawsTwoPictures(minimisedBetween: true);
+
+    private static void DrawsTwoPictures(bool minimisedBetween)
     {
         Assert.SkipUnless(VideoCodecSupport.CanEncodeH264 && VideoCodecSupport.CanDecodeH264, "No hardware H.264 encoder on this machine.");
 
@@ -87,6 +97,21 @@ public class DirectPresentTests
                         if (stage++ == 0)
                         {
                             atFirst = Sample(picture);
+                            if (minimisedBetween)
+                            {
+                                TakeBack(image);
+                                window.WindowState = WindowState.Minimized;
+                                return;
+                            }
+
+                            Point(image, bridge.Open(lateOwn));
+                            stage++;
+                            return;
+                        }
+
+                        if (stage == 2)
+                        {
+                            window.WindowState = WindowState.Normal;
                             Point(image, bridge.Open(lateOwn));
                             return;
                         }
@@ -118,6 +143,19 @@ public class DirectPresentTests
 
         AssertShows(atFirst!, step: 0);
         AssertShows(atSecond!, step: 2);
+    }
+
+    private static void TakeBack(D3DImage image)
+    {
+        image.Lock();
+        try
+        {
+            image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, IntPtr.Zero);
+        }
+        finally
+        {
+            image.Unlock();
+        }
     }
 
     private static void Point(D3DImage image, nint surface)
