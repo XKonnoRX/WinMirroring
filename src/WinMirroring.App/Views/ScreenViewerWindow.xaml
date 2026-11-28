@@ -141,6 +141,33 @@
                  HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />
     </Grid>
 
+    <!-- Grips at the left and the right edge of the picture, each shown only where the other device has a monitor
+         on that side: pulled inwards a grip brings that monitor's page with it, touched it turns the page, and
+         pulled along the edge it moves out of the way (ScreenViewerWindow.Grips). The part that is seen is
+         narrower than the part that takes the finger. A press here never reaches the picture below. -->
+    <Border x:Name="PageGripLeft" Grid.Row="1" Width="44" Height="120" HorizontalAlignment="Left" VerticalAlignment="Top"
+            Background="Transparent" Visibility="Collapsed" Focusable="False" Opacity="0.6" Cursor="Hand"
+            Stylus.IsPressAndHoldEnabled="False" Stylus.IsFlicksEnabled="False"
+            Stylus.IsTapFeedbackEnabled="False" Stylus.IsTouchFeedbackEnabled="False"
+            ToolTip="Монитор слева: нажмите или потяните вправо. Потяните вдоль края — ручка сдвинется">
+      <Border Width="28" Height="96" HorizontalAlignment="Left" VerticalAlignment="Center" CornerRadius="0,14,14,0"
+              Background="#E61F2937" BorderBrush="#9CA3AF" BorderThickness="0,1,1,1" IsHitTestVisible="False">
+        <Path Data="M 8,0 L 0,10 L 8,20" Stroke="White" StrokeThickness="2.5" StrokeLineJoin="Round"
+              StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" VerticalAlignment="Center" />
+      </Border>
+    </Border>
+    <Border x:Name="PageGripRight" Grid.Row="1" Width="44" Height="120" HorizontalAlignment="Right" VerticalAlignment="Top"
+            Background="Transparent" Visibility="Collapsed" Focusable="False" Opacity="0.6" Cursor="Hand"
+            Stylus.IsPressAndHoldEnabled="False" Stylus.IsFlicksEnabled="False"
+            Stylus.IsTapFeedbackEnabled="False" Stylus.IsTouchFeedbackEnabled="False"
+            ToolTip="Монитор справа: нажмите или потяните влево. Потяните вдоль края — ручка сдвинется">
+      <Border Width="28" Height="96" HorizontalAlignment="Right" VerticalAlignment="Center" CornerRadius="14,0,0,14"
+              Background="#E61F2937" BorderBrush="#9CA3AF" BorderThickness="1,1,0,1" IsHitTestVisible="False">
+        <Path Data="M 0,0 L 8,10 L 0,20" Stroke="White" StrokeThickness="2.5" StrokeLineJoin="Round"
+              StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" VerticalAlignment="Center" />
+      </Border>
+    </Border>
+
     <!-- Buttons that press keys on the other device (presets from the main menu), over the bottom of the picture.
          A press here never reaches the picture below. -->
     <Border x:Name="ButtonBar" Grid.Row="1" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="8,0,8,8"

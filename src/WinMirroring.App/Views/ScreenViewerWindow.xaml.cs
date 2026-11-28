@@ -91,6 +91,7 @@ public partial class ScreenViewerWindow : Window
         _viewer = viewer;
         InitializeKeyboardHints(services);
         InitializeKeyboardButton();
+        InitializeGrips();
         InitializeCompose();
         _dragDrop = services.GetService<DragDropCoordinator>();
         _clipboard = services.GetService<ClipboardSyncService>();
@@ -164,6 +165,7 @@ public partial class ScreenViewerWindow : Window
 
             // Control switched on or off, the setting changed, the first picture arrived: cheap enough to just ask.
             UpdateKeyboardHandle();
+            UpdateGrips();
         }, Dispatcher);
         _statsTimer.Start();
 
@@ -320,6 +322,7 @@ public partial class ScreenViewerWindow : Window
         WarnIfWindowsTakesTheSwipe();
         HavePagePicturesAtHand();
         PageHeardOfItsMonitor();
+        UpdateGrips();
         QuickMonitorText.Text = $"Монитор {info.MonitorIndex + 1} из {info.MonitorCount}";
         ControlToggle.IsEnabled = info.ControlAllowed;
         KeyboardButton.IsEnabled = info.ControlAllowed;

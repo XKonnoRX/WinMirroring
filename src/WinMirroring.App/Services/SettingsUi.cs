@@ -153,7 +153,8 @@ public sealed class SettingsUi
             autoKeyboard = _vm.ScreenAutoKeyboard,
             keyboardButton = _vm.ScreenKeyboardButton,
             directPresent = _vm.ScreenDirectPresent,
-            swipeMonitors = _vm.ScreenSwipeMonitors,
+            pageGrips = _vm.ScreenPageGrips,
+            threeFingerSwipe = _vm.ScreenThreeFingerSwipe,
             showStats = _vm.ScreenShowStats,
             dictationButton = _vm.ScreenDictationButton,
             sharpStill = _vm.ScreenSharpStill,
@@ -303,7 +304,8 @@ public sealed class SettingsUi
             case "screen.autoKeyboard": _vm.ScreenAutoKeyboard = Flag(); break;
             case "screen.keyboardButton": _vm.ScreenKeyboardButton = Flag(); break;
             case "screen.directPresent": _vm.ScreenDirectPresent = Flag(); break;
-            case "screen.swipeMonitors": _vm.ScreenSwipeMonitors = Flag(); break;
+            case "screen.pageGrips": _vm.ScreenPageGrips = Flag(); break;
+            case "screen.threeFingerSwipe": _vm.ScreenThreeFingerSwipe = Flag(); break;
             case "screen.showStats": _vm.ScreenShowStats = Flag(); break;
             case "screen.dictationButton": _vm.ScreenDictationButton = Flag(); break;
             case "screen.sharpStill": _vm.ScreenSharpStill = Flag(); break;

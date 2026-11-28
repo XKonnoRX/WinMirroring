@@ -71,4 +71,38 @@ public static class MonitorNeighbours
     /// further than a thumb reaches on a small screen.
     /// </summary>
     public static double CommitsAfter(double viewWidth) => Math.Clamp(viewWidth * 0.12, 90, 260);
+
+    /// <summary>What a finger that has taken a grip at the edge of the picture is doing with it.</summary>
+    public enum GripDoes
+    {
+        /// <summary>Nothing yet: it has not moved far enough to say. Let go like this, it was a tap.</summary>
+        Nothing,
+
+        /// <summary>Pulling it inwards, and the monitor on that side with it.</summary>
+        Pull,
+
+        /// <summary>Moving it along the edge, out of the way of something.</summary>
+        Move,
+    }
+
+    /// <summary>
+    /// What a grip that has been moved by this much is being used for. Pulling is what a grip is for, so anything
+    /// that is not clearly along the edge is a pull: a thumb pulling across drifts up or down as it goes, and
+    /// must not find itself moving the grip instead.
+    /// </summary>
+    public static GripDoes WhatGripDoes(double dx, double dy, double decidesAfter)
+    {
+        if (Math.Sqrt((dx * dx) + (dy * dy)) <= decidesAfter)
+        {
+            return GripDoes.Nothing;
+        }
+
+        return Math.Abs(dy) >= Math.Abs(dx) * 2 ? GripDoes.Move : GripDoes.Pull;
+    }
+
+    /// <summary>
+    /// How far the picture goes with a grip pulled by <paramref name="dx"/>: with it inwards, and not at all the
+    /// other way — the left grip (<paramref name="side"/> negative) only to the right, the right one only to the left.
+    /// </summary>
+    public static double GripPull(int side, double dx) => side < 0 ? Math.Max(0, dx) : Math.Min(0, dx);
 }

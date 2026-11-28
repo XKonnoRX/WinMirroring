@@ -68,9 +68,9 @@
 
 **Что делает.** В открытом виде можно перейти на другой монитор того же устройства без нового потока: тот же `StreamId`, тот же вид. Жест «три пальца вбок» выбирает монитор, который физически стоит с той стороны.
 
-**Как устроено.** `ScreenViewer.SwitchMonitor(index, key)` шлёт `ScreenRequestMessage` со своим `StreamId`. Источник в `HandleRequestAsync` находит существующий поток: `existing.ViewerFps = request.MaxFps`, `existing.SwitchMonitor(index, key)` (только `Kind == Monitor`: новый `WgcCapture`, сброс обрезки и `_cropId`, новое название, принудительный целый кадр), затем заново `Describe()`. Приложение держит один вид на устройство (`App.Viewers.cs: ShowOrSwitchScreen`). `MonitorNeighbours` (чистая арифметика): `Beside(monitors, current, direction)` — ближайший по центру монитор слева/справа, при равенстве (±0,5 px) — с большим перекрытием по высоте; `IsSideways(dx, dy)` — |dx| ≥ 2·|dy|; `CommitsAfter(width)` — 12 % ширины в пределах 90..260 px. Расположение мониторов пира берётся из `InputSharingService.PeerMonitors` (не из `_peerCaps`), вызывает `ScreenViewerWindow.Paging`.
+**Как устроено.** `ScreenViewer.SwitchMonitor(index, key)` шлёт `ScreenRequestMessage` со своим `StreamId`. Источник в `HandleRequestAsync` находит существующий поток: `existing.ViewerFps = request.MaxFps`, `existing.SwitchMonitor(index, key)` (только `Kind == Monitor`: новый `WgcCapture`, сброс обрезки и `_cropId`, новое название, принудительный целый кадр), затем заново `Describe()`. Приложение держит один вид на устройство (`App.Viewers.cs: ShowOrSwitchScreen`). `MonitorNeighbours` (чистая арифметика): `Beside(monitors, current, direction)` — ближайший по центру монитор слева/справа, при равенстве (±0,5 px) — с большим перекрытием по высоте; `IsSideways(dx, dy)` — |dx| ≥ 2·|dy|; `CommitsAfter(width)` — 12 % ширины в пределах 90..260 px; `WhatGripDoes(dx, dy, порог)` — что делает палец с ручкой у края: ничего (до порога), `Move` (|dy| ≥ 2|dx|) или `Pull`; `GripPull(side, dx)` — сдвиг картинки за ручкой, только внутрь. Расположение мониторов пира берётся из `InputSharingService.PeerMonitors` (не из `_peerCaps`), вызывают `ScreenViewerWindow.Paging` и `ScreenViewerWindow.Grips`.
 
-**Настройки.** `SwipeMonitors` = true (читает окно, не служба).
+**Настройки.** `PageGrips` = true, `PageGripsY` = 0.5, `ThreeFingerSwipe` = false (читает окно, не служба).
 
 **Сообщения.** `ScreenRequestMessage` (повторно), `ScreenStreamMessage`.
 
@@ -346,7 +346,7 @@
 | `HideSentWindow` | true | служба: `ShouldHideDraggedWindow`, `SendWindowAsync` |
 | `SharpStill` | true | `ScreenSource` |
 
-Остальные (`CloseUnusedViewMinutes` 5, `AutoKeyboardOnTap` false, `KeyboardButton` true, `KeyboardButtonX` 0.97, `KeyboardButtonY` 0.62, `DirectPresent` true, `SwipeMonitors` true, `ShowStats` false, `DictationButton` true) в `WinMirroring.Screen` не читаются — только окно просмотра и `App`. Настройки меняются на месте в одном объекте (`MainViewModel.SaveScreen`), поэтому идущий поток видит новые значения; исключение — то, что зафиксировано при создании потока (кодек, отдельный указатель).
+Остальные (`CloseUnusedViewMinutes` 5, `AutoKeyboardOnTap` false, `KeyboardButton` true, `KeyboardButtonX` 0.97, `KeyboardButtonY` 0.62, `DirectPresent` true, `PageGrips` true, `PageGripsY` 0.5, `ThreeFingerSwipe` false, `ShowStats` false, `DictationButton` true) в `WinMirroring.Screen` не читаются — только окно просмотра и `App`. Настройки меняются на месте в одном объекте (`MainViewModel.SaveScreen`), поэтому идущий поток видит новые значения; исключение — то, что зафиксировано при создании потока (кодек, отдельный указатель).
 
 ### Сводка сообщений
 

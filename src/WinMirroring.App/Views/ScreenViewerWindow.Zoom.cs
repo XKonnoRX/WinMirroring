@@ -329,9 +329,9 @@ public partial class ScreenViewerWindow
     private bool GestureTouchDown(TouchEventArgs e)
     {
         var id = e.TouchDevice.Id;
-        if (_pageSliding)
+        if (_pageSliding || GripPulling)
         {
-            e.Handled = true; // the page is on its way; a finger put down meanwhile is nothing
+            e.Handled = true; // the page is on its way, or being pulled in; a finger put down meanwhile is nothing
             return true;
         }
 
@@ -422,7 +422,11 @@ public partial class ScreenViewerWindow
             _watched.Clear();
             StartGesture();
             _twoSince = Environment.TickCount64;
-            HavePagePicturesAtHand(); // a third finger may be on its way
+            if (ThreeFingerSwipe)
+            {
+                HavePagePicturesAtHand(); // a third finger may be on its way
+            }
+
             e.Handled = true;
             return true;
         }
@@ -434,7 +438,10 @@ public partial class ScreenViewerWindow
         if (_gesture.Count == 2)
         {
             _twoSince = Environment.TickCount64;
-            HavePagePicturesAtHand(); // a third finger may be on its way
+            if (ThreeFingerSwipe)
+            {
+                HavePagePicturesAtHand(); // a third finger may be on its way
+            }
         }
 
         e.Handled = true;

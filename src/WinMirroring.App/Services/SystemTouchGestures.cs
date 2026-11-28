@@ -22,6 +22,20 @@ internal static class SystemTouchGestures
     private const int Ready = 0x80;
 
     /// <summary>
+    /// True where there is a touch screen to put a finger on, built in or plugged in, and it is working. What is
+    /// only for fingers — the grips at the edges of a view — is shown where this is so.
+    /// </summary>
+    public static bool HasTouchScreen
+    {
+        get
+        {
+            var digitizer = GetSystemMetrics(SmDigitizer);
+            return (digitizer & Ready) != 0 && (digitizer & (IntegratedTouch | ExternalTouch)) != 0
+                && GetSystemMetrics(SmMaximumTouches) > 0;
+        }
+    }
+
+    /// <summary>
     /// True where a swipe of three fingers will not reach this program: there is a touch screen that takes three
     /// fingers, the system is one that has these gestures (Windows 11), and they have not been switched off.
     /// </summary>

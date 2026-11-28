@@ -50,7 +50,10 @@ public sealed partial class MainViewModel
     public partial bool ScreenDirectPresent { get; set; }
 
     [ObservableProperty]
-    public partial bool ScreenSwipeMonitors { get; set; }
+    public partial bool ScreenPageGrips { get; set; }
+
+    [ObservableProperty]
+    public partial bool ScreenThreeFingerSwipe { get; set; }
 
     [ObservableProperty]
     public partial bool ScreenShowStats { get; set; }
@@ -83,7 +86,8 @@ public sealed partial class MainViewModel
         ScreenAutoKeyboard = settings.AutoKeyboardOnTap;
         ScreenKeyboardButton = settings.KeyboardButton;
         ScreenDirectPresent = settings.DirectPresent;
-        ScreenSwipeMonitors = settings.SwipeMonitors;
+        ScreenPageGrips = settings.PageGrips;
+        ScreenThreeFingerSwipe = settings.ThreeFingerSwipe;
         ScreenShowStats = settings.ShowStats;
         ScreenDictationButton = settings.DictationButton;
         ScreenSharpStill = settings.SharpStill;
@@ -423,7 +427,9 @@ public sealed partial class MainViewModel
 
     partial void OnScreenDirectPresentChanged(bool value) => SaveScreen(s => s.DirectPresent = value);
 
-    partial void OnScreenSwipeMonitorsChanged(bool value) => SaveScreen(s => s.SwipeMonitors = value);
+    partial void OnScreenPageGripsChanged(bool value) => SaveScreen(s => s.PageGrips = value);
+
+    partial void OnScreenThreeFingerSwipeChanged(bool value) => SaveScreen(s => s.ThreeFingerSwipe = value);
 
     partial void OnScreenShowStatsChanged(bool value) => SaveScreen(s => s.ShowStats = value);
 

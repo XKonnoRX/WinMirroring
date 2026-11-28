@@ -87,4 +87,25 @@ public class MonitorNeighbourTests
         Assert.Equal(1280 * 0.12, MonitorNeighbours.CommitsAfter(1280), 3);
         Assert.Equal(260, MonitorNeighbours.CommitsAfter(5000));
     }
+
+    [Theory]
+    [InlineData(3, 4, MonitorNeighbours.GripDoes.Nothing)] // a finger that has only wobbled: still a tap
+    [InlineData(6, 8, MonitorNeighbours.GripDoes.Nothing)] // exactly as far as it may
+    [InlineData(40, 0, MonitorNeighbours.GripDoes.Pull)]
+    [InlineData(-40, 6, MonitorNeighbours.GripDoes.Pull)]
+    [InlineData(20, 20, MonitorNeighbours.GripDoes.Pull)] // a thumb pulling across drifts; that is not moving the grip
+    [InlineData(12, -23, MonitorNeighbours.GripDoes.Pull)]
+    [InlineData(10, -20, MonitorNeighbours.GripDoes.Move)]
+    [InlineData(0, 30, MonitorNeighbours.GripDoes.Move)]
+    public void AGripIsPulledUnlessItIsClearlyTakenAlongTheEdge(double dx, double dy, MonitorNeighbours.GripDoes does) =>
+        Assert.Equal(does, MonitorNeighbours.WhatGripDoes(dx, dy, decidesAfter: 10));
+
+    [Fact]
+    public void AGripTakesThePictureInwardsOnly()
+    {
+        Assert.Equal(120, MonitorNeighbours.GripPull(-1, 120)); // the left one, to the right
+        Assert.Equal(0, MonitorNeighbours.GripPull(-1, -30));
+        Assert.Equal(-120, MonitorNeighbours.GripPull(+1, -120)); // the right one, to the left
+        Assert.Equal(0, MonitorNeighbours.GripPull(+1, 30));
+    }
 }

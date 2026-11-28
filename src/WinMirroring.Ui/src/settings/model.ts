@@ -45,7 +45,8 @@ export type SettingsState = {
     autoKeyboard: boolean
     keyboardButton: boolean
     directPresent: boolean
-    swipeMonitors: boolean
+    pageGrips: boolean
+    threeFingerSwipe: boolean
     showStats: boolean
     dictationButton: boolean
     sharpStill: boolean

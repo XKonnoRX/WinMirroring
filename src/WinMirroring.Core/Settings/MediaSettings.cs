@@ -114,10 +114,23 @@ public sealed class ScreenSettings
     public string DirectPresentBrokeIn { get; set; } = string.Empty;
 
     /// <summary>
-    /// Viewing a device with several monitors: three fingers swiped sideways go to the monitor on that side (and so
-    /// are not passed on to the other device where there is one). On by default.
+    /// Viewing a device with several monitors, on a touch screen: a grip at the left and at the right edge of the
+    /// picture, each only where there is a monitor on that side. Pulled inwards it brings that monitor in; touched,
+    /// it goes there. On by default.
     /// </summary>
-    public bool SwipeMonitors { get; set; } = true;
+    public bool PageGrips { get; set; } = true;
+
+    /// <summary>How far down the edge the grips stand, as a share of the room they have. They are moved by pulling one along the edge.</summary>
+    public double PageGripsY { get; set; } = 0.5;
+
+    /// <summary>
+    /// Viewing a device with several monitors: three fingers swiped sideways go to the monitor on that side (and so
+    /// are not passed on to the other device where there is one). Off unless asked for. It was the way to do this
+    /// before the grips and was on then, under the name SwipeMonitors; it turned out awkward to do, and Windows 11
+    /// keeps three fingers for itself unless told otherwise — so it has a new name, under which nobody has it on
+    /// who has not chosen to.
+    /// </summary>
+    public bool ThreeFingerSwipe { get; set; }
 
     /// <summary>
     /// Viewing another device: a line over the picture with how the stream is doing — frames, the delay as the

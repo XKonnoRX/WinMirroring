@@ -25,6 +25,10 @@ namespace WinMirroring.App.Views;
 /// One thing is not this program's to decide. Windows 11 has gestures of three and four fingers of its own for a
 /// touch screen, on unless switched off, and it takes them before any program sees them: with those on, a swipe of
 /// three fingers changes the program on this device instead. See <see cref="SystemTouchGestures"/>.
+///
+/// That, and three fingers being awkward to put down together, is why this is no longer the way it is done unless
+/// asked for (<c>ScreenSettings.ThreeFingerSwipe</c>, off): there are grips at the edges of the picture instead —
+/// see ScreenViewerWindow.Grips. The page further down belongs to both.
 /// </summary>
 public partial class ScreenViewerWindow
 {
@@ -52,7 +56,7 @@ public partial class ScreenViewerWindow
 
     /// <summary>Whether a finger coming down now makes the two already down into three that may swipe.</summary>
     private bool JoinsAsThird() =>
-        _gesture.Count == 2 && !_paging && !_swiping && SwipeBetweenMonitors
+        _gesture.Count == 2 && !_paging && !_swiping && ThreeFingerSwipe && _gripSide == 0
         && Environment.TickCount64 - _twoSince <= ThirdFingerWithinMs;
 
     /// <summary>Said once, in the first window where it matters: Windows will take these three fingers itself.</summary>
@@ -60,7 +64,7 @@ public partial class ScreenViewerWindow
 
     private void WarnIfWindowsTakesTheSwipe()
     {
-        if (_saidWindowsTakesThem || !SwipeBetweenMonitors || !SystemTouchGestures.TakeThreeFingers)
+        if (_saidWindowsTakesThem || !ThreeFingerSwipe || !SystemTouchGestures.TakeThreeFingers)
         {
             return;
         }
@@ -69,8 +73,17 @@ public partial class ScreenViewerWindow
         ShowNotice("Свайп тремя пальцами между мониторами перехватывает Windows. Выключите «Жесты тремя и четырьмя пальцами»: Параметры → Bluetooth и устройства → Сенсорный ввод", seconds: 14);
     }
 
-    private bool SwipeBetweenMonitors =>
-        _node?.Settings.Screen.SwipeMonitors != false && _viewer.Info.Kind == "monitor" && _viewer.Info.MonitorCount > 1;
+    /// <summary>What is being looked at is one of several monitors, so there may be another beside it.</summary>
+    private bool SeveralMonitors => _viewer.Info.Kind == "monitor" && _viewer.Info.MonitorCount > 1;
+
+    /// <summary>Three fingers swiped sideways go to the monitor on that side. Only where it was asked for.</summary>
+    private bool ThreeFingerSwipe => _node?.Settings.Screen.ThreeFingerSwipe == true && SeveralMonitors;
+
+    /// <summary>There is a way, of the two, to pull a monitor in from the side here — so its page may be needed.</summary>
+    private bool PagingOn => ThreeFingerSwipe || GripsWanted;
+
+    /// <summary>The picture is following a hand towards another monitor: three fingers, or a grip being pulled.</summary>
+    private bool PageFollows => _paging || GripPulling;
 
     /// <summary>
     /// The monitor on the side a movement of <paramref name="dx"/> reveals — fingers moving left bring what is to
@@ -78,7 +91,7 @@ public partial class ScreenViewerWindow
     /// </summary>
     private (int Position, string Key)? MonitorRevealedBy(double dx)
     {
-        if (!SwipeBetweenMonitors || dx == 0 || _input is null)
+        if (!PagingOn || dx == 0 || _input is null)
         {
             return null;
         }
@@ -134,12 +147,13 @@ public partial class ScreenViewerWindow
 
     /// <summary>
     /// Asks the other device for small pictures of its other monitors, so that there is one to show the moment a
-    /// swipe starts. Asked when a view opens, when it changes monitor, and when two fingers come down (a third
-    /// may follow); the other device sends them for a few seconds and stops, and what arrived is kept here.
+    /// swipe starts. Asked when a view opens, when it changes monitor, when a grip is taken, and — where three
+    /// fingers swipe — when two fingers come down (a third may follow); the other device sends them for a few
+    /// seconds and stops, and what arrived is kept here.
     /// </summary>
     private void HavePagePicturesAtHand()
     {
-        if (!SwipeBetweenMonitors)
+        if (!PagingOn)
         {
             return;
         }
@@ -192,6 +206,7 @@ public partial class ScreenViewerWindow
     /// <summary>Puts the page where the picture's movement says it is, or takes it away. Called whenever the view moves.</summary>
     private void PlacePage()
     {
+        DimGrips(); // they stand back while a page is about
         var width = Surface.ActualWidth;
         var height = Surface.ActualHeight;
         if (width <= 0 || height <= 0)
@@ -205,7 +220,7 @@ public partial class ScreenViewerWindow
             return;
         }
 
-        if ((!_paging && !_pageSliding) || _pageShift == 0 || MonitorRevealedBy(_pageShift) is not { } target)
+        if ((!PageFollows && !_pageSliding) || _pageShift == 0 || MonitorRevealedBy(_pageShift) is not { } target)
         {
             if (PageCover.Visibility == Visibility.Visible)
             {
@@ -243,26 +258,37 @@ public partial class ScreenViewerWindow
     private void FinishPaging()
     {
         var shift = _pageShift;
-        var width = Surface.ActualWidth;
         LetGoOfPaging();
+        CarryPageThrough(shift);
+    }
+
+    /// <summary>
+    /// The hand has let go with the picture this far over — three fingers, or a grip: far enough, the page comes
+    /// the rest of the way in and its monitor is asked for; otherwise the picture goes back where it was.
+    /// </summary>
+    private void CarryPageThrough(double shift)
+    {
+        var width = Surface.ActualWidth;
         if (Math.Abs(shift) >= MonitorNeighbours.CommitsAfter(width) && MonitorRevealedBy(shift) is { } target)
         {
-            SlidePage(shift, (shift < 0 ? -1 : 1) * (width + PageGap), () =>
-            {
-                // The page has arrived and stays: the stream it stands in for has not started yet.
-                _pageHeld = target.Key;
-                _pageHeldTimer ??= new System.Windows.Threading.DispatcherTimer(
-                    TimeSpan.FromSeconds(2.5), System.Windows.Threading.DispatcherPriority.Background, (_, _) => LetThePageGo(), Dispatcher);
-                _pageHeldTimer.Stop();
-                _pageHeldTimer.Interval = TimeSpan.FromSeconds(2.5); // if the stream never says so: not for ever
-                _pageHeldTimer.Start();
-                GoToMonitor(target.Position, target.Key);
-            });
+            SlidePage(shift, (shift < 0 ? -1 : 1) * (width + PageGap), () => RestPageOn(target));
         }
         else
         {
             SlidePage(shift, 0, ApplyView);
         }
+    }
+
+    /// <summary>The page has arrived and stays, and its monitor is asked for: the stream it stands in for has not started yet.</summary>
+    private void RestPageOn((int Position, string Key) target)
+    {
+        _pageHeld = target.Key;
+        _pageHeldTimer ??= new System.Windows.Threading.DispatcherTimer(
+            TimeSpan.FromSeconds(2.5), System.Windows.Threading.DispatcherPriority.Background, (_, _) => LetThePageGo(), Dispatcher);
+        _pageHeldTimer.Stop();
+        _pageHeldTimer.Interval = TimeSpan.FromSeconds(2.5); // if the stream never says so: not for ever
+        _pageHeldTimer.Start();
+        GoToMonitor(target.Position, target.Key);
     }
 
     /// <summary>Moves the picture (and the page with it) from one shift to another over a moment, easing out.</summary>
@@ -341,12 +367,13 @@ public partial class ScreenViewerWindow
         {
             PageCover.BeginAnimation(OpacityProperty, null);
             PageCover.Opacity = 1;
-            if (_pageHeld is null && !_paging && !_pageSliding)
+            if (_pageHeld is null && !PageFollows && !_pageSliding)
             {
                 PageCover.Visibility = Visibility.Collapsed;
             }
         };
         PageCover.BeginAnimation(OpacityProperty, fade);
+        UpdateGrips(); // on the monitor it has come to, the sides that have a neighbour are other ones
     }
 
     /// <summary>The swipe was taken away before it was finished: the picture goes back, wherever it had got to.</summary>

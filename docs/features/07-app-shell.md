@@ -218,7 +218,7 @@
 
 **Как устроено.** `Services/SettingsUi.cs`. Методы: `settings.get`; `settings.set` `{key, value, on?}`; `settings.command` `{name, streamId}` (возвращает `MainViewModel.StatusText`). Событие `settings.changed` — после каждого `set`/`command`, при `FeatureHealth.Changed` и при изменении `StatusText`, `AudioStatusText`, `ClipboardActivity`, `SmoothingText`.
 
-Снимок: `device` {`name`, `id`, `fingerprint`, `network`, `version`, `versionText`, `status`}; `input` {`enabled`, `edgeResistance`, `smoothing`, `maxSmoothingDelay`, `syncKeyboardLayout`, `smoothingText`, `adminControl`, `adminControlText`, `adminHelper`, `adminNoPrompt`, `elevationText`, `canRestartElevated`}; `clipboard` {`enabled`, `shareFiles`, `dragDrop`, `maxInline`, `directPaste`, `activity`}; `audio` {`send`, `followInput`, `pinnedId`, `muteLocal`, `receive`, `bitrate`, `buffer`, `status`, `targets[]`}; `screen` {`allowViewing`, `allowControl`, `windowDrag`, `hideSentWindow`, `autoKeyboard`, `keyboardButton`, `directPresent`, `swipeMonitors`, `showStats`, `dictationButton`, `sharpStill`, `closeUnusedMinutes`, `maxFps`, `quality`, `codec`, `codecs[]`, `videoBitrate`, `virtualDisplay`, `virtualDisplayInstalled`, `sources[]`}; `shell` {`allowCommands`, `allowElevatedCommands`}; `power` {`saving`, `fps`, `savingNow`, `onBattery`, `options[]`}; `network` {`discoveryPort`, `transportPort`, `interfaces[]`, `addresses[]`}; `startup` {`withWindows`, `autoUpdate`}; `health[]` {`name`, `ok`, `detail`}.
+Снимок: `device` {`name`, `id`, `fingerprint`, `network`, `version`, `versionText`, `status`}; `input` {`enabled`, `edgeResistance`, `smoothing`, `maxSmoothingDelay`, `syncKeyboardLayout`, `smoothingText`, `adminControl`, `adminControlText`, `adminHelper`, `adminNoPrompt`, `elevationText`, `canRestartElevated`}; `clipboard` {`enabled`, `shareFiles`, `dragDrop`, `maxInline`, `directPaste`, `activity`}; `audio` {`send`, `followInput`, `pinnedId`, `muteLocal`, `receive`, `bitrate`, `buffer`, `status`, `targets[]`}; `screen` {`allowViewing`, `allowControl`, `windowDrag`, `hideSentWindow`, `autoKeyboard`, `keyboardButton`, `directPresent`, `pageGrips`, `threeFingerSwipe`, `showStats`, `dictationButton`, `sharpStill`, `closeUnusedMinutes`, `maxFps`, `quality`, `codec`, `codecs[]`, `videoBitrate`, `virtualDisplay`, `virtualDisplayInstalled`, `sources[]`}; `shell` {`allowCommands`, `allowElevatedCommands`}; `power` {`saving`, `fps`, `savingNow`, `onBattery`, `options[]`}; `network` {`discoveryPort`, `transportPort`, `interfaces[]`, `addresses[]`}; `startup` {`withWindows`, `autoUpdate`}; `health[]` {`name`, `ok`, `detail`}.
 
 Ключи `settings.set` — в таблице «Свойства MainViewModel и настройки» ниже. Переспрашиваются через `RemoteGuard`: `screen.allowControl`=false, `screen.allowViewing`=false, `input.enabled`=false, `input.adminControl`=true.
 
@@ -420,7 +420,8 @@
 | `ScreenAllowViewing`, `ScreenAllowControl` | `screen.allowViewing`, `.allowControl` | `Screen.AllowViewing`, `AllowControl` (true) | — |
 | `ScreenWindowDrag`, `ScreenHideSentWindow` | `screen.windowDrag`, `.hideSentWindow` | `WindowDragEnabled`, `HideSentWindow` (true) | — |
 | `ScreenAutoKeyboard`, `ScreenKeyboardButton`, `ScreenDictationButton` | `screen.autoKeyboard`, `.keyboardButton`, `.dictationButton` | `AutoKeyboardOnTap` (false), `KeyboardButton` (true), `DictationButton` (true) | — |
-| `ScreenDirectPresent`, `ScreenSwipeMonitors`, `ScreenSharpStill` | `screen.directPresent`, `.swipeMonitors`, `.sharpStill` | одноимённые (true) | — |
+| `ScreenDirectPresent`, `ScreenPageGrips`, `ScreenSharpStill` | `screen.directPresent`, `.pageGrips`, `.sharpStill` | одноимённые (true) | — |
+| `ScreenThreeFingerSwipe` | `screen.threeFingerSwipe` | `ThreeFingerSwipe` (false) | — |
 | `ScreenShowStats` | `screen.showStats`; команда панели `stats` | `Screen.ShowStats` (false) | — |
 | `ScreenMaxFps` | `screen.maxFps` | `Screen.MaxFps` (60) | 1…60 |
 | `ScreenQuality` | `screen.quality` | `Screen.Quality` (70) | 30…95 |
@@ -430,7 +431,7 @@
 | `AllowRemoteCommands`, `AllowElevatedRemoteCommands` | `shell.allowCommands`, `.allowElevatedCommands` | `Shell.AllowCommands`, `AllowElevatedCommands` (false) | — |
 | `PowerSaving`, `PowerFps` | `power.saving`, `power.fps` | `Power.Saving` (`OnBattery`), `Power.Fps` (30) | имя значения перечисления; 1…240 |
 
-Через мост не меняются: `PinConnectionsToInterface`, `FindPeersOnTailscale`, `Audio.FollowScreenViewer`, `Screen.KeyboardButtonX/Y`, `MenuButton*`, `ButtonBar` (у последних свои пути записи).
+Через мост не меняются: `PinConnectionsToInterface`, `FindPeersOnTailscale`, `Audio.FollowScreenViewer`, `Screen.KeyboardButtonX/Y`, `Screen.PageGripsY`, `MenuButton*`, `ButtonBar` (у последних свои пути записи).
 
 ### Старое окно: сетка раскладки и команды модели
 
