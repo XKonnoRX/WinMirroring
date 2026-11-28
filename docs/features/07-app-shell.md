@@ -180,7 +180,7 @@
 | `addAddress` | `text` в `Settings.ManualPeerAddresses` + `SaveSettings()` + `MainViewModel.ReloadManualAddresses()` (иначе «Применить» в разделе «Сеть» записывало список, каким он был при запуске) |
 | `removeAddress`* | удаляет адрес и сохраняет |
 | `openSettings` | делегат `OpenSettings` = `App.ShowMainWindow` |
-| `copyAddress`, `openShare`, `remoteDesktop`, `ping`, `latency`, `peerLog`, `reconnect`* | инструменты устройства (см. «Диагностика и инструменты») |
+| `copyAddress`, `openShare`, `remoteDesktop`, `ping`, `latency`, `peerLog`, `reconnect`*, `wake` | инструменты устройства (см. «Диагностика и инструменты») |
 | `console`, `consoleElevated` | `MainViewModel.OpenConsoleOn(id, elevated)` |
 
 **Ограничения и запасные пути.** Неизвестная команда → «Непонятная команда: …». Отказ в `RemoteGuard` → «Отменено.».
@@ -324,6 +324,7 @@
 - `ping`: `cmd.exe /k ping -t <host>`. `remoteDesktop`: `mstsc.exe /v:<host>`. `copyAddress`: адрес без порта в буфер обмена.
 - `openShare` (`Services/NetworkShare.cs`): проверка TCP 445 (2,5 с) → `WNetAddConnection3W` к `\\host\IPC$` без запроса, при ошибке учётных данных — со стандартным диалогом Windows → список общих папок (`NetShareEnum`) → открытие `\\host`. Исходы: `Opened`, `Unreachable`, `Cancelled`, `Refused`, `Failed`; IPv6 записывается как `*.ipv6-literal.net`.
 - `reconnect`: `session.CloseAsync("reconnect requested")`; сопряжённое устройство переподключается само.
+- `wake` (с 1.0.81): `MainViewModel.WakeAsync` берёт `PairedPeer.HardwareAddress`, строит направления (`WakeOnLan.Shots`) и отправляет пакет пробуждения (`WakeOnLan.SendAsync`); строка состояния говорит, отправлен ли он и на какой адрес. `MainViewModel.CanWake` — известен ли MAC; `HubUi.Describe` отдаёт интерфейсу `canWake` только для устройства не на связи. Подробности — в 01, «Пробуждение по сети».
 - Живые числа: таймер `MainViewModel` 2 с, пока видимо любое окно приложения, кроме плавающей кнопки (иначе 6 с без работы): `RttText` устройств, `SmoothingText`, `AudioStatusText`.
 
 **Настройки.** Нет (выдачу журнала отключить нельзя).

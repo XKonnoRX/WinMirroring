@@ -288,6 +288,37 @@ public sealed partial class MainViewModel
             : $"Соединение с {name} закрыто.");
     }
 
+    /// <summary>Whether there is anything to wake this device with: its hardware address, learnt while it was up on the local network.</summary>
+    public bool CanWake(string peerId) =>
+        Core.Network.WakeOnLan.TryParse(_node.Settings.FindPairedById(peerId)?.HardwareAddress, out _);
+
+    /// <summary>
+    /// Sends the device the packet its network adapter wakes it on. Nothing comes back from that: whether it woke
+    /// is seen when it turns up on the network again, and connects by itself as a paired device does.
+    /// </summary>
+    public async Task<string> WakeAsync(string peerId)
+    {
+        var name = NameOf(peerId);
+        var record = _node.Settings.FindPairedById(peerId);
+        if (record is null || !Core.Network.WakeOnLan.TryParse(record.HardwareAddress, out var address))
+        {
+            return Say($"Чем будить {name}, пока неизвестно: адрес его сетевого адаптера запоминается, когда оно подключено по той же локальной сети (не через VPN).");
+        }
+
+        var shots = Core.Network.WakeOnLan.Shots(
+            Core.Network.NetworkInterfaceCatalog.Enumerate(), record.WakeBroadcast, record.LastKnownAddresses);
+        if (shots.Count == 0)
+        {
+            return Say($"Будить {name} не по чему: это устройство сейчас не в локальной сети.");
+        }
+
+        var went = await Core.Network.WakeOnLan.SendAsync(Core.Network.WakeOnLan.MagicPacket(address), shots).ConfigureAwait(true);
+        Serilog.Log.Information("Wake packet for {Peer} ({Address}) sent {Went} of {Shots} ways", name, record.HardwareAddress, went, shots.Count);
+        return Say(went > 0
+            ? $"Пакет пробуждения для {name} отправлен ({record.HardwareAddress}). Если оно проснётся, подключится само — обычно за 5–20 секунд."
+            : $"Пакет пробуждения для {name} отправить не удалось: сеть не приняла ни одной отправки.");
+    }
+
     private string WithHost(string peerId, Func<string, string> act) =>
         HostOf(peerId) is { Length: > 0 } host ? act(host) : Say($"Адрес {NameOf(peerId)} пока неизвестен.");
 

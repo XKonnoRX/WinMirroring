@@ -38,6 +38,8 @@ export type Device = {
    * confirmation on both screens, because the device that vouched was confirmed by hand already.
    */
   introducedBy: string | null
+  /** Not connected now, and known well enough to be woken over the local network (its adapter's address was seen). */
+  canWake: boolean
 }
 
 /** One square of the old grid. A cell without a monitor stands for the whole device. */

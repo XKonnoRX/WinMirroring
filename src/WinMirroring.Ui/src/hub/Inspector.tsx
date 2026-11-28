@@ -71,6 +71,11 @@ export function Inspector({
                 <button className="btn" disabled={!device.online} onClick={() => run('controlInput')}>
                   Управлять вводом
                 </button>
+                {/* Only where it can do something: the device is not connected, and the address of its network
+                    adapter was seen while it was. The packet is not answered: the device turning up is the answer. */}
+                {device.canWake && (
+                  <button className="btn wide" onClick={() => run('wake')}>Разбудить по сети</button>
+                )}
               </div>
             </section>
 

@@ -543,6 +543,11 @@
   min-width: 0;
 }
 
+/* A button that is there only some of the time takes the whole row, so the two beside it keep their places. */
+.inspector-grid .btn.wide {
+  grid-column: 1 / -1;
+}
+
 .inspector-note {
   margin: 6px 0 0;
   color: var(--text-faint);

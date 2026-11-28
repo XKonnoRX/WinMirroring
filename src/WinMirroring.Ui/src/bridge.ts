@@ -86,6 +86,7 @@ const device = (over: Record<string, unknown>) => ({
   sound: { here: 'auto', playing: false, sentTo: false },
   shownMonitor: null,
   introducedBy: null,
+  canWake: false,
   ...over,
 })
 
@@ -117,7 +118,7 @@ const sample = {
       version: '1.0.12',
       monitors: [{ key: 'tab-1', label: 'Монитор 1 · основной', size: '1920×1280', width: 1920, height: 1280, left: 0, top: 0, primary: true }],
     }),
-    device({ id: 'pc', name: 'Домашний ПК', online: false, state: 'не на связи', version: null, hasVirtualDisplay: null }),
+    device({ id: 'pc', name: 'Домашний ПК', online: false, state: 'не на связи', version: null, hasVirtualDisplay: null, canWake: true }),
     device({ id: 'new', name: 'LAPTOP-X1', paired: false, state: 'найдено рядом', version: null, hasVirtualDisplay: null }),
     device({
       id: 'studio',

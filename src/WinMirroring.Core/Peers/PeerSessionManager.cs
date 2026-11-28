@@ -694,6 +694,53 @@ public sealed class PeerSessionManager : IAsyncDisposable
         record.DiscoveryPort = session.PeerDiscoveryPort;
         record.RememberAddress(session.RemoteEndPoint.Address.ToString());
         _saveSettings();
+        LearnHardwareAddress(session);
+    }
+
+    /// <summary>
+    /// Notes the hardware address the device answers with on the local network, while it is there to answer: it
+    /// is what will wake it once it is asleep, and by then it cannot be asked. Read from this machine's own
+    /// neighbour table, not asked of the other program, so it is learnt whatever version runs there. Nothing is
+    /// learnt of a device reached through a VPN: it is nobody's neighbour, and what was known stays.
+    /// </summary>
+    private void LearnHardwareAddress(PeerSession session)
+    {
+        var remote = session.RemoteEndPoint.Address;
+        if (remote.IsIPv4MappedToIPv6)
+        {
+            remote = remote.MapToIPv4();
+        }
+
+        var peerId = session.PeerId;
+        var peerName = session.PeerName;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                if (Network.WakeOnLan.NeighbourhoodOf(remote, Network.NetworkInterfaceCatalog.Enumerate()) is not { } nic
+                    || Network.WakeOnLan.HardwareAddressOf(remote, nic.Address) is not { } address)
+                {
+                    return;
+                }
+
+                var text = Network.WakeOnLan.Format(address);
+                var broadcast = nic.Subnet.Broadcast.ToString();
+                var record = _settings.FindPairedById(peerId);
+                if (record is null || (record.HardwareAddress == text && record.WakeBroadcast == broadcast))
+                {
+                    return;
+                }
+
+                record.HardwareAddress = text;
+                record.WakeBroadcast = broadcast;
+                _saveSettings();
+                _logger.LogInformation("{Peer} can be woken over the local network from here: its adapter is {Address}, on {Network}", peerName, text, nic.Subnet);
+            }
+            catch (Exception ex) when (ex is System.Net.NetworkInformation.NetworkInformationException or System.Net.Sockets.SocketException or IOException)
+            {
+                _logger.LogDebug(ex, "The hardware address of {Peer} could not be read", peerName);
+            }
+        });
     }
 
     public async Task CloseAllAsync(string? reason = null)

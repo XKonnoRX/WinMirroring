@@ -29,6 +29,16 @@ public sealed class PairedPeer
     /// <summary>IPv4 addresses this peer was last reached at, newest first. Probed when the peer is not visible.</summary>
     public List<string> LastKnownAddresses { get; set; } = [];
 
+    /// <summary>
+    /// The hardware (MAC) address of the adapter this device was last connected through on a local network, as
+    /// "D8-BB-C1-CC-D2-BE", and the broadcast address of that network. Read from this machine's own neighbour
+    /// table whenever a session comes up over a local network; empty until then, and left as it was by a session
+    /// that comes over a VPN. It is what waking the device over the network needs (see WakeOnLan).
+    /// </summary>
+    public string HardwareAddress { get; set; } = string.Empty;
+
+    public string WakeBroadcast { get; set; } = string.Empty;
+
     public void RememberAddress(string address, int keep = 5)
     {
         LastKnownAddresses.Remove(address);

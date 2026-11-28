@@ -153,7 +153,8 @@ public sealed class HubUi
         null,
         null,
         null,
-        via.ViaName);
+        via.ViaName,
+        false);
 
     private DeviceDto Describe(PeerInfo? peer, PeerIntroduction? via)
     {
@@ -181,7 +182,8 @@ public sealed class HubUi
             self ? ScreenStreamingService.IsVirtualDisplayAvailable : _screen.PeerVirtualDisplay(id),
             self ? null : SoundOf(id),
             self ? null : _viewers.ShownMonitorOf(id),
-            via?.ViaName);
+            via?.ViaName,
+            !self && !online && _vm.CanWake(id));
     }
 
     private List<MonitorDto> Monitors(string id, bool self)
@@ -419,6 +421,9 @@ public sealed class HubUi
             case "reconnect":
                 return await _vm.ReconnectToAsync(id);
 
+            case "wake":
+                return await _vm.WakeAsync(id);
+
             default:
                 return $"Непонятная команда: {call.Name}";
         }
@@ -489,7 +494,10 @@ public sealed class HubUi
         bool? HasVirtualDisplay,
         SoundDto? Sound,
         string? ShownMonitor,
-        string? IntroducedBy);
+        string? IntroducedBy,
+
+        /// <summary>Not connected, and its network adapter's address is known: it can be sent a wake packet.</summary>
+        bool CanWake);
 
     private sealed record CellDto(string DeviceId, string? Monitor, int Column, int Row);
 
